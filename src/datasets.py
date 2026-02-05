@@ -112,31 +112,28 @@ def format_prompt_spell(item: BenchmarkItem, context_file: str) -> str:
 
     Context is NOT in the prompt - model must load it from context_file.
     This forces programmatic search rather than visual scanning.
+
+    NOTE: Prompt must NOT start with '(' so CLI wraps it with quine preamble
+    (needed for patterns/call-now which uses completion binding).
     """
     doc_len = len(item.context)
     parts = [
-        f'; Document: {context_file} ({doc_len:,} chars)',
-        '; Load with: (def doc (:ok (tools/read-file context-file)))',
-        '; Search with: (strings/index-of doc "keyword") => position or nil',
-        '; Slice with: (strings/subs doc start end)',
-        ';',
-        '; For large docs, pass SNIPPETS to child (not full doc).',
+        f'Document path: {context_file}',
+        f'Document size: {doc_len:,} chars',
         '',
-        f'(def context-file "{context_file}")',
-        '',
-        f'; Question: {item.question.strip()}',
+        f'Question: {item.question.strip()}',
     ]
 
     if item.choices:
-        parts.append('; Choices:')
+        parts.append('Choices:')
         for i, choice in enumerate(item.choices):
             letter = chr(ord('A') + i)
-            parts.append(f';   {letter}. {choice}')
+            parts.append(f'  {letter}. {choice}')
         parts.append('')
-        parts.append('; Return just the letter (A, B, C, or D).')
+        parts.append('Return just the letter (A, B, C, or D).')
     else:
         parts.append('')
-        parts.append('; Return just the answer string (e.g., "bathroom").')
+        parts.append('Return just the answer (e.g., "bathroom").')
 
     return "\n".join(parts)
 
