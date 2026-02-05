@@ -93,7 +93,8 @@ def main():
             def progress(item_id, result):
                 with lock:
                     completed[0] += 1
-                    status = '✓' if result.correct else ('✗' if not result.error else 'E')
+                    # Note: result.correct is None here (evaluated later)
+                    status = 'E' if result.error else '.'
                     print(f"  [{completed[0]}/{len(items)}] {item_id[:40]}... {status}")
 
             results = run_batch(items, runner, max_parallel=args.parallel, progress_callback=progress)
