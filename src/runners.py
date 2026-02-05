@@ -13,6 +13,9 @@ import openai
 
 from .datasets import BenchmarkItem, format_prompt_baseline, format_prompt_spell
 
+# Directory for context files (within spell project for tools/read-file access)
+CONTEXT_DIR = Path(__file__).parent.parent.parent / 'benchmarking' / 'data' / 'contexts'
+
 
 @dataclass
 class RunResult:
@@ -133,10 +136,17 @@ class SpellRunner:
 
     def run(self, item: BenchmarkItem) -> RunResult:
         """Run a single item through Spell condition."""
-        prompt = format_prompt_spell(item)
         start = time.time()
 
         try:
+            # Write context to a file (model must read it programmatically)
+            CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
+            context_file = CONTEXT_DIR / f'{item.id}.txt'
+            context_file.write_text(item.context)
+
+            # Format prompt with path to context file
+            prompt = format_prompt_spell(item, str(context_file))
+
             # Write prompt to temp file (.spl so CLI treats it as prompt content)
             with tempfile.NamedTemporaryFile(mode='w', suffix='.spl', delete=False) as f:
                 f.write(prompt)
@@ -244,11 +254,51 @@ def run_batch(
     items: list[BenchmarkItem],
     runner: BaselineRunner | SpellRunner,
     max_parallel: int = 5,
+    progress_callback=None,
 ) -> list[RunResult]:
-    """Run a batch of items, with optional parallelism."""
-    # For now, sequential. TODO: add async parallelism
-    results = []
-    for item in items:
-        result = runner.run(item)
-        results.append(result)
+    """Run a batch of items with parallelism.
+
+    Args:
+        items: List of benchmark items to run
+        runner: Runner instance (BaselineRunner or SpellRunner)
+        max_parallel: Maximum concurrent workers (default 5)
+        progress_callback: Optional callback(item_id, result) for progress updates
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    results = [None] * len(items)  # Preserve order
+
+    with ThreadPoolExecutor(max_workers=max_parallel) as executor:
+        # Submit all items
+        future_to_idx = {
+            executor.submit(runner.run, item): i
+            for i, item in enumerate(items)
+        }
+
+        # Collect results as they complete
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                result = future.result()
+                results[idx] = result
+                if progress_callback:
+                    progress_callback(items[idx].id, result)
+            except Exception as e:
+                # Create error result
+                results[idx] = RunResult(
+                    item_id=items[idx].id,
+                    condition=runner.__class__.__name__.lower().replace('runner', ''),
+                    model='unknown',
+                    response='',
+                    answer_extracted=None,
+                    correct=None,
+                    latency_ms=0,
+                    tokens_in=None,
+                    tokens_out=None,
+                    cost=None,
+                    error=str(e),
+                )
+                if progress_callback:
+                    progress_callback(items[idx].id, results[idx])
+
     return results

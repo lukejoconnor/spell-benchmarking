@@ -10,6 +10,7 @@ from pathlib import Path
 from src.datasets import DATASETS, load_longbench_short, load_babilong
 from src.runners import BaselineRunner, SpellRunner, run_batch
 from src.evaluation import evaluate_result, compute_metrics, results_to_dict, format_summary
+import threading
 
 
 def main():
@@ -30,6 +31,8 @@ def main():
                         help='Output file (default: results/<timestamp>.json)')
     parser.add_argument('--dry-run', action='store_true',
                         help='Print config and exit')
+    parser.add_argument('--parallel', type=int, default=1,
+                        help='Number of parallel workers (default: 1 = sequential)')
 
     args = parser.parse_args()
 
@@ -66,14 +69,31 @@ def main():
         else:
             runner = SpellRunner(args.model, budget=args.budget)
 
-        results = []
-        for i, item in enumerate(items):
-            print(f"  [{i+1}/{len(items)}] {item.id[:40]}...", end=' ', flush=True)
-            result = runner.run(item)
-            result = evaluate_result(result, item)
-            results.append(result)
-            status = '✓' if result.correct else ('✗' if not result.error else 'E')
-            print(f"{status} ({result.latency_ms:.0f}ms)")
+        if args.parallel > 1:
+            # Parallel execution
+            print(f"  Running {len(items)} items with {args.parallel} workers...")
+            completed = [0]
+            lock = threading.Lock()
+
+            def progress(item_id, result):
+                with lock:
+                    completed[0] += 1
+                    status = '✓' if result.correct else ('✗' if not result.error else 'E')
+                    print(f"  [{completed[0]}/{len(items)}] {item_id[:40]}... {status}")
+
+            results = run_batch(items, runner, max_parallel=args.parallel, progress_callback=progress)
+            # Evaluate results
+            results = [evaluate_result(r, items[i]) for i, r in enumerate(results)]
+        else:
+            # Sequential execution
+            results = []
+            for i, item in enumerate(items):
+                print(f"  [{i+1}/{len(items)}] {item.id[:40]}...", end=' ', flush=True)
+                result = runner.run(item)
+                result = evaluate_result(result, item)
+                results.append(result)
+                status = '✓' if result.correct else ('✗' if not result.error else 'E')
+                print(f"{status} ({result.latency_ms:.0f}ms)")
 
         metrics = compute_metrics(results)
         print()

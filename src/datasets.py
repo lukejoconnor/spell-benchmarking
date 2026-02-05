@@ -107,34 +107,34 @@ def format_prompt_baseline(item: BenchmarkItem) -> str:
     return "\n".join(parts)
 
 
-def format_prompt_spell(item: BenchmarkItem) -> str:
+def format_prompt_spell(item: BenchmarkItem, context_file: str) -> str:
     """Format item as a prompt for Spell condition.
 
-    The model receives the same information but is expected to write
-    a Spell program that can orchestrate reasoning.
+    Context is NOT in the prompt - model must load it from context_file.
+    This forces programmatic search rather than visual scanning.
     """
     parts = [
-        "You have access to Spell, a language for orchestrating LLM calls.",
-        "You may decompose this task using child `llm` calls if helpful.",
-        "",
-        "Context:",
-        item.context,
-        "",
-        "Question:",
-        item.question,
+        f'; The document is stored at: {context_file}',
+        '; Load it with: (def doc (:ok (tools/read-file context-file)))',
+        '; Search with: (strings/index-of doc "Mary") => position or nil',
+        '; Slice with: (strings/subs doc start end)',
+        '; Length with: (count doc)',
+        '',
+        f'(def context-file "{context_file}")',
+        '',
+        f'; Question: {item.question.strip()}',
     ]
 
     if item.choices:
-        parts.append("")
-        parts.append("Choices:")
+        parts.append('; Choices:')
         for i, choice in enumerate(item.choices):
             letter = chr(ord('A') + i)
-            parts.append(f"  {letter}. {choice}")
-        parts.append("")
-        parts.append("Your program should return just the letter (A, B, C, or D).")
+            parts.append(f';   {letter}. {choice}')
+        parts.append('')
+        parts.append('; Return just the letter (A, B, C, or D).')
     else:
-        parts.append("")
-        parts.append("Your program should return just the answer string.")
+        parts.append('')
+        parts.append('; Return just the answer string (e.g., "bathroom").')
 
     return "\n".join(parts)
 
