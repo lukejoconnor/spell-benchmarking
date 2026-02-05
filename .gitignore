@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Data (large, downloaded from HuggingFace)
+data/
+~/.cache/huggingface/
+
+# Results (run-specific)
+results/
+
+# Editor
+.idea/
+.vscode/
