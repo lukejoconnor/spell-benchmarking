@@ -113,12 +113,14 @@ def format_prompt_spell(item: BenchmarkItem, context_file: str) -> str:
     Context is NOT in the prompt - model must load it from context_file.
     This forces programmatic search rather than visual scanning.
     """
+    doc_len = len(item.context)
     parts = [
-        f'; The document is stored at: {context_file}',
-        '; Load it with: (def doc (:ok (tools/read-file context-file)))',
-        '; Search with: (strings/index-of doc "Mary") => position or nil',
+        f'; Document: {context_file} ({doc_len:,} chars)',
+        '; Load with: (def doc (:ok (tools/read-file context-file)))',
+        '; Search with: (strings/index-of doc "keyword") => position or nil',
         '; Slice with: (strings/subs doc start end)',
-        '; Length with: (count doc)',
+        ';',
+        '; For large docs, pass SNIPPETS to child (not full doc).',
         '',
         f'(def context-file "{context_file}")',
         '',
