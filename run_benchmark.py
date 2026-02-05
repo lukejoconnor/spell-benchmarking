@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from src.datasets import DATASETS, load_longbench_short, load_babilong
-from src.runners import BaselineRunner, SpellRunner, run_batch
+from src.runners import BaselineRunner, SpellRunner, ClaudeCodeRunner, run_batch
 from src.evaluation import evaluate_result, compute_metrics, results_to_dict, format_summary
 import threading
 
@@ -19,8 +19,8 @@ def main():
                         choices=list(DATASETS.keys()) + ['all'],
                         help='Dataset to run')
     parser.add_argument('--condition', type=str, default='baseline',
-                        choices=['baseline', 'spell', 'all'],
-                        help='Condition to run')
+                        choices=['baseline', 'spell', 'claude_code', 'all'],
+                        help='Condition to run (claude_code is agentic baseline)')
     parser.add_argument('--model', type=str, default='anthropic:claude-sonnet-4-20250514',
                         help='Model spec (provider:model)')
     parser.add_argument('--n', type=int, default=None,
@@ -31,7 +31,7 @@ def main():
                         help='Output file (default: results/<timestamp>.json)')
     parser.add_argument('--dry-run', action='store_true',
                         help='Print config and exit')
-    parser.add_argument('--parallel', type=int, default=1,
+    parser.add_argument('--parallel', type=int, default=5,
                         help='Number of parallel workers (default: 1 = sequential)')
 
     args = parser.parse_args()
@@ -56,7 +56,7 @@ def main():
         return
 
     # Determine conditions to run
-    conditions = ['baseline', 'spell'] if args.condition == 'all' else [args.condition]
+    conditions = ['baseline', 'spell', 'claude_code'] if args.condition == 'all' else [args.condition]
 
     all_results = {}
     all_metrics = {}
@@ -66,8 +66,23 @@ def main():
 
         if condition == 'baseline':
             runner = BaselineRunner(args.model)
-        else:
+        elif condition == 'spell':
             runner = SpellRunner(args.model, budget=args.budget)
+        elif condition == 'claude_code':
+            # Extract model name for Claude Code (ignores provider prefix)
+            _, model_name = args.model.split(':', 1) if ':' in args.model else ('', args.model)
+            # Map full model names to aliases if needed
+            if 'sonnet' in model_name.lower():
+                cc_model = 'sonnet'
+            elif 'opus' in model_name.lower():
+                cc_model = 'opus'
+            elif 'haiku' in model_name.lower():
+                cc_model = 'haiku'
+            else:
+                cc_model = model_name  # Use as-is
+            runner = ClaudeCodeRunner(model=cc_model, max_budget=args.budget)
+        else:
+            raise ValueError(f"Unknown condition: {condition}")
 
         if args.parallel > 1:
             # Parallel execution
@@ -124,15 +139,13 @@ def main():
 
     print(f"\nResults saved to: {output_path}")
 
-    # Print comparison if both conditions ran
-    if len(conditions) == 2:
+    # Print comparison if multiple conditions ran
+    if len(conditions) > 1:
         print("\n=== COMPARISON ===")
-        baseline_acc = all_metrics['baseline']['accuracy']
-        spell_acc = all_metrics['spell']['accuracy']
-        diff = spell_acc - baseline_acc
-        print(f"Baseline accuracy: {baseline_acc:.1%}")
-        print(f"Spell accuracy:    {spell_acc:.1%}")
-        print(f"Difference:        {diff:+.1%}")
+        for cond in conditions:
+            acc = all_metrics[cond]['accuracy']
+            cost = all_metrics[cond].get('total_cost', 0) or 0
+            print(f"{cond:12} accuracy: {acc:.1%}  cost: ${cost:.4f}")
 
 
 if __name__ == '__main__':
