@@ -143,6 +143,7 @@ def format_prompt_spell(item: BenchmarkItem) -> str:
 DATASETS = {
     'longbench_short': load_longbench_short,
     'babilong_32k': lambda: load_babilong('32k'),
+    'babilong_32k_hard': lambda: load_babilong('32k', tasks=['qa2', 'qa3']),  # Multi-hop
     'babilong_16k': lambda: load_babilong('16k'),
     'babilong_8k': lambda: load_babilong('8k'),
 }

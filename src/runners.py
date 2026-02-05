@@ -137,8 +137,8 @@ class SpellRunner:
         start = time.time()
 
         try:
-            # Write prompt to temp file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            # Write prompt to temp file (.spl so CLI treats it as prompt content)
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.spl', delete=False) as f:
                 f.write(prompt)
                 prompt_file = f.name
 
