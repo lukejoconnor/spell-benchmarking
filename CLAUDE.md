@@ -32,26 +32,26 @@ Maintain a neutral, skeptical stance. Present unfavorable and inconclusive resul
 
 | Benchmark | Items | What it tests | Run command |
 |-----------|-------|---------------|-------------|
-| GSM8K | 50 | Grade-school math | `uv run run_benchmark.py --dataset gsm8k --condition spell` |
-| MATH Hard | 20-30 | Competition math (Level 5) | `uv run run_benchmark.py --dataset math_hard --condition spell` |
-| AIME 2025 | 30 | AMC/AIME competition | `uv run run_benchmark.py --dataset aime_2025 --condition spell` |
-| AIME 2026 | 30 | AMC/AIME competition (newer) | `uv run run_benchmark.py --dataset aime_2026 --condition spell` |
-| HMMT Feb 2025 | ~50 | Collegiate competition | `uv run run_benchmark.py --dataset hmmt_feb_2025 --condition spell` |
-| Omni-MATH | ~60 | Olympiad-level, difficulty-filtered | `uv run run_benchmark.py --dataset omni_math --condition spell` |
+| GSM8K | 50 | Grade-school math | `uv run python benchmarking/bench.py general --dataset gsm8k --condition spell` |
+| MATH Hard | 20-30 | Competition math (Level 5) | `uv run python benchmarking/bench.py general --dataset math_hard --condition spell` |
+| AIME 2025 | 30 | AMC/AIME competition | `uv run python benchmarking/bench.py general --dataset aime_2025 --condition spell` |
+| AIME 2026 | 30 | AMC/AIME competition (newer) | `uv run python benchmarking/bench.py general --dataset aime_2026 --condition spell` |
+| HMMT Feb 2025 | ~50 | Collegiate competition | `uv run python benchmarking/bench.py general --dataset hmmt_feb_2025 --condition spell` |
+| Omni-MATH | ~60 | Olympiad-level, difficulty-filtered | `uv run python benchmarking/bench.py general --dataset omni_math --condition spell` |
 
 ### Long-Context (Python harness)
 
 | Benchmark | Items | What it tests | Run command |
 |-----------|-------|---------------|-------------|
-| LongBench v2 | 48-91 | Long-context MCQ (8k-128k tokens) | `uv run run_benchmark.py --dataset longbench_short --condition spell` |
-| BABILong QA2 | 100 | Multi-hop QA over 32k context | `uv run run_benchmark.py --dataset babilong --condition spell` |
+| LongBench v2 | 48-91 | Long-context MCQ (8k-128k tokens) | `uv run python benchmarking/bench.py general --dataset longbench_short --condition spell` |
+| BABILong QA2 | 100 | Multi-hop QA over 32k context | `uv run python benchmarking/bench.py general --dataset babilong_32k_qa2 --condition spell` |
 
 ### Coding (Python harness)
 
 | Benchmark | Items | What it tests | Run command |
 |-----------|-------|---------------|-------------|
-| SWE-bench | 50-500 | Bug fixing in real repos | `uv run run_swebench.py --dataset mini --condition spell` |
-| FeatureBench | varies | Feature implementation | `uv run run_featurebench.py --condition spell` |
+| SWE-bench | 50-500 | Bug fixing in real repos | `uv run python benchmarking/bench.py swebench --dataset mini --condition spell` |
+| FeatureBench | varies | Feature implementation | `uv run python benchmarking/bench.py featurebench --condition spell` |
 
 ### Coding (Clojure harness)
 
@@ -69,7 +69,7 @@ Maintain a neutral, skeptical stance. Present unfavorable and inconclusive resul
 ### Common flags (Python harness)
 
 ```bash
---condition {baseline,spell,cc,all}   # Which system to run
+--condition {baseline,spell,claude_code,codex,all}   # Which system to run
 --n N                                  # Limit to N items
 --model anthropic:claude-opus-4-5-20251101   # Model override
 --thinking --reasoning-effort high     # Extended thinking
@@ -120,12 +120,14 @@ Most recent results for comparison. Check notebook entries for full details.
 
 ```
 benchmarking/
-├── run_benchmark.py       # Main entry: math, longbench, babilong
-├── run_swebench.py        # SWE-bench
-├── run_featurebench.py    # FeatureBench
+├── bench.py               # Unified CLI: general/swebench/featurebench
+├── run_benchmark.py       # Legacy shim -> bench.py general
+├── run_swebench.py        # Legacy shim -> bench.py swebench
+├── run_featurebench.py    # Legacy shim -> bench.py featurebench
 ├── src/
 │   ├── datasets.py        # Dataset loading
-│   ├── runners.py         # BaselineRunner, SpellRunner, ClaudeCodeRunner
+│   ├── unified_adapters.py # Condition adapters (Spell/Baseline/Claude/Codex)
+│   ├── unified_results.py  # Unified JSONL schema + summaries
 │   ├── evaluation.py      # Scoring (exact match, regex extraction)
 │   ├── swebench_prep.py   # SWE-bench workspace setup
 │   └── swebench_output.py # Results formatting

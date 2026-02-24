@@ -24,24 +24,30 @@ Does LLM self-orchestration via Spell improve performance on reasoning tasks, co
 benchmarking/
 ├── data/                  # Cached datasets (gitignored)
 ├── results/               # Run outputs (gitignored)
+├── bench.py               # Unified Click CLI (general/swebench/featurebench)
 ├── src/
 │   ├── datasets.py        # Dataset loading and formatting
-│   ├── runners.py         # Baseline and Spell execution
-│   ├── evaluation.py      # Scoring functions
-│   └── utils.py           # Shared utilities
-├── run_benchmark.py       # Main entry point
-└── analyze_results.py     # Results aggregation
+│   ├── unified_adapters.py  # Spell/Baseline/Claude/Codex adapters
+│   ├── unified_results.py   # Unified JSONL schema + summaries
+│   ├── evaluation.py        # Scoring functions
+│   └── featurebench_lib.py  # FeatureBench workspace helpers
+├── run_benchmark.py       # Legacy shim -> bench.py general
+├── run_swebench.py        # Legacy shim -> bench.py swebench
+└── run_featurebench.py    # Legacy shim -> bench.py featurebench
 ```
 
 ## Usage
 
 ```bash
-# Activate venv
-source .venv/bin/activate
+# General benchmark
+uv run python benchmarking/bench.py general --dataset longbench_short --condition baseline --n 10
 
-# Run benchmark (small test)
-python run_benchmark.py --dataset longbench_short --condition baseline --n 10
+# Full comparison
+uv run python benchmarking/bench.py general --dataset all --condition all --model anthropic:claude-sonnet-4-5-20250929
 
-# Run full comparison
-python run_benchmark.py --dataset all --condition all --model anthropic:claude-sonnet-4-20250514
+# SWE-bench
+uv run python benchmarking/bench.py swebench --dataset mini --condition both --n 5
+
+# FeatureBench
+uv run python benchmarking/bench.py featurebench --condition spell --task-ids 22 23
 ```
