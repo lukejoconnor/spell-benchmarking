@@ -30,6 +30,18 @@ class SWEBenchWorkspace:
         """Path to the cloned repository."""
         return self._repo_path
 
+    def _is_valid_git_repo(self) -> bool:
+        if not self._repo_path.exists():
+            return False
+        result = subprocess.run(
+            ['git', 'rev-parse', '--is-inside-work-tree'],
+            cwd=self._repo_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return result.returncode == 0 and result.stdout.strip() == 'true'
+
     def setup(self) -> Path:
         """Clone repo (if needed) and checkout base commit.
 
@@ -37,6 +49,10 @@ class SWEBenchWorkspace:
         Returns the path to the workspace directory.
         """
         self.workspace_root.mkdir(parents=True, exist_ok=True)
+
+        if self._repo_path.exists() and not self._is_valid_git_repo():
+            # Recover from interrupted/partial clones.
+            shutil.rmtree(self._repo_path)
 
         if self._repo_path.exists():
             # Reuse existing clone: discard changes, checkout base commit

@@ -67,10 +67,14 @@ from src.unified_results import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONTEXT_DIR = PROJECT_ROOT / "benchmarking" / "data" / "contexts"
 DEFAULT_AGENT_BY_BENCH = {
-    "general": "agents/bench/general.agent.edn",
+    # Keep general unset by default to preserve legacy harness behavior:
+    # api/run uses built-in default-agent-config (includes structured output format).
+    "general": None,
     "swebench": "agents/bench/swebench.agent.edn",
     "featurebench": "agents/bench/featurebench.agent.edn",
 }
+MATH_ITEM_DATASETS = {"gsm8k", "math", "aime", "hmmt", "omni_math"}
+DEFAULT_GENERAL_MATH_AGENT = "agents/minimal.agent.edn"
 
 
 @dataclass(slots=True)
@@ -232,7 +236,7 @@ def _build_adapter(condition: str, *, model: str, claude_model: str, codex_model
     if condition == "claude_code":
         return ClaudeCodeAdapter(model=claude_model, budget=budget)
     if condition == "codex":
-        return CodexAdapter(model=codex_model)
+        return CodexAdapter(project_root=PROJECT_ROOT, model_spec=codex_model)
     raise ValueError(f"Unknown condition: {condition}")
 
 
@@ -261,7 +265,7 @@ def cli() -> None:
 @click.option("--condition", default="baseline", type=click.Choice(["baseline", "spell", "claude_code", "codex", "all"]))
 @click.option("--model", default="anthropic:claude-sonnet-4-5-20250929", help="provider:model for baseline/spell")
 @click.option("--claude-model", default="sonnet", help="Model for Claude Code comparator")
-@click.option("--codex-model", default="codex:gpt-5.3-codex", help="Model for Codex comparator scaffold")
+@click.option("--codex-model", default="codex:gpt-5.3-codex", help="Model for Codex comparator")
 @click.option("--n", type=int, default=None)
 @click.option("--items", default=None, help="Comma-separated item ids")
 @click.option("--parallel", type=int, default=5, show_default=True)
@@ -308,7 +312,7 @@ def run_general(
     run_id = run_id or _run_id("general")
     output_file = Path(output) if output else _default_output(run_id)
     conditions = _parse_conditions(condition, ("baseline", "spell", "claude_code", "codex", "all"))
-    spell_agent = agent or DEFAULT_AGENT_BY_BENCH["general"]
+    spell_agent = agent
 
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
@@ -325,6 +329,13 @@ def run_general(
         loaded = [item for item in loaded if item.id in ids]
     elif n:
         loaded = loaded[:n]
+
+    if spell_agent is None:
+        item_datasets = {item.dataset for item in loaded}
+        if item_datasets and item_datasets.issubset(MATH_ITEM_DATASETS):
+            spell_agent = DEFAULT_GENERAL_MATH_AGENT
+        else:
+            spell_agent = DEFAULT_AGENT_BY_BENCH["general"]
 
     click.echo(f"Loaded {len(loaded)} items")
     if dry_run:

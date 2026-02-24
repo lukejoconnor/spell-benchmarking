@@ -136,29 +136,209 @@ def normalize_numeric(s: str) -> str:
         return s
 
 
+def _extract_braced(text: str, open_brace_idx: int) -> tuple[str | None, int]:
+    """Extract balanced {...} content starting at open_brace_idx."""
+    if open_brace_idx < 0 or open_brace_idx >= len(text) or text[open_brace_idx] != '{':
+        return None, open_brace_idx
+
+    depth = 0
+    for i in range(open_brace_idx, len(text)):
+        ch = text[i]
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return text[open_brace_idx + 1:i], i + 1
+
+    return None, open_brace_idx
+
+
+def _strip_math_delimiters(s: str) -> str:
+    s = s.strip()
+    changed = True
+    while changed and s:
+        changed = False
+        wrappers = (
+            ('$$', '$$'),
+            ('\\[', '\\]'),
+            ('\\(', '\\)'),
+            ('$', '$'),
+        )
+        for left, right in wrappers:
+            if s.startswith(left) and s.endswith(right) and len(s) > len(left) + len(right):
+                s = s[len(left):-len(right)].strip()
+                changed = True
+                break
+    return s
+
+
+def _extract_boxed_content(response: str) -> str | None:
+    for token in ('\\boxed{', '\\fbox{'):
+        idx = response.find(token)
+        if idx == -1:
+            continue
+        content, _ = _extract_braced(response, idx + len(token) - 1)
+        if content is not None:
+            return _strip_math_delimiters(content)
+    return None
+
+
+def _replace_latex_fractions(text: str) -> str:
+    """Convert \\frac-like commands to explicit divisions."""
+    out: list[str] = []
+    i = 0
+    frac_cmds = ('\\dfrac{', '\\tfrac{', '\\frac{')
+    while i < len(text):
+        best_idx = -1
+        best_cmd = None
+        for cmd in frac_cmds:
+            idx = text.find(cmd, i)
+            if idx != -1 and (best_idx == -1 or idx < best_idx):
+                best_idx = idx
+                best_cmd = cmd
+
+        if best_idx == -1 or best_cmd is None:
+            out.append(text[i:])
+            break
+
+        out.append(text[i:best_idx])
+        num, j = _extract_braced(text, best_idx + len(best_cmd) - 1)
+        if num is None or j >= len(text) or text[j] != '{':
+            out.append(best_cmd)
+            i = best_idx + len(best_cmd)
+            continue
+        den, k = _extract_braced(text, j)
+        if den is None:
+            out.append(best_cmd)
+            i = best_idx + len(best_cmd)
+            continue
+
+        out.append(f'(({num})/({den}))')
+        i = k
+
+    return ''.join(out)
+
+
+def _replace_latex_sqrt(text: str) -> str:
+    """Convert \\sqrt{...} to sqrt(...)."""
+    out: list[str] = []
+    i = 0
+    token = '\\sqrt{'
+    while i < len(text):
+        idx = text.find(token, i)
+        if idx == -1:
+            out.append(text[i:])
+            break
+        out.append(text[i:idx])
+        arg, j = _extract_braced(text, idx + len(token) - 1)
+        if arg is None:
+            out.append(token)
+            i = idx + len(token)
+            continue
+        out.append(f'sqrt({arg})')
+        i = j
+    return ''.join(out)
+
+
+def _latex_to_sympy(text: str) -> str:
+    s = _strip_math_delimiters(text)
+    s = s.replace('−', '-').replace('–', '-')
+    s = s.replace('π', 'pi')
+    s = s.replace('\\left', '').replace('\\right', '')
+    s = s.replace('\\cdot', '*').replace('\\times', '*')
+    s = s.replace('\\,', '')
+    s = _replace_latex_fractions(s)
+    s = _replace_latex_sqrt(s)
+    s = s.replace('\\pi', 'pi')
+    s = s.replace('^', '**')
+    # Handle simple assignment wrappers like x=...
+    if '=' in s and re.match(r'^\s*[a-zA-Z]\s*=', s):
+        s = s.split('=', 1)[1]
+    s = s.replace('{', '(').replace('}', ')')
+    s = s.replace('\\', '')
+    return s.strip()
+
+
+def _split_top_level_commas(text: str) -> list[str]:
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(text):
+        if ch in '([{':
+            depth += 1
+        elif ch in ')]}':
+            depth = max(0, depth - 1)
+        elif ch == ',' and depth == 0:
+            part = text[start:i].strip()
+            if part:
+                parts.append(part)
+            start = i + 1
+    tail = text[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _strip_wrapping_quotes(text: str) -> str:
+    s = text.strip()
+    if len(s) >= 2 and ((s[0] == '"' and s[-1] == '"') or (s[0] == "'" and s[-1] == "'")):
+        return s[1:-1].strip()
+    return s
+
+
+def _sympy_equivalent(got: str, expected: str) -> bool:
+    import sympy
+    from sympy.parsing.sympy_parser import (
+        implicit_multiplication_application,
+        parse_expr,
+        standard_transformations,
+    )
+
+    transformations = standard_transformations + (implicit_multiplication_application,)
+    local_dict = {"sqrt": sympy.sqrt, "pi": sympy.pi}
+    got_expr = parse_expr(_latex_to_sympy(got), transformations=transformations, local_dict=local_dict)
+    expected_expr = parse_expr(_latex_to_sympy(expected), transformations=transformations, local_dict=local_dict)
+    return bool(sympy.simplify(got_expr - expected_expr) == 0)
+
+
 def extract_math_answer(response: str) -> str | None:
     """Extract answer for MATH competition problems.
 
     Handles: numbers, fractions (3/4), expressions (2\\sqrt{3}), etc.
     """
-    import re
     response = response.strip()
+    if not response:
+        return None
 
-    # Look for \boxed{...} pattern (MATH format)
-    match = re.search(r'\\boxed\{([^}]+)\}', response)
-    if match:
-        return match.group(1).strip()
+    boxed = _extract_boxed_content(response)
+    if boxed:
+        return boxed
+
+    # Handle spell-style wrappers like {:result "..."}, preserving braces in quoted LaTeX.
+    map_match = re.search(r'\{:result\s+"((?:\\.|[^"\\])*)"\}\s*$', response, re.S)
+    if map_match:
+        candidate = _strip_math_delimiters(map_match.group(1).strip())
+        if candidate:
+            return candidate
+
+    # Handle unquoted map values like {:result 123}
+    map_match = re.search(r'\{:result\s+([^}]+)\}\s*$', response, re.S)
+    if map_match:
+        candidate = _strip_wrapping_quotes(_strip_math_delimiters(map_match.group(1).strip()))
+        if candidate:
+            return candidate
 
     # Check if response ends with just the answer on its own line
     lines = response.split('\n')
     last_line = lines[-1].strip() if lines else ''
-    if last_line and len(last_line) < 50:  # Reasonable answer length
-        return last_line
+    if last_line and len(last_line) < 200:
+        return _strip_math_delimiters(last_line)
 
     # Look for "answer is X" pattern
     match = re.search(r'(?:answer|result)\s*(?:is|=|:)\s*(.+?)(?:\.|$)', response, re.I)
     if match:
-        return match.group(1).strip()
+        return _strip_math_delimiters(match.group(1).strip())
 
     return None
 
@@ -167,17 +347,9 @@ def normalize_math_answer(s: str) -> str:
     """Normalize math answer for string comparison."""
     if not s:
         return ''
-    # Remove whitespace
-    s = s.strip().replace(' ', '')
-    # Remove dollar signs (LaTeX math mode)
-    s = s.replace('$', '')
-    # Remove degree symbols for comparison
+    s = _latex_to_sympy(s)
     s = s.replace('°', '').replace('^\\circ', '').replace('\\circ', '')
-    # Normalize LaTeX fractions to plain fractions
-    s = re.sub(r'\\frac\{([^}]+)\}\{([^}]+)\}', r'\1/\2', s)
-    # Remove other LaTeX commands
-    s = s.replace('\\sqrt', 'sqrt').replace('\\left', '').replace('\\right', '')
-    s = s.replace('\\', '')
+    s = re.sub(r'\s+', '', s)
     return s.lower()
 
 
@@ -187,63 +359,55 @@ def math_equivalent(got: str, expected: str, timeout: float = 5.0) -> bool:
     Handles LaTeX notation, fractions, degrees, etc.
     Returns True if expressions are mathematically equal.
     """
-    import signal
-
     # First try normalized string comparison
     if normalize_math_answer(got) == normalize_math_answer(expected):
         return True
 
-    # Try sympy equivalence with timeout
-    try:
-        import sympy
-        from sympy.parsing.latex import parse_latex
+    import signal
 
-        def check():
-            try:
-                # Clean up for sympy parsing
-                def clean_for_sympy(s):
-                    s = s.strip()
-                    # Remove degree notation
-                    s = s.replace('°', '').replace('^\\circ', '').replace('\\circ', '')
-                    # Handle x= prefix
-                    if s.lower().startswith('x=') or s.lower().startswith('x ='):
-                        s = s.split('=', 1)[1].strip()
-                    return s
-
-                got_clean = clean_for_sympy(got)
-                exp_clean = clean_for_sympy(expected)
-
-                # Try parsing as LaTeX
-                try:
-                    expr_got = parse_latex(got_clean)
-                    expr_exp = parse_latex(exp_clean)
-                except:
-                    # Fall back to sympify for plain expressions
-                    expr_got = sympy.sympify(got_clean)
-                    expr_exp = sympy.sympify(exp_clean)
-
-                # Check equivalence
-                diff = sympy.simplify(expr_got - expr_exp)
-                return diff == 0
-            except:
-                return False
-
-        # Run with timeout (signal-based, Unix only)
-        def handler(signum, frame):
-            raise TimeoutError()
-
-        old_handler = signal.signal(signal.SIGALRM, handler)
-        signal.setitimer(signal.ITIMER_REAL, timeout)
+    def check() -> bool:
         try:
-            result = check()
-        finally:
-            signal.setitimer(signal.ITIMER_REAL, 0)
-            signal.signal(signal.SIGALRM, old_handler)
+            got_parts = _split_top_level_commas(_strip_math_delimiters(got))
+            expected_parts = _split_top_level_commas(_strip_math_delimiters(expected))
 
-        return result
+            if len(got_parts) > 1 or len(expected_parts) > 1:
+                if len(got_parts) != len(expected_parts):
+                    return False
+                remaining = expected_parts[:]
+                for g in got_parts:
+                    g_norm = normalize_math_answer(g)
+                    match_idx = None
+                    for i, e in enumerate(remaining):
+                        if g_norm == normalize_math_answer(e):
+                            match_idx = i
+                            break
+                        try:
+                            if _sympy_equivalent(g, e):
+                                match_idx = i
+                                break
+                        except Exception:
+                            continue
+                    if match_idx is None:
+                        return False
+                    remaining.pop(match_idx)
+                return True
 
-    except Exception:
+            return _sympy_equivalent(got, expected)
+        except Exception:
+            return False
+
+    def handler(signum, frame):
+        raise TimeoutError()
+
+    old_handler = signal.signal(signal.SIGALRM, handler)
+    signal.setitimer(signal.ITIMER_REAL, timeout)
+    try:
+        return check()
+    except TimeoutError:
         return False
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old_handler)
 
 
 def evaluate_result(result: RunResult, item: BenchmarkItem) -> RunResult:
