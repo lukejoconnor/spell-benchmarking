@@ -178,9 +178,9 @@ def _provider_model_for_condition(condition: str, model_spec: str | None) -> tup
         return "claude_code", model_spec
     if condition == "codex":
         if model_spec and ":" in model_spec:
-            provider, model = model_spec.split(":", 1)
-            return provider, model
-        return "codex", model_spec
+            _, model = model_spec.split(":", 1)
+            return "codex", model
+        return "codex", (model_spec or "codex")
     return parse_model_spec(model_spec)
 
 
@@ -265,7 +265,7 @@ def cli() -> None:
 @click.option("--condition", default="baseline", type=click.Choice(["baseline", "spell", "claude_code", "codex", "all"]))
 @click.option("--model", default="anthropic:claude-sonnet-4-5-20250929", help="provider:model for baseline/spell")
 @click.option("--claude-model", default="sonnet", help="Model for Claude Code comparator")
-@click.option("--codex-model", default="codex:gpt-5.3-codex", help="Model for Codex comparator")
+@click.option("--codex-model", default="codex", help="Model for Codex harness comparator")
 @click.option("--n", type=int, default=None)
 @click.option("--items", default=None, help="Comma-separated item ids")
 @click.option("--parallel", type=int, default=5, show_default=True)
@@ -276,7 +276,7 @@ def cli() -> None:
 @click.option("--timeout", type=int, default=300, show_default=True)
 @click.option("--thinking/--no-thinking", default=False, show_default=True)
 @click.option("--thinking-budget", type=int, default=10000, show_default=True)
-@click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default=None)
+@click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
 @click.option("--verbosity", type=click.Choice(["low", "auto"]), default=None)
 @click.option("--responses-api/--no-responses-api", default=False, show_default=True)
 @click.option("--suffix-grammar/--no-suffix-grammar", default=False, show_default=True)
@@ -426,7 +426,7 @@ def run_general(
 @click.option("--condition", default="both", type=click.Choice(["spell", "claude_code", "codex", "both", "all"]))
 @click.option("--model", default="anthropic:claude-opus-4-5-20251101", help="provider:model for Spell")
 @click.option("--claude-model", default="opus", help="Model for Claude Code comparator")
-@click.option("--codex-model", default="codex:gpt-5.3-codex")
+@click.option("--codex-model", default="codex")
 @click.option("--n", type=int, default=None)
 @click.option("--parallel", type=int, default=1, show_default=True)
 @click.option("--budget", type=float, default=10.0, show_default=True)
@@ -434,6 +434,7 @@ def run_general(
 @click.option("--depth", type=int, default=8, show_default=True)
 @click.option("--max-tokens", type=int, default=16384, show_default=True)
 @click.option("--timeout", type=int, default=600, show_default=True)
+@click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
 @click.option("--workspace-root", default=None)
 @click.option("--keep-workspaces", is_flag=True, default=False)
 @click.option("--dry-run", is_flag=True, default=False)
@@ -452,6 +453,7 @@ def run_swebench(
     depth: int,
     max_tokens: int,
     timeout: int,
+    reasoning_effort: str | None,
     workspace_root: str | None,
     keep_workspaces: bool,
     dry_run: bool,
@@ -549,6 +551,7 @@ def run_swebench(
                     budget=budget,
                     depth=depth,
                     max_tokens=max_tokens,
+                    reasoning_effort=reasoning_effort,
                     workspace=ws_path,
                 )
                 resp = adapter.run(req)
@@ -629,13 +632,14 @@ def run_swebench(
 @click.option("--task-ids", type=int, multiple=True)
 @click.option("--model", default="anthropic:claude-sonnet-4-5-20250929")
 @click.option("--claude-model", default="claude-sonnet-4-5-20250929")
-@click.option("--codex-model", default="codex:gpt-5.3-codex")
+@click.option("--codex-model", default="codex")
 @click.option("--parallel", type=int, default=1, show_default=True)
 @click.option("--budget", type=float, default=10.0, show_default=True)
 @click.option("--agent", default=None)
 @click.option("--depth", type=int, default=12, show_default=True)
 @click.option("--max-tokens", type=int, default=16384, show_default=True)
 @click.option("--timeout", type=int, default=600, show_default=True)
+@click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
 @click.option("--workspace-root", default="/tmp/featurebench_workspaces")
 @click.option("--skip-install", is_flag=True, default=False)
 @click.option("--skip-tests", is_flag=True, default=False)
@@ -654,6 +658,7 @@ def run_featurebench(
     depth: int,
     max_tokens: int,
     timeout: int,
+    reasoning_effort: str | None,
     workspace_root: str,
     skip_install: bool,
     skip_tests: bool,
@@ -704,6 +709,7 @@ def run_featurebench(
                     budget=budget,
                     depth=depth,
                     max_tokens=max_tokens,
+                    reasoning_effort=reasoning_effort,
                     workspace=workspace,
                 )
                 resp = adapter.run(req)

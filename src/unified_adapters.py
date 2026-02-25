@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -17,6 +18,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from spell_benchmark_client import SpellBenchmarkClient
+
+DEFAULT_REASONING_EFFORT = "high"
 
 
 @dataclass(slots=True)
@@ -81,7 +84,7 @@ class SpellAdapter:
             "depth": req.depth,
             "max_tokens": req.max_tokens,
             "thinking": req.thinking_budget,
-            "reasoning_effort": req.reasoning_effort,
+            "reasoning_effort": req.reasoning_effort or DEFAULT_REASONING_EFFORT,
             "verbosity": req.verbosity,
             "responses_api": req.responses_api,
             "suffix_grammar": req.suffix_grammar,
@@ -133,7 +136,7 @@ class BaselineAdapter:
             "budget": req.budget,
             "max_tokens": req.max_tokens,
             "thinking": req.thinking_budget,
-            "reasoning_effort": req.reasoning_effort,
+            "reasoning_effort": req.reasoning_effort or DEFAULT_REASONING_EFFORT,
             "verbosity": req.verbosity,
             "responses_api": req.responses_api,
         }
@@ -267,26 +270,249 @@ class ClaudeCodeAdapter:
         )
 
 
+def _normalize_codex_model(model_spec: str | None, fallback: str | None = None) -> str:
+    raw = (model_spec or fallback or "codex").strip()
+    if ":" in raw:
+        _, raw = raw.split(":", 1)
+    # Keep "codex" as the user-facing default, but resolve to the canonical
+    # Codex CLI model id to avoid metadata fallback warnings.
+    if raw in {"", "codex"}:
+        return "gpt-5-codex"
+    return raw
+
+
+def _parse_codex_events(stdout: str) -> tuple[list[dict[str, Any]], list[str]]:
+    events: list[dict[str, Any]] = []
+    non_json_lines: list[str] = []
+    for line in stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, dict):
+                events.append(parsed)
+            else:
+                non_json_lines.append(stripped)
+        except json.JSONDecodeError:
+            non_json_lines.append(stripped)
+    return events, non_json_lines
+
+
+def _iter_dicts(v: Any):
+    if isinstance(v, dict):
+        yield v
+        for child in v.values():
+            yield from _iter_dicts(child)
+    elif isinstance(v, list):
+        for child in v:
+            yield from _iter_dicts(child)
+
+
+def _extract_codex_usage(events: list[dict[str, Any]]) -> tuple[int | None, int | None, float | None]:
+    def as_int(v: Any) -> int:
+        return int(v) if isinstance(v, (int, float)) else 0
+
+    usage_candidate: dict[str, Any] | None = None
+    for event in events:
+        for d in _iter_dicts(event):
+            if any(k in d for k in ("input_tokens", "output_tokens", "total_tokens", "total_cost_usd", "cost_usd", "cost")):
+                usage_candidate = d
+
+    if not usage_candidate:
+        return None, None, None
+
+    base_input = usage_candidate.get("input_tokens")
+    cache_creation = usage_candidate.get("cache_creation_input_tokens", 0)
+    cache_read = usage_candidate.get("cache_read_input_tokens", 0)
+    tokens_in = None
+    if isinstance(base_input, (int, float)):
+        tokens_in = as_int(base_input) + as_int(cache_creation) + as_int(cache_read)
+
+    output = usage_candidate.get("output_tokens")
+    tokens_out = int(output) if isinstance(output, (int, float)) else None
+
+    cost = usage_candidate.get("total_cost_usd")
+    if cost is None:
+        cost = usage_candidate.get("cost_usd")
+    if cost is None:
+        cost = usage_candidate.get("cost")
+    cost_usd = float(cost) if isinstance(cost, (int, float)) else None
+
+    return tokens_in, tokens_out, cost_usd
+
+
+def _extract_codex_error(events: list[dict[str, Any]], stderr: str, return_code: int) -> str:
+    for event in reversed(events):
+        if event.get("type") == "turn.failed":
+            err = event.get("error")
+            if isinstance(err, dict):
+                msg = err.get("message")
+                if isinstance(msg, str) and msg.strip():
+                    return msg.strip()
+        if event.get("type") == "error":
+            msg = event.get("message")
+            if isinstance(msg, str) and msg.strip():
+                return msg.strip()
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("type") == "error":
+            msg = item.get("message")
+            if isinstance(msg, str) and msg.strip():
+                return msg.strip()
+    return stderr or f"Exit code {return_code}"
+
+
+def _extract_codex_thread_id(events: list[dict[str, Any]]) -> str | None:
+    for event in events:
+        if event.get("type") == "thread.started":
+            thread_id = event.get("thread_id")
+            if isinstance(thread_id, str):
+                return thread_id
+    return None
+
+
+def _extract_codex_response_text(events: list[dict[str, Any]]) -> str:
+    def content_text(v: Any) -> str:
+        if isinstance(v, str):
+            return v.strip()
+        if isinstance(v, dict):
+            for key in ("text", "value", "content"):
+                text = content_text(v.get(key))
+                if text:
+                    return text
+            return ""
+        if isinstance(v, list):
+            parts = [content_text(x) for x in v]
+            parts = [p for p in parts if p]
+            return "\n".join(parts).strip()
+        return ""
+
+    for event in reversed(events):
+        item = event.get("item")
+        if isinstance(item, dict):
+            role = item.get("role")
+            item_type = item.get("type")
+            if role == "assistant" or item_type in {"assistant_message", "message"}:
+                text = content_text(item)
+                if text:
+                    return text
+    return ""
+
+
 class CodexAdapter:
     condition = "codex"
 
-    def __init__(self, model: str):
-        self.model = model
+    def __init__(self, project_root: Path, model_spec: str = "codex"):
+        self.project_root = project_root
+        self.model_spec = model_spec
 
     def run(self, req: RunRequest) -> RunResponse:
+        model = _normalize_codex_model(req.model_spec, self.model_spec)
+        reasoning_effort = req.reasoning_effort or DEFAULT_REASONING_EFFORT
+        add_dir = req.metadata.get("add_dir")
+
+        # Use config override for sandbox mode. In some Codex-hosted environments,
+        # `--sandbox workspace-write` can be ignored due inherited wrapper settings.
+        # `-c sandbox_mode="workspace-write"` is applied reliably.
+        base_cmd = [
+            "codex",
+            "--ask-for-approval",
+            "never",
+            "-c",
+            'sandbox_mode="workspace-write"',
+            "-c",
+            f'model_reasoning_effort="{reasoning_effort}"',
+        ]
+        if add_dir:
+            base_cmd.extend(["--add-dir", str(add_dir)])
+
+        with tempfile.NamedTemporaryFile(prefix="codex_last_message_", suffix=".txt", delete=False) as last_msg_file:
+            last_msg_path = Path(last_msg_file.name)
+
+        cmd = [
+            *base_cmd,
+            "exec",
+            "--json",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "-m",
+            model,
+            "--output-last-message",
+            str(last_msg_path),
+            req.prompt,
+        ]
+
+        start = time.time()
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=req.timeout,
+                cwd=str(req.workspace or self.project_root),
+            )
+        except subprocess.TimeoutExpired:
+            last_msg_path.unlink(missing_ok=True)
+            return RunResponse(
+                status="timeout",
+                response_text="",
+                tokens_in=None,
+                tokens_out=None,
+                cost_usd=None,
+                latency_ms=(time.time() - start) * 1000,
+                error_message=f"Timeout ({req.timeout}s)",
+                error_type="timeout",
+            )
+
+        latency_ms = (time.time() - start) * 1000
+        stdout = (proc.stdout or "").strip()
+        stderr = (proc.stderr or "").strip()
+        events, non_json_lines = _parse_codex_events(stdout)
+        tokens_in, tokens_out, cost_usd = _extract_codex_usage(events)
+        thread_id = _extract_codex_thread_id(events)
+
+        response_text = ""
+        if last_msg_path.exists():
+            try:
+                response_text = last_msg_path.read_text(encoding="utf-8").strip()
+            finally:
+                last_msg_path.unlink(missing_ok=True)
+        if not response_text:
+            response_text = _extract_codex_response_text(events)
+
+        metadata = {
+            "requested_model": (req.model_spec or self.model_spec or "codex"),
+            "resolved_model": model,
+            "reasoning_effort": reasoning_effort,
+            "thread_id": thread_id,
+            "events_tail": events[-20:],
+            "non_json_stdout_tail": non_json_lines[-20:],
+            "stderr": stderr[:4000],
+        }
+        metadata = {k: v for k, v in metadata.items() if v}
+
+        if proc.returncode == 0:
+            return RunResponse(
+                status="ok",
+                response_text=response_text,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                cost_usd=cost_usd,
+                latency_ms=latency_ms,
+                metadata=metadata,
+            )
+
+        error_message = _extract_codex_error(events, stderr, proc.returncode)
         return RunResponse(
-            status="not_implemented",
-            response_text="",
-            tokens_in=None,
-            tokens_out=None,
-            cost_usd=None,
-            latency_ms=0.0,
-            error_message=(
-                "Codex adapter scaffold exists but backend is not enabled yet. "
-                "Configure codex CLI/API invocation in benchmarking/src/unified_adapters.py"
-            ),
-            error_type="not_implemented",
-            metadata={"model": req.model_spec or self.model},
+            status="error",
+            response_text=response_text,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            cost_usd=cost_usd,
+            latency_ms=latency_ms,
+            error_message=error_message,
+            error_type="codex_cli_error",
+            metadata=metadata,
         )
 
 
