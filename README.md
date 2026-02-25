@@ -51,3 +51,24 @@ uv run python benchmarking/bench.py swebench --dataset mini --condition both --n
 # FeatureBench
 uv run python benchmarking/bench.py featurebench --condition spell --task-ids 22 23
 ```
+
+## Cybench Grading Utility
+
+This repo also includes a Cybench-compatible grader that is non-destructive and run-scoped by default:
+
+```bash
+cd benchmarking
+uv run python grade_cybench.py --logs-dir ./logs --mode both
+```
+
+Default behavior:
+- keeps only latest run per `(mode, model, challenge)` to avoid mixing historical logs
+- reports strict solved percentage (final-subtask `score == 1`) and partial solved percentage separately
+- does not mutate or reorganize log files while grading
+
+Useful flags:
+- `--all-runs` to aggregate all matching logs
+- `--benchmark-id <id>` to scope to one benchmark id
+- `--model <deployment-name>` to scope to one model
+- `--mode guided|unguided|both`
+- `--input-limit-threshold` / `--output-limit-threshold` for per-iteration token-limit hit counting
