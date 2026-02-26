@@ -22,6 +22,25 @@ from spell_benchmark_client import SpellBenchmarkClient
 DEFAULT_REASONING_EFFORT = "high"
 
 
+def _escape_for_spell(s: str) -> str:
+    return (
+        s.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+    )
+
+
+def build_spell_init(prompt: str, preamble: str | None = None) -> str:
+    escaped_prompt = _escape_for_spell(prompt)
+    preamble_part = f"{preamble} " if preamble else ""
+    return (
+        f'(quine completion (eval (do (quine prompt "{escaped_prompt}") '
+        f"{preamble_part}"
+        "'(extend))))"
+    )
+
+
 @dataclass(slots=True)
 class RunRequest:
     benchmark: str
@@ -31,6 +50,7 @@ class RunRequest:
     prompt: str
     model_spec: str | None
     timeout: int
+    init: str | None = None
     agent_file: str | None = None
     budget: float | None = None
     depth: int | None = None
@@ -73,11 +93,14 @@ class SpellAdapter:
         self.project_root = project_root
         self.model_spec = model_spec
         self.client = SpellBenchmarkClient(project_root=project_root)
+        # Allow spell.benchmark-api invocations from external workspace CWDs
+        # (e.g., SWE-bench cloned repos) by injecting this repo as a local dep.
+        sdeps = '{:deps {local/spell {:local/root "%s"}}}' % project_root
+        self.client.clj_cmd = ["clj", "-Sdeps", sdeps, "-M", "-m", "spell.benchmark-api"]
 
     def run(self, req: RunRequest) -> RunResponse:
         payload = {
             "mode": "spell",
-            "prompt": req.prompt,
             "model": req.model_spec or self.model_spec,
             "agent": req.agent_file,
             "budget": req.budget,
@@ -91,6 +114,10 @@ class SpellAdapter:
             "grammar_max_chars": req.grammar_max_chars,
             "trace": req.trace,
         }
+        if req.init is not None:
+            payload["init"] = req.init
+        else:
+            payload["prompt"] = req.prompt
         payload = {k: v for k, v in payload.items() if v is not None}
 
         response = self.client.run(payload, timeout=req.timeout, cwd=req.workspace or self.project_root)

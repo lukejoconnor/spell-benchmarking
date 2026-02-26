@@ -1,4 +1,7 @@
-"""Runners for baseline and Spell conditions."""
+"""Legacy runners for baseline and Spell conditions.
+
+Prefer `benchmarking/bench.py` + `src/unified_adapters.py` for active benchmark runs.
+"""
 
 import asyncio
 import json
@@ -871,9 +874,15 @@ class SpellSWERunner:
                 f.write(prompt)
                 prompt_file = f.name
 
-            # Build command — use with-io agent for file/shell access
+            # Build command — choose I/O-capable agent profile by transport/provider.
             project_root = Path(__file__).parent.parent.parent
-            agent_path = project_root / 'agents' / 'with-io.agent.edn'
+            if self.provider == 'codex-toolcall':
+                agent_rel = Path('config/agents/io-toolcall.agent.edn')
+            elif self.provider == 'anthropic':
+                agent_rel = Path('config/agents/io-prefill.agent.edn')
+            else:
+                agent_rel = Path('config/agents/io-message.agent.edn')
+            agent_path = project_root / agent_rel
             if self.spell_cli and self.spell_cli.exists():
                 cmd = [
                     str(self.spell_cli),

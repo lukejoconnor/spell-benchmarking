@@ -35,6 +35,7 @@ from src.evaluation import (
     math_equivalent,
     normalize_numeric,
 )
+from src.agent_policy import resolve_spell_agent
 from src.featurebench_lib import (
     extract_patch,
     format_prompt as featurebench_format_prompt,
@@ -54,6 +55,7 @@ from src.unified_adapters import (
     RunRequest,
     RunResponse,
     SpellAdapter,
+    build_spell_init,
     run_requests_parallel,
 )
 from src.unified_results import (
@@ -66,15 +68,7 @@ from src.unified_results import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONTEXT_DIR = PROJECT_ROOT / "benchmarking" / "data" / "contexts"
-DEFAULT_AGENT_BY_BENCH = {
-    # Keep general unset by default to preserve legacy harness behavior:
-    # api/run uses built-in default-agent-config (includes structured output format).
-    "general": None,
-    "swebench": "agents/bench/swebench.agent.edn",
-    "featurebench": "agents/bench/featurebench.agent.edn",
-}
-MATH_ITEM_DATASETS = {"gsm8k", "math", "aime", "hmmt", "omni_math"}
-DEFAULT_GENERAL_MATH_AGENT = "agents/minimal.agent.edn"
+SWEBENCH_REMINDER_PREAMBLE = '(quine sys-reminder "Recall: you are writing Spell code, not natural language.")'
 
 
 @dataclass(slots=True)
@@ -143,6 +137,14 @@ def _format_general_prompt(item: BenchmarkItem, condition: str) -> str:
         parts.append("Reply with ONLY the answer. No explanation.")
 
     return "\n".join(parts)
+
+
+def _make_spell_init(prompt: str, preamble: str | None = None) -> str:
+    # Some benchmark datasets (e.g. Omni-MATH) provide a raw open Spell prefix.
+    # Keep those as-is; otherwise wrap NL prompt in the completion init template.
+    if prompt.lstrip().startswith("("):
+        return prompt
+    return build_spell_init(prompt, preamble=preamble)
 
 
 def _evaluate_general(item: BenchmarkItem, response_text: str | None) -> tuple[str | None, bool | None]:
@@ -255,6 +257,29 @@ def _print_summary(output_file: Path, run_id: str, condition: str) -> None:
         click.echo(f"  cost=${summary['total_cost_usd']:.4f}")
 
 
+def _resolve_spell_agent_or_die(
+    *,
+    bench_kind: str,
+    model_spec: str | None,
+    item_datasets: set[str] | None = None,
+    agent: str | None = None,
+    agent_message: str | None = None,
+    agent_toolcall: str | None = None,
+):
+    try:
+        return resolve_spell_agent(
+            project_root=PROJECT_ROOT,
+            bench_kind=bench_kind,  # type: ignore[arg-type]
+            model_spec=model_spec,
+            item_datasets=item_datasets,
+            agent=agent,
+            agent_message=agent_message,
+            agent_toolcall=agent_toolcall,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 @click.group()
 def cli() -> None:
     """Unified benchmark runner."""
@@ -271,6 +296,8 @@ def cli() -> None:
 @click.option("--parallel", type=int, default=5, show_default=True)
 @click.option("--budget", type=float, default=1.0, show_default=True)
 @click.option("--agent", default=None, help="Spell agent override")
+@click.option("--agent-message", default=None, help="Spell message-mode agent override")
+@click.option("--agent-toolcall", default=None, help="Spell toolcall-mode agent override")
 @click.option("--depth", type=int, default=None)
 @click.option("--max-tokens", type=int, default=None)
 @click.option("--timeout", type=int, default=300, show_default=True)
@@ -295,6 +322,8 @@ def run_general(
     parallel: int,
     budget: float,
     agent: str | None,
+    agent_message: str | None,
+    agent_toolcall: str | None,
     depth: int | None,
     max_tokens: int | None,
     timeout: int,
@@ -312,7 +341,6 @@ def run_general(
     run_id = run_id or _run_id("general")
     output_file = Path(output) if output else _default_output(run_id)
     conditions = _parse_conditions(condition, ("baseline", "spell", "claude_code", "codex", "all"))
-    spell_agent = agent
 
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
@@ -329,16 +357,20 @@ def run_general(
         loaded = [item for item in loaded if item.id in ids]
     elif n:
         loaded = loaded[:n]
-
-    if spell_agent is None:
-        item_datasets = {item.dataset for item in loaded}
-        if item_datasets and item_datasets.issubset(MATH_ITEM_DATASETS):
-            spell_agent = DEFAULT_GENERAL_MATH_AGENT
-        else:
-            spell_agent = DEFAULT_AGENT_BY_BENCH["general"]
+    item_datasets = {item.dataset for item in loaded}
 
     click.echo(f"Loaded {len(loaded)} items")
     if dry_run:
+        spell_resolution = None
+        if "spell" in conditions:
+            spell_resolution = _resolve_spell_agent_or_die(
+                bench_kind="general",
+                model_spec=model,
+                item_datasets=item_datasets,
+                agent=agent,
+                agent_message=agent_message,
+                agent_toolcall=agent_toolcall,
+            )
         click.echo("Dry run config:")
         click.echo(
             json.dumps(
@@ -350,7 +382,10 @@ def run_general(
                     "codex_model": codex_model,
                     "parallel": parallel,
                     "budget": budget,
-                    "agent": spell_agent,
+                    "agent": spell_resolution.agent_file if spell_resolution else None,
+                    "spell_mode": spell_resolution.spell_mode if spell_resolution else None,
+                    "agent_source": spell_resolution.source if spell_resolution else None,
+                    "agent_policy_key": spell_resolution.policy_key if spell_resolution else None,
                 },
                 indent=2,
             )
@@ -362,6 +397,20 @@ def run_general(
     for cond in conditions:
         click.echo(f"\n--- Running {cond} ---")
         adapter = _build_adapter(cond, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget)
+        spell_resolution = None
+        if cond == "spell":
+            spell_resolution = _resolve_spell_agent_or_die(
+                bench_kind="general",
+                model_spec=model,
+                item_datasets=item_datasets,
+                agent=agent,
+                agent_message=agent_message,
+                agent_toolcall=agent_toolcall,
+            )
+            click.echo(
+                f"  spell_mode={spell_resolution.spell_mode} "
+                f"agent={spell_resolution.agent_file} source={spell_resolution.source}"
+            )
 
         requests: list[RunRequest] = []
         for item in loaded:
@@ -375,7 +424,8 @@ def run_general(
                     prompt=prompt,
                     model_spec={"spell": model, "baseline": model, "claude_code": claude_model, "codex": codex_model}[cond],
                     timeout=timeout,
-                    agent_file=spell_agent if cond == "spell" else None,
+                    init=_make_spell_init(prompt) if cond == "spell" else None,
+                    agent_file=spell_resolution.agent_file if spell_resolution else None,
                     budget=budget,
                     depth=depth,
                     max_tokens=max_tokens,
@@ -414,7 +464,20 @@ def run_general(
                 patch=None,
                 answer_extracted=extracted,
                 correct=correct,
-                metadata={"question": item.question, "expected_answer": item.answer},
+                metadata={
+                    "question": item.question,
+                    "expected_answer": item.answer,
+                    **(
+                        {
+                            "spell_mode": spell_resolution.spell_mode,
+                            "resolved_agent_file": spell_resolution.agent_file,
+                            "agent_source": spell_resolution.source,
+                            "agent_policy_key": spell_resolution.policy_key,
+                        }
+                        if (cond == "spell" and spell_resolution)
+                        else {}
+                    ),
+                },
             )
             append_jsonl(output_file, record)
 
@@ -431,6 +494,8 @@ def run_general(
 @click.option("--parallel", type=int, default=1, show_default=True)
 @click.option("--budget", type=float, default=10.0, show_default=True)
 @click.option("--agent", default=None, help="Spell agent override")
+@click.option("--agent-message", default=None, help="Spell message-mode agent override")
+@click.option("--agent-toolcall", default=None, help="Spell toolcall-mode agent override")
 @click.option("--depth", type=int, default=8, show_default=True)
 @click.option("--max-tokens", type=int, default=16384, show_default=True)
 @click.option("--timeout", type=int, default=600, show_default=True)
@@ -450,6 +515,8 @@ def run_swebench(
     parallel: int,
     budget: float,
     agent: str | None,
+    agent_message: str | None,
+    agent_toolcall: str | None,
     depth: int,
     max_tokens: int,
     timeout: int,
@@ -462,7 +529,6 @@ def run_swebench(
 ) -> None:
     run_id = run_id or _run_id("swebench")
     output_file = Path(output) if output else _default_output(run_id)
-    spell_agent = agent or DEFAULT_AGENT_BY_BENCH["swebench"]
 
     if condition == "both":
         conditions = ["spell", "claude_code"]
@@ -489,6 +555,15 @@ def run_swebench(
     click.echo(f"Workspace root: {root}")
     click.echo(f"Loaded {len(items)} items")
     if dry_run:
+        spell_resolution = None
+        if "spell" in conditions:
+            spell_resolution = _resolve_spell_agent_or_die(
+                bench_kind="swebench",
+                model_spec=model,
+                agent=agent,
+                agent_message=agent_message,
+                agent_toolcall=agent_toolcall,
+            )
         click.echo(
             json.dumps(
                 {
@@ -499,7 +574,10 @@ def run_swebench(
                     "codex_model": codex_model,
                     "budget": budget,
                     "depth": depth,
-                    "agent": spell_agent,
+                    "agent": spell_resolution.agent_file if spell_resolution else None,
+                    "spell_mode": spell_resolution.spell_mode if spell_resolution else None,
+                    "agent_source": spell_resolution.source if spell_resolution else None,
+                    "agent_policy_key": spell_resolution.policy_key if spell_resolution else None,
                     "parallel": parallel,
                 },
                 indent=2,
@@ -512,6 +590,19 @@ def run_swebench(
     for cond in conditions:
         click.echo(f"\n--- Running {cond} ---")
         adapter = _build_adapter(cond, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget)
+        spell_resolution = None
+        if cond == "spell":
+            spell_resolution = _resolve_spell_agent_or_die(
+                bench_kind="swebench",
+                model_spec=model,
+                agent=agent,
+                agent_message=agent_message,
+                agent_toolcall=agent_toolcall,
+            )
+            click.echo(
+                f"  spell_mode={spell_resolution.spell_mode} "
+                f"agent={spell_resolution.agent_file} source={spell_resolution.source}"
+            )
 
         def process(item) -> UnifiedRunRecord:
             workspace = SWEBenchWorkspace(item, root)
@@ -547,7 +638,9 @@ def run_swebench(
                     prompt=prompt,
                     model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}[cond],
                     timeout=timeout,
-                    agent_file=spell_agent if cond == "spell" else None,
+                    init=(_make_spell_init(prompt, SWEBENCH_REMINDER_PREAMBLE)
+                          if cond == "spell" else None),
+                    agent_file=spell_resolution.agent_file if spell_resolution else None,
                     budget=budget,
                     depth=depth,
                     max_tokens=max_tokens,
@@ -587,7 +680,20 @@ def run_swebench(
                     patch=patch,
                     answer_extracted=None,
                     correct=None,
-                    metadata={"repo": item.repo, "base_commit": item.base_commit},
+                    metadata={
+                        "repo": item.repo,
+                        "base_commit": item.base_commit,
+                        **(
+                            {
+                                "spell_mode": spell_resolution.spell_mode,
+                                "resolved_agent_file": spell_resolution.agent_file,
+                                "agent_source": spell_resolution.source,
+                                "agent_policy_key": spell_resolution.policy_key,
+                            }
+                            if (cond == "spell" and spell_resolution)
+                            else {}
+                        ),
+                    },
                 )
             finally:
                 if not keep_workspaces:
@@ -636,6 +742,8 @@ def run_swebench(
 @click.option("--parallel", type=int, default=1, show_default=True)
 @click.option("--budget", type=float, default=10.0, show_default=True)
 @click.option("--agent", default=None)
+@click.option("--agent-message", default=None, help="Spell message-mode agent override")
+@click.option("--agent-toolcall", default=None, help="Spell toolcall-mode agent override")
 @click.option("--depth", type=int, default=12, show_default=True)
 @click.option("--max-tokens", type=int, default=16384, show_default=True)
 @click.option("--timeout", type=int, default=600, show_default=True)
@@ -655,6 +763,8 @@ def run_featurebench(
     parallel: int,
     budget: float,
     agent: str | None,
+    agent_message: str | None,
+    agent_toolcall: str | None,
     depth: int,
     max_tokens: int,
     timeout: int,
@@ -667,7 +777,6 @@ def run_featurebench(
 ) -> None:
     run_id = run_id or _run_id("featurebench")
     output_file = Path(output) if output else _default_output(run_id)
-    spell_agent = agent or DEFAULT_AGENT_BY_BENCH["featurebench"]
 
     if condition == "both":
         conditions = ["spell", "claude_code"]
@@ -688,6 +797,19 @@ def run_featurebench(
     for cond in conditions:
         click.echo(f"\n--- Running {cond} ---")
         adapter = _build_adapter(cond, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget)
+        spell_resolution = None
+        if cond == "spell":
+            spell_resolution = _resolve_spell_agent_or_die(
+                bench_kind="featurebench",
+                model_spec=model,
+                agent=agent,
+                agent_message=agent_message,
+                agent_toolcall=agent_toolcall,
+            )
+            click.echo(
+                f"  spell_mode={spell_resolution.spell_mode} "
+                f"agent={spell_resolution.agent_file} source={spell_resolution.source}"
+            )
 
         def process(item: dict) -> UnifiedRunRecord:
             workspace = setup_workspace(item, root)
@@ -705,7 +827,8 @@ def run_featurebench(
                     prompt=prompt,
                     model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}[cond],
                     timeout=timeout,
-                    agent_file=spell_agent if cond == "spell" else None,
+                    init=_make_spell_init(prompt) if cond == "spell" else None,
+                    agent_file=spell_resolution.agent_file if spell_resolution else None,
                     budget=budget,
                     depth=depth,
                     max_tokens=max_tokens,
@@ -757,7 +880,19 @@ def run_featurebench(
                     patch=patch,
                     answer_extracted=None,
                     correct=tests_passed,
-                    metadata={"repo": item.get("repo")},
+                    metadata={
+                        "repo": item.get("repo"),
+                        **(
+                            {
+                                "spell_mode": spell_resolution.spell_mode,
+                                "resolved_agent_file": spell_resolution.agent_file,
+                                "agent_source": spell_resolution.source,
+                                "agent_policy_key": spell_resolution.policy_key,
+                            }
+                            if (cond == "spell" and spell_resolution)
+                            else {}
+                        ),
+                    },
                 )
             finally:
                 # FeatureBench workspaces are reused across tasks by instance id.
