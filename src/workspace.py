@@ -26,13 +26,13 @@ class RepoCache:
     def __init__(self, root: Path):
         self.root = Path(root)
         self._repo_dir = self.root / "repos"
-        self._locks: dict[str, threading.Lock] = {}
+        self._locks: dict[str, threading.RLock] = {}
         self._meta_lock = threading.Lock()
 
-    def _lock_for(self, slug: str) -> threading.Lock:
+    def _lock_for(self, slug: str) -> threading.RLock:
         with self._meta_lock:
             if slug not in self._locks:
-                self._locks[slug] = threading.Lock()
+                self._locks[slug] = threading.RLock()
             return self._locks[slug]
 
     def ensure(self, repo: str) -> Path:
@@ -75,32 +75,38 @@ class RepoCache:
             commit: Git commit to check out
             name: Directory name under self.root for this worktree
         """
-        repo_path = self.ensure(repo)
-        dest = self.root / name
+        slug = repo.replace("/", "__")
+        repo_lock = self._lock_for(slug)
+        with repo_lock:
+            repo_path = self.ensure(repo)
+            dest = self.root / name
 
-        if dest.exists():
-            Worktree(dest, repo_path).remove()
+            if dest.exists():
+                Worktree(dest, repo_path, repo_lock).remove()
 
-        result = subprocess.run(
-            ["git", "worktree", "add", "--quiet", "--detach", str(dest), commit],
-            cwd=repo_path, capture_output=True, timeout=60,
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.decode("utf-8", errors="replace")
-            raise RuntimeError(f"Worktree add failed for {name} at {commit}: {stderr}")
+            result = subprocess.run(
+                ["git", "worktree", "add", "--quiet", "--detach", str(dest), commit],
+                cwd=repo_path, capture_output=True, timeout=60,
+            )
+            if result.returncode != 0:
+                stderr = result.stderr.decode("utf-8", errors="replace")
+                raise RuntimeError(f"Worktree add failed for {name} at {commit}: {stderr}")
 
-        return Worktree(dest, repo_path)
+            return Worktree(dest, repo_path, repo_lock)
 
 
 class Worktree:
     """A git worktree with convenience methods for patch extraction."""
 
-    def __init__(self, path: Path, repo_path: Path):
+    def __init__(self, path: Path, repo_path: Path, mutation_lock: threading.RLock | None = None):
         self.path = path
         self.repo_path = repo_path
+        self._mutation_lock = mutation_lock
 
     def diff(self) -> str:
         """Return git diff HEAD as a string."""
+        if not self.path.exists():
+            return ""
         result = subprocess.run(
             ["git", "diff", "HEAD"],
             cwd=self.path, capture_output=True, timeout=60,
@@ -111,6 +117,8 @@ class Worktree:
 
     def changed_files(self) -> list[str]:
         """Return list of modified file paths."""
+        if not self.path.exists():
+            return []
         result = subprocess.run(
             ["git", "diff", "--name-only", "HEAD"],
             cwd=self.path, capture_output=True, timeout=60,
@@ -120,6 +128,14 @@ class Worktree:
 
     def remove(self) -> None:
         """Remove this worktree."""
+        if self._mutation_lock is not None:
+            with self._mutation_lock:
+                self._remove_unlocked()
+            return
+        self._remove_unlocked()
+
+    def _remove_unlocked(self) -> None:
+        """Remove this worktree without acquiring a repo mutation lock."""
         if not self.path.exists():
             return
         subprocess.run(
