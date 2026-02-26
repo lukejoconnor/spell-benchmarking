@@ -8,6 +8,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from .workspace import RepoCache, Worktree
+
 
 def mask_functions(workspace: Path, problem_statement: str) -> None:
     """Stub matching interface functions in-place to mirror FeatureBench Docker state."""
@@ -77,36 +79,17 @@ def load_tasks(split: str = "lite", task_indices: list[int] | None = None) -> li
     return list(ds)
 
 
-def setup_workspace(item: dict, workspace_root: Path) -> Path:
-    instance_id = item["instance_id"]
-    repo = item["repo"]
-    base_commit = item["base_commit"]
-    workspace = workspace_root / instance_id.replace("/", "__")
+def setup_workspace(cache: RepoCache, item: dict, tag: str = "") -> Worktree:
+    """Create a worktree for this task instance at the target commit.
 
-    if workspace.exists():
-        subprocess.run(["git", "checkout", "."], cwd=workspace, capture_output=True, timeout=60)
-        subprocess.run(["git", "clean", "-fd"], cwd=workspace, capture_output=True, timeout=60)
-    else:
-        clone = subprocess.run(
-            ["git", "clone", "--quiet", f"https://github.com/{repo}.git", str(workspace)],
-            capture_output=True,
-            timeout=300,
-        )
-        if clone.returncode != 0:
-            stderr = clone.stderr.decode("utf-8", errors="replace")
-            raise RuntimeError(f"Clone failed: {stderr}")
-
-    checkout = subprocess.run(
-        ["git", "checkout", "--quiet", base_commit],
-        cwd=workspace,
-        capture_output=True,
-        timeout=60,
-    )
-    if checkout.returncode != 0:
-        stderr = checkout.stderr.decode("utf-8", errors="replace")
-        raise RuntimeError(f"Checkout failed: {stderr}")
-
-    return workspace
+    Args:
+        cache: Shared RepoCache for clone reuse.
+        tag: Suffix to disambiguate worktrees (e.g. condition name).
+    """
+    name = item["instance_id"].replace("/", "__")
+    if tag:
+        name = f"{name}.{tag}"
+    return cache.worktree(item["repo"], item["base_commit"], name)
 
 
 def install_deps(workspace: Path, item: dict) -> None:
@@ -121,19 +104,6 @@ def install_deps(workspace: Path, item: dict) -> None:
         capture_output=True,
         timeout=600,
     )
-
-
-def extract_patch(workspace: Path) -> str:
-    diff = subprocess.run(["git", "diff", "HEAD"], cwd=workspace, capture_output=True, timeout=60)
-    if diff.returncode != 0:
-        return ""
-    return diff.stdout.decode("utf-8", errors="replace")
-
-
-def get_changed_files(workspace: Path) -> list[str]:
-    out = subprocess.run(["git", "diff", "--name-only", "HEAD"], cwd=workspace, capture_output=True, timeout=60)
-    text = out.stdout.decode("utf-8", errors="replace")
-    return [line.strip() for line in text.splitlines() if line.strip()]
 
 
 def detect_test_deps(repo: str) -> list[str]:

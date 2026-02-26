@@ -862,7 +862,6 @@ class SpellSWERunner:
         Returns:
             SWERunResult with patch extracted from git diff
         """
-        from .swebench_prep import SWEBenchWorkspace
         start = time.time()
 
         try:

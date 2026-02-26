@@ -1,163 +1,27 @@
 """Workspace management for SWE-bench evaluation.
 
-Handles cloning repos, checking out commits, and extracting patches.
+Thin wrapper around workspace.RepoCache for SWE-bench items.
 """
 
-import os
-import subprocess
-import shutil
-from dataclasses import dataclass
 from pathlib import Path
 
 from .datasets import SWEBenchItem
+from .workspace import RepoCache, Worktree
 
 
-@dataclass
-class SWEBenchWorkspace:
-    """Manages a repo workspace for SWE-bench evaluation."""
+def setup_swebench_workspace(cache: RepoCache, item: SWEBenchItem, tag: str = "") -> Worktree:
+    """Create a worktree for a SWE-bench item at its base commit.
 
-    item: SWEBenchItem
-    workspace_root: Path
-    _repo_path: Path = None
-
-    def __post_init__(self):
-        self.workspace_root = Path(self.workspace_root)
-        # Use instance_id as directory name (e.g., "django__django-16379")
-        self._repo_path = self.workspace_root / self.item.instance_id
-
-    @property
-    def repo_path(self) -> Path:
-        """Path to the cloned repository."""
-        return self._repo_path
-
-    def _is_valid_git_repo(self) -> bool:
-        if not self._repo_path.exists():
-            return False
-        result = subprocess.run(
-            ['git', 'rev-parse', '--is-inside-work-tree'],
-            cwd=self._repo_path,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        return result.returncode == 0 and result.stdout.strip() == 'true'
-
-    def setup(self) -> Path:
-        """Clone repo (if needed) and checkout base commit.
-
-        Reuses existing clones — just resets and checks out the base commit.
-        Returns the path to the workspace directory.
-        """
-        self.workspace_root.mkdir(parents=True, exist_ok=True)
-
-        if self._repo_path.exists() and not self._is_valid_git_repo():
-            # Recover from interrupted/partial clones.
-            shutil.rmtree(self._repo_path)
-
-        if self._repo_path.exists():
-            # Reuse existing clone: discard changes, checkout base commit
-            subprocess.run(
-                ['git', 'checkout', '.'],
-                cwd=self._repo_path,
-                capture_output=True,
-                timeout=60,
-            )
-            subprocess.run(
-                ['git', 'clean', '-fd'],
-                cwd=self._repo_path,
-                capture_output=True,
-                timeout=60,
-            )
-        else:
-            # Clone the repository
-            repo_url = f"https://github.com/{self.item.repo}.git"
-            result = subprocess.run(
-                ['git', 'clone', '--quiet', repo_url, str(self._repo_path)],
-                capture_output=True,
-                text=True,
-                timeout=300,  # 5 min timeout for large repos
-            )
-            if result.returncode != 0:
-                raise RuntimeError(f"Failed to clone {repo_url}: {result.stderr}")
-
-        # Checkout the base commit
-        result = subprocess.run(
-            ['git', 'checkout', '--quiet', self.item.base_commit],
-            cwd=self._repo_path,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"Failed to checkout {self.item.base_commit}: {result.stderr}"
-            )
-
-        return self._repo_path
-
-    def extract_patch(self) -> str:
-        """Extract current changes as a git diff patch.
-
-        Returns the diff suitable for SWE-bench evaluation format.
-        """
-        if not self._repo_path.exists():
-            raise RuntimeError("Workspace not set up. Call setup() first.")
-
-        # Get diff of all changes (staged and unstaged)
-        result = subprocess.run(
-            ['git', 'diff', 'HEAD'],
-            cwd=self._repo_path,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"Failed to get diff: {result.stderr}")
-
-        return result.stdout
-
-    def get_changed_files(self) -> list[str]:
-        """Get list of files that have been modified."""
-        if not self._repo_path.exists():
-            raise RuntimeError("Workspace not set up. Call setup() first.")
-
-        result = subprocess.run(
-            ['git', 'diff', '--name-only', 'HEAD'],
-            cwd=self._repo_path,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"Failed to get changed files: {result.stderr}")
-
-        return [f.strip() for f in result.stdout.strip().split('\n') if f.strip()]
-
-    def cleanup(self):
-        """Reset all changes and restore to base commit."""
-        if not self._repo_path.exists():
-            return
-
-        subprocess.run(
-            ['git', 'checkout', '.'],
-            cwd=self._repo_path,
-            capture_output=True,
-            timeout=60,
-        )
-        subprocess.run(
-            ['git', 'clean', '-fd'],
-            cwd=self._repo_path,
-            capture_output=True,
-            timeout=60,
-        )
-
-    def remove(self):
-        """Completely remove the workspace directory."""
-        if self._repo_path.exists():
-            shutil.rmtree(self._repo_path)
+    Args:
+        cache: Shared RepoCache for clone reuse.
+        item: SWE-bench item with repo and base_commit.
+        tag: Suffix to disambiguate worktrees (e.g. condition name).
+    """
+    name = item.instance_id
+    if tag:
+        name = f"{name}.{tag}"
+    return cache.worktree(item.repo, item.base_commit, name)
 
 
 def get_default_workspace_root() -> Path:
-    """Get default workspace root directory."""
-    # Use /tmp for workspaces by default (can be configured)
-    return Path('/tmp/swebench_workspaces')
+    return Path("/tmp/swe_ws")

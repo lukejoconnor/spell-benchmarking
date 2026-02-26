@@ -9,7 +9,8 @@ from pathlib import Path
 
 from src.datasets import load_swebench_lite
 from src.agent_policy import resolve_spell_agent
-from src.swebench_prep import SWEBenchWorkspace
+from src.swebench_prep import setup_swebench_workspace
+from src.workspace import RepoCache
 from src.unified_adapters import RunRequest, SpellAdapter, CodexAdapter, PROJECT_ROOT, build_spell_init
 
 
@@ -123,14 +124,15 @@ def main():
     for cfg in configs:
         root = cfg["workspace_root"]
         root.mkdir(parents=True, exist_ok=True)
+        cache = RepoCache(root)
         print(f"\n=== Config: {cfg['name']} ({cfg['model_spec']}) ===", flush=True)
 
         for item in items:
             idx += 1
             print(f"[{idx}/{total}] {item.instance_id} ...", flush=True)
 
-            workspace = SWEBenchWorkspace(item, root)
-            ws_path = workspace.setup()
+            wt = setup_swebench_workspace(cache, item, tag=cfg["name"])
+            ws_path = wt.path
             run_start = time.time()
             prompt = make_prompt(item)
 
@@ -159,8 +161,8 @@ def main():
             )
 
             resp = cfg["adapter"].run(req)
-            patch = workspace.extract_patch()
-            changed_files = workspace.get_changed_files()
+            patch = wt.diff()
+            changed_files = wt.changed_files()
             wall_ms = (time.time() - run_start) * 1000.0
 
             print(

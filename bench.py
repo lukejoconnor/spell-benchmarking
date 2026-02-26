@@ -37,9 +37,7 @@ from src.evaluation import (
 )
 from src.agent_policy import resolve_spell_agent
 from src.featurebench_lib import (
-    extract_patch,
     format_prompt as featurebench_format_prompt,
-    get_changed_files,
     install_deps,
     load_tasks,
     mask_functions,
@@ -47,7 +45,8 @@ from src.featurebench_lib import (
     setup_workspace,
 )
 from src.swebench_output import write_predictions_jsonl
-from src.swebench_prep import SWEBenchWorkspace, get_default_workspace_root
+from src.swebench_prep import setup_swebench_workspace, get_default_workspace_root
+from src.workspace import RepoCache
 from src.unified_adapters import (
     BaselineAdapter,
     ClaudeCodeAdapter,
@@ -587,6 +586,8 @@ def run_swebench(
             click.echo(f"First item: {items[0].instance_id}")
         return
 
+    cache = RepoCache(root)
+
     for cond in conditions:
         click.echo(f"\n--- Running {cond} ---")
         adapter = _build_adapter(cond, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget)
@@ -605,8 +606,8 @@ def run_swebench(
             )
 
         def process(item) -> UnifiedRunRecord:
-            workspace = SWEBenchWorkspace(item, root)
-            ws_path = workspace.setup()
+            wt = setup_swebench_workspace(cache, item, tag=cond)
+            ws_path = wt.path
             try:
                 prompt_parts = [
                     f"Repository: {item.repo}",
@@ -648,8 +649,8 @@ def run_swebench(
                     workspace=ws_path,
                 )
                 resp = adapter.run(req)
-                patch = extract_patch(ws_path)
-                changed_files = get_changed_files(ws_path)
+                patch = wt.diff()
+                changed_files = wt.changed_files()
 
                 status = resp.status
                 if status == "ok":
@@ -697,7 +698,7 @@ def run_swebench(
                 )
             finally:
                 if not keep_workspaces:
-                    workspace.remove()
+                    wt.remove()
 
         if parallel <= 1:
             records = []
@@ -748,7 +749,7 @@ def run_swebench(
 @click.option("--max-tokens", type=int, default=16384, show_default=True)
 @click.option("--timeout", type=int, default=600, show_default=True)
 @click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
-@click.option("--workspace-root", default="/tmp/featurebench_workspaces")
+@click.option("--workspace-root", default="/tmp/fb_ws")
 @click.option("--skip-install", is_flag=True, default=False)
 @click.option("--skip-tests", is_flag=True, default=False)
 @click.option("--run-id", default=None)
@@ -788,6 +789,7 @@ def run_featurebench(
     tasks = load_tasks(split=split, task_indices=list(task_ids) if task_ids else None)
     root = Path(workspace_root)
     root.mkdir(parents=True, exist_ok=True)
+    cache = RepoCache(root)
 
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
@@ -812,12 +814,12 @@ def run_featurebench(
             )
 
         def process(item: dict) -> UnifiedRunRecord:
-            workspace = setup_workspace(item, root)
+            wt = setup_workspace(cache, item, tag=cond)
             try:
                 if not skip_install:
-                    install_deps(workspace, item)
-                mask_functions(workspace, item["problem_statement"])
-                prompt = featurebench_format_prompt(item, workspace)
+                    install_deps(wt.path, item)
+                mask_functions(wt.path, item["problem_statement"])
+                prompt = featurebench_format_prompt(item, wt.path)
 
                 req = RunRequest(
                     benchmark="featurebench",
@@ -833,18 +835,18 @@ def run_featurebench(
                     depth=depth,
                     max_tokens=max_tokens,
                     reasoning_effort=reasoning_effort,
-                    workspace=workspace,
+                    workspace=wt.path,
                 )
                 resp = adapter.run(req)
-                patch = extract_patch(workspace)
-                changed_files = get_changed_files(workspace)
+                patch = wt.diff()
+                changed_files = wt.changed_files()
 
                 test_results = []
                 tests_passed: bool | None = None
                 if not skip_tests and patch.strip():
                     fail_to_pass = item.get("FAIL_TO_PASS", [])
                     if fail_to_pass:
-                        test_results = run_tests(workspace, fail_to_pass, repo=item.get("repo"))
+                        test_results = run_tests(wt.path, fail_to_pass, repo=item.get("repo"))
                         tests_passed = all(t["passed"] for t in test_results)
 
                 status = resp.status
@@ -895,8 +897,7 @@ def run_featurebench(
                     },
                 )
             finally:
-                # FeatureBench workspaces are reused across tasks by instance id.
-                pass
+                wt.remove()
 
         if parallel <= 1:
             records = []

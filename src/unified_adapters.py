@@ -37,7 +37,7 @@ def build_spell_init(prompt: str, preamble: str | None = None) -> str:
     return (
         f'(quine completion (eval (do (quine prompt "{escaped_prompt}") '
         f"{preamble_part}"
-        "'(extend))))"
+        "'(!extend))))"
     )
 
 
