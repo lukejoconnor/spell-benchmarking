@@ -155,7 +155,7 @@ class BaselineRunner:
         self.thinking_budget = thinking_budget
         self.reasoning_effort = reasoning_effort
 
-        if self.provider == 'anthropic':
+        if self.provider == 'anthropic-pf':
             self.client = anthropic.Anthropic()
         elif self.provider == 'openai':
             self.client = openai.OpenAI()
@@ -168,7 +168,7 @@ class BaselineRunner:
         start = time.time()
 
         try:
-            if self.provider == 'anthropic':
+            if self.provider == 'anthropic-pf':
                 kwargs = {
                     'model': self.model,
                     'messages': [{'role': 'user', 'content': prompt}],
@@ -875,12 +875,12 @@ class SpellSWERunner:
 
             # Build command — choose I/O-capable agent profile by transport/provider.
             project_root = Path(__file__).parent.parent.parent
-            if self.provider == 'codex-toolcall':
-                agent_rel = Path('config/agents/io-toolcall.agent.edn')
-            elif self.provider == 'anthropic':
-                agent_rel = Path('config/agents/io-prefill.agent.edn')
+            if self.provider in {'codex-tc', 'anthropic-tc'}:
+                agent_rel = Path('config/agents/io-tc.agent.edn')
+            elif self.provider == 'anthropic-pf':
+                agent_rel = Path('config/agents/io-pf.agent.edn')
             else:
-                agent_rel = Path('config/agents/io-message.agent.edn')
+                agent_rel = Path('config/agents/io-msg.agent.edn')
             agent_path = project_root / agent_rel
             if self.spell_cli and self.spell_cli.exists():
                 cmd = [

@@ -1,74 +1,362 @@
 # Spell Benchmarking
 
-Benchmark infrastructure for evaluating Spell orchestration vs. baseline (single-turn) LLM performance.
+Benchmark infrastructure for evaluating Spell against baseline LLM calls, Claude Code, and Codex CLI across math, long-context, and coding tasks.
 
-## Research Question
+All commands run from the repository root using `uv run`.
 
-Does LLM self-orchestration via Spell improve performance on reasoning tasks, compared to a single monolithic LLM call?
+## Quick Start
+
+```bash
+# Run 10 GSM8K items with Spell (Opus, toolcall transport)
+uv run python benchmarking/bench.py general \
+  --dataset gsm8k --condition spell \
+  --model anthropic-tc:claude-opus-4-5-20251101 \
+  --n 10
+
+# Run 1 SWE-bench item with Spell
+uv run python benchmarking/bench.py swebench \
+  --dataset mini --condition spell \
+  --model anthropic-tc:claude-opus-4-5-20251101 \
+  --n 1
+
+# Summarize results
+uv run python benchmarking/bench.py summarize --input results/unified/<file>.jsonl
+```
+
+## Subcommands
+
+### `general` — Math, Long-Context, and Reasoning
+
+Runs a dataset through one or more conditions, evaluates answers automatically, and writes unified JSONL.
+
+```bash
+uv run python benchmarking/bench.py general [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--dataset` | `longbench_short` | Dataset to run (see [Datasets](#datasets)) |
+| `--condition` | `baseline` | `baseline`, `spell`, `claude_code`, `codex`, or `all` |
+| `--model` | *(none, required)* | `provider:model` spec for baseline/spell (see [Model Specs](#model-specs)) |
+| `--claude-model` | *(none, required)* | Model name for Claude Code condition |
+| `--codex-model` | `codex` | Model name for Codex CLI condition |
+| `--n` | all | Limit to first N items |
+| `--items` | — | Comma-separated item IDs to run |
+| `--parallel` | 5 | Max concurrent runs |
+| `--budget` | 1.0 | Spell budget in USD |
+| `--depth` | unlimited | Max LLM recursion depth |
+| `--max-tokens` | unlimited | Max output tokens per LLM call |
+| `--timeout` | 300 | Per-item timeout in seconds |
+| `--thinking / --no-thinking` | off | Enable Anthropic extended thinking |
+| `--thinking-budget` | 10000 | Token budget for extended thinking |
+| `--reasoning-effort` | `high` | `low`, `medium`, or `high` (OpenAI) |
+| `--verbosity` | — | `low` or `auto` (OpenAI) |
+| `--responses-api / --no-responses-api` | off | Use OpenAI Responses API |
+| `--suffix-grammar / --no-suffix-grammar` | off | Enable prefix-aware grammar constraints |
+| `--trace / --no-trace` | off | Record execution traces |
+| `--agent` | — | Override Spell agent EDN file |
+| `--agent-msg` | — | Override agent for message-mode transport |
+| `--agent-tc` | — | Override agent for toolcall-mode transport |
+| `--dry-run` | — | Print config and exit |
+| `--run-id` | auto | Custom run ID |
+| `--output` | auto | Output JSONL path |
+
+### `swebench` — Bug Fixing in Real Repositories
+
+Clones a repository, checks out a base commit, runs the agent in the workspace, and captures the resulting patch.
+
+```bash
+uv run python benchmarking/bench.py swebench [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--dataset` | `mini` | `mini` (50), `lite` (300), or `verified` (500) |
+| `--condition` | `both` | `spell`, `claude_code`, `codex`, `both`, or `all` |
+| `--model` | *(none, required)* | `provider:model` spec for Spell |
+| `--claude-model` | *(none, required)* | Model name for Claude Code |
+| `--codex-model` | `codex` | Model for Codex CLI |
+| `--n` | all | Limit to first N items |
+| `--parallel` | 1 | Max concurrent runs |
+| `--budget` | 10.0 | Spell budget in USD |
+| `--depth` | 50 | Max LLM recursion depth |
+| `--max-tokens` | unlimited | Max output tokens per LLM call |
+| `--timeout` | 1800 | Per-item timeout in seconds (30 min) |
+| `--reasoning-effort` | `high` | `low`, `medium`, or `high` |
+| `--workspace-root` | `/tmp/swe_ws` | Directory for cloned workspaces |
+| `--keep-workspaces` | off | Don't delete workspaces after run |
+| `--agent` | — | Override Spell agent EDN file |
+| `--agent-msg` | — | Override agent for message-mode |
+| `--agent-tc` | — | Override agent for toolcall-mode |
+| `--dry-run` | — | Print config and exit |
+| `--run-id` | auto | Custom run ID |
+| `--output` | auto | Output JSONL path |
+
+### `featurebench` — Feature Implementation
+
+Clones a repository, masks target functions, runs the agent, then executes the project's test suite to verify correctness.
+
+```bash
+uv run python benchmarking/bench.py featurebench [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--condition` | `claude_code` | `spell`, `claude_code`, `codex`, `both`, or `all` |
+| `--split` | `lite` | Task split |
+| `--task-ids` | all | Specific task indices (repeatable) |
+| `--model` | *(none, required)* | `provider:model` spec for Spell |
+| `--claude-model` | *(none, required)* | Model name for Claude Code |
+| `--codex-model` | `codex` | Model for Codex CLI |
+| `--parallel` | 1 | Max concurrent runs |
+| `--budget` | 10.0 | Spell budget in USD |
+| `--depth` | 50 | Max LLM recursion depth |
+| `--max-tokens` | unlimited | Max output tokens per LLM call |
+| `--timeout` | 1800 | Per-item timeout in seconds (30 min) |
+| `--reasoning-effort` | `high` | `low`, `medium`, or `high` |
+| `--workspace-root` | `/tmp/fb_ws` | Directory for cloned workspaces |
+| `--skip-install` | off | Skip dependency installation |
+| `--skip-tests` | off | Skip test verification |
+| `--agent` | — | Override Spell agent EDN file |
+| `--agent-msg` | — | Override agent for message-mode |
+| `--agent-tc` | — | Override agent for toolcall-mode |
+| `--run-id` | auto | Custom run ID |
+| `--output` | auto | Output JSONL path |
+
+### `summarize` — Aggregate Results
+
+```bash
+uv run python benchmarking/bench.py summarize --input results/unified/<file>.jsonl
+```
+
+Optional filters: `--run-id`, `--condition`.
 
 ## Datasets
 
-| Dataset | Subset | N | Format | Evaluation |
-|---------|--------|---|--------|------------|
-| LongBench v2 | Short (<100k chars) | 91 | MCQ (4 choices) | Exact match on A/B/C/D |
-| BABILong | 32k context, qa1-qa10 | 1000 | Free-form QA | Exact string match |
+### Math / Reasoning
+
+| Key | Source | Items | Description |
+|-----|--------|-------|-------------|
+| `gsm8k` | GSM8K test | ~1300 | Grade-school math |
+| `math_easy` | MATH Level 1 | ~300 | Competition math (easiest) |
+| `math_medium` | MATH Level 3 | ~400 | Competition math (medium) |
+| `math_hard` | MATH Level 5 | ~500 | Competition math (hardest) |
+| `math_algebra` | MATH algebra | ~600 | Algebra subset |
+| `aime_2024` | AIME 2024 | 30 | AMC/AIME competition |
+| `aime_2025` | AIME 2025 | 30 | AMC/AIME competition |
+| `aime_2026` | AIME 2026 | 30 | AMC/AIME competition |
+| `hmmt_feb_2025` | HMMT Feb 2025 | ~30 | Collegiate competition |
+| `hmmt_nov_2025` | HMMT Nov 2025 | ~30 | Collegiate competition |
+| `omni_math` | Omni-MATH | ~4400 | Olympiad-level |
+| `omni_math_hard` | Omni-MATH (d>=6) | varies | Hard subset |
+
+### Long-Context
+
+| Key | Source | Items | Description |
+|-----|--------|-------|-------------|
+| `longbench_short` | LongBench v2 | ~91 | MCQ, context <100k chars |
+| `longbench_sampled` | LongBench v2 | ~48 | 8 per domain, stratified |
+| `babilong_32k` | BABILong | ~1000 | QA over 32k context |
+| `babilong_32k_qa2` | BABILong | ~100 | QA2 (2-hop) only |
+| `babilong_32k_hard` | BABILong | ~200 | QA2+QA3 (multi-hop) |
+| `babilong_16k` | BABILong | varies | 16k context variant |
+| `babilong_8k` | BABILong | varies | 8k context variant |
+
+### Coding (SWE-bench)
+
+| Key | Source | Items | Description |
+|-----|--------|-------|-------------|
+| `mini` | SWE-bench Verified | 50 | Stratified mini split |
+| `lite` | SWE-bench Lite | 300 | SWE-bench Lite |
+| `verified` | SWE-bench Verified | 500 | Full verified set |
+
+### Coding (FeatureBench)
+
+Selected via `--split` and `--task-ids`. Tasks are loaded from the FeatureBench dataset.
 
 ## Conditions
 
-1. **Baseline**: Single LLM call with full context + question
-2. **Spell**: LLM writes a Spell program that can orchestrate (decompose, delegate, etc.)
+| Condition | What it does | Required flags |
+|-----------|-------------|----------------|
+| `baseline` | Single LLM call (no orchestration) | `--model` |
+| `spell` | Spell agent with self-orchestration | `--model` |
+| `claude_code` | Claude Code CLI (`claude -p`) | `--claude-model` |
+| `codex` | Codex CLI (`codex exec`) | `--codex-model` (default: `codex`) |
+| `all` | Run all conditions | all of the above |
+
+## Model Specs
+
+The `--model` flag uses a `provider:model` format that determines both the transport mode and the model name.
+
+### Provider Prefixes
+
+| Prefix | Transport | Agent | Example |
+|--------|-----------|-------|---------|
+| `anthropic-pf` | Anthropic prefill | `io-pf.agent.edn` | `anthropic-pf:claude-opus-4-5-20251101` |
+| `anthropic-tc` | Anthropic tool-call | `io-tc.agent.edn` | `anthropic-tc:claude-opus-4-5-20251101` |
+| `codex-msg` | Codex messages | `io-msg.agent.edn` | `codex-msg:gpt-5.3-codex` |
+| `codex-tc` | Codex tool-call | `io-tc.agent.edn` | `codex-tc:gpt-5.3-codex` |
+| `openai` | OpenAI Chat | `io-msg.agent.edn` | `openai:o3` |
+
+### Model Aliases
+
+The Clojure API supports short aliases: `haiku`, `sonnet`, `opus`, `opus46`, `o3`, `o4-mini`, `gpt52`, `gpt53`.
+
+### Claude Code / Codex Models
+
+`--claude-model` accepts a plain model name (no provider prefix): `claude-opus-4-5-20251101`, `claude-sonnet-4-5-20250929`, or the aliases `opus`, `sonnet`.
+
+`--codex-model` defaults to `codex`, which resolves to `gpt-5-codex` internally.
+
+## Architecture
+
+```
+bench.py (Python CLI)
+    │
+    ├── SpellAdapter ──→ spell_benchmark_client.py ──→ clj -m spell.benchmark-api
+    │                         (subprocess, JSON stdin/stdout)
+    │
+    ├── BaselineAdapter ──→ (same Clojure API, mode=baseline)
+    │
+    ├── ClaudeCodeAdapter ──→ claude CLI (subprocess)
+    │
+    └── CodexAdapter ──→ codex CLI (subprocess)
+```
+
+### Spell Adapter Flow
+
+1. `bench.py` builds a `RunRequest` with model spec, budget, depth, etc.
+2. `SpellAdapter` serializes it as JSON and sends to `spell.benchmark-api` via subprocess.
+3. The Clojure API:
+   - Parses the model spec (`provider:model`) to construct a provider instance
+   - Resolves the agent EDN file (from the provider's default, overridable via `--agent`)
+   - Calls `spell.api/run` with the provider, agent, and parameters
+4. The response (result text, usage, cost, latency) comes back as JSON.
+
+### Agent Resolution
+
+The agent is selected automatically based on the provider prefix:
+
+| Provider prefix | Provider family | Default agent |
+|----------------|----------------|---------------|
+| `anthropic-pf` | prefill | `config/agents/io-pf.agent.edn` |
+| `codex-msg`, `openai` | message | `config/agents/io-msg.agent.edn` |
+| `anthropic-tc`, `codex-tc` | toolcall | `config/agents/io-tc.agent.edn` |
+
+Each agent inherits from a base agent (e.g., `base-tc.agent.edn`) and adds the `io` namespace for file access. The agent determines the system prompt and available namespaces but not the model — the model comes from the `--model` flag.
+
+Override with `--agent`, `--agent-msg` (message-mode only), or `--agent-tc` (toolcall-mode only).
+
+## Output Format
+
+Results are written as JSONL with one record per item. Key fields:
+
+```json
+{
+  "run_id": "general_20260227_120000",
+  "benchmark": "general",
+  "dataset": "gsm8k",
+  "item_id": "gsm8k_test_0",
+  "condition": "spell",
+  "provider": "anthropic-tc",
+  "model": "claude-opus-4-5-20251101",
+  "status": "ok",
+  "response_text": "...",
+  "answer_extracted": "42",
+  "correct": true,
+  "tokens_in": 15000,
+  "tokens_out": 3000,
+  "cost_usd": 0.15,
+  "latency_ms": 30000,
+  "error_type": null,
+  "error_message": null,
+  "metadata": {}
+}
+```
+
+Status values: `ok`, `error`, `timeout`, `patch_generated`, `no_patch`, `tests_passed`.
+
+## Reporting Convention
+
+Denominator is always total items. Errors count as wrong.
+
+```
+73.3% (22/30) — 2 errors, 6 wrong
+```
+
+## Examples
+
+### Pilot a math benchmark (small N, verify config)
+
+```bash
+uv run python benchmarking/bench.py general \
+  --dataset aime_2025 --condition spell \
+  --model anthropic-tc:claude-opus-4-5-20251101 \
+  --n 5 --budget 5 --dry-run
+```
+
+### Full math comparison: Spell vs Claude Code
+
+```bash
+# Spell
+uv run python benchmarking/bench.py general \
+  --dataset hmmt_feb_2025 --condition spell \
+  --model anthropic-tc:claude-opus-4-5-20251101 \
+  --budget 5 --output results/unified/hmmt_spell.jsonl
+
+# Claude Code
+uv run python benchmarking/bench.py general \
+  --dataset hmmt_feb_2025 --condition claude_code \
+  --claude-model claude-opus-4-5-20251101 \
+  --output results/unified/hmmt_cc.jsonl
+```
+
+### SWE-bench with Codex
+
+```bash
+uv run python benchmarking/bench.py swebench \
+  --dataset mini --condition spell \
+  --model codex-tc:gpt-5.3-codex \
+  --n 5 --output results/unified/swe_codex.jsonl
+```
+
+### FeatureBench: specific tasks
+
+```bash
+uv run python benchmarking/bench.py featurebench \
+  --condition spell \
+  --model anthropic-tc:claude-opus-4-5-20251101 \
+  --task-ids 1 --task-ids 2 --task-ids 3
+```
+
+### Compare results
+
+```bash
+uv run python benchmarking/bench.py summarize --input results/unified/hmmt_spell.jsonl
+uv run python benchmarking/bench.py summarize --input results/unified/hmmt_cc.jsonl
+```
 
 ## Infrastructure
 
 ```
 benchmarking/
-├── data/                  # Cached datasets (gitignored)
-├── results/               # Run outputs (gitignored)
-├── bench.py               # Unified Click CLI (general/swebench/featurebench)
+├── bench.py                  # Unified CLI (general / swebench / featurebench / summarize)
 ├── src/
-│   ├── datasets.py        # Dataset loading and formatting
-│   ├── unified_adapters.py  # Spell/Baseline/Claude/Codex adapters
-│   ├── unified_results.py   # Unified JSONL schema + summaries
-│   ├── evaluation.py        # Scoring functions
-│   └── featurebench_lib.py  # FeatureBench workspace helpers
-├── run_benchmark.py       # Legacy shim -> bench.py general
-├── run_swebench.py        # Legacy shim -> bench.py swebench
-└── run_featurebench.py    # Legacy shim -> bench.py featurebench
+│   ├── datasets.py           # Dataset loading (HuggingFace, local)
+│   ├── unified_adapters.py   # Spell / Baseline / ClaudeCode / Codex adapters
+│   ├── unified_results.py    # JSONL schema, summarization
+│   ├── evaluation.py         # Scoring (exact match, math equivalence, regex extraction)
+│   ├── agent_policy.py       # Agent selection from model/provider transport
+│   ├── featurebench_lib.py   # FeatureBench workspace setup and test execution
+│   ├── swebench_prep.py      # SWE-bench workspace setup (clone, checkout, worktree)
+│   ├── swebench_output.py    # SWE-bench predictions JSONL writer
+│   └── workspace.py          # Shared repo cache and worktree management
+├── run_benchmark.py          # Legacy shim → bench.py general
+├── run_swebench.py           # Legacy shim → bench.py swebench
+├── run_featurebench.py       # Legacy shim → bench.py featurebench
+├── results/                  # JSONL output (gitignored)
+├── traces/                   # Execution traces (gitignored)
+└── data/                     # Cached datasets (gitignored)
 ```
 
-## Usage
-
-```bash
-# General benchmark
-uv run python benchmarking/bench.py general --dataset longbench_short --condition baseline --n 10
-
-# Full comparison
-uv run python benchmarking/bench.py general --dataset all --condition all --model anthropic:claude-sonnet-4-5-20250929
-
-# SWE-bench
-uv run python benchmarking/bench.py swebench --dataset mini --condition both --n 5
-
-# FeatureBench
-uv run python benchmarking/bench.py featurebench --condition spell --task-ids 22 23
-```
-
-## Cybench Grading Utility
-
-This repo also includes a Cybench-compatible grader that is non-destructive and run-scoped by default:
-
-```bash
-cd benchmarking
-uv run python grade_cybench.py --logs-dir ./logs --mode both
-```
-
-Default behavior:
-- keeps only latest run per `(mode, model, challenge)` to avoid mixing historical logs
-- reports strict solved percentage (final-subtask `score == 1`) and partial solved percentage separately
-- does not mutate or reorganize log files while grading
-
-Useful flags:
-- `--all-runs` to aggregate all matching logs
-- `--benchmark-id <id>` to scope to one benchmark id
-- `--model <deployment-name>` to scope to one model
-- `--mode guided|unguided|both`
-- `--input-limit-threshold` / `--output-limit-threshold` for per-iteration token-limit hit counting
+The Clojure benchmark API lives at `src/spell/benchmark_api.clj` in the parent repository. The Python client that calls it is at `spell_benchmark_client.py` (also in the parent repository root).

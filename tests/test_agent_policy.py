@@ -17,10 +17,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 class AgentPolicyTests(unittest.TestCase):
     def test_detect_spell_mode(self) -> None:
-        self.assertEqual(detect_spell_mode("codex:gpt-5.3-codex"), "message")
-        self.assertEqual(detect_spell_mode("codex-toolcall:gpt-5.3-codex"), "toolcall")
-        self.assertEqual(detect_spell_mode("anthropic:claude-sonnet-4-5-20250929"), "message")
-        self.assertEqual(detect_spell_mode("gpt-5.3-codex"), "message")
+        self.assertEqual(detect_spell_mode("codex-msg:gpt-5.3-codex"), "msg")
+        self.assertEqual(detect_spell_mode("codex-tc:gpt-5.3-codex"), "tc")
+        self.assertEqual(detect_spell_mode("anthropic-tc:claude-sonnet-4-5-20250929"), "tc")
+        self.assertEqual(detect_spell_mode("anthropic-pf:claude-sonnet-4-5-20250929"), "msg")
+        self.assertEqual(detect_spell_mode("gpt-5.3-codex"), "msg")
 
     def test_classify_general_family(self) -> None:
         self.assertEqual(classify_general_family({"aime", "hmmt"}), "general_math")
@@ -33,18 +34,18 @@ class AgentPolicyTests(unittest.TestCase):
             path = PROJECT_ROOT / rel_path
             self.assertTrue(path.exists(), f"Missing default policy file: {path}")
 
-    def test_resolve_default_general_longcontext_toolcall(self) -> None:
+    def test_resolve_default_general_longcontext_tc(self) -> None:
         resolved = resolve_spell_agent(
             project_root=PROJECT_ROOT,
             bench_kind="general",
-            model_spec="codex-toolcall:gpt-5.3-codex",
+            model_spec="codex-tc:gpt-5.3-codex",
             item_datasets={"longbench_short"},
         )
-        self.assertEqual(resolved.spell_mode, "toolcall")
+        self.assertEqual(resolved.spell_mode, "tc")
         self.assertEqual(resolved.family, "general_longcontext")
         self.assertEqual(resolved.source, "default")
-        self.assertEqual(resolved.policy_key, "toolcall:toolcall")
-        self.assertTrue(resolved.agent_file.endswith("config/agents/io-toolcall.agent.edn"))
+        self.assertEqual(resolved.policy_key, "tc:tc")
+        self.assertTrue(resolved.agent_file.endswith("config/agents/io-tc.agent.edn"))
 
     def test_override_precedence(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".agent.edn", delete=False) as tf:
@@ -55,11 +56,11 @@ class AgentPolicyTests(unittest.TestCase):
             resolved = resolve_spell_agent(
                 project_root=PROJECT_ROOT,
                 bench_kind="swebench",
-                model_spec="codex-toolcall:gpt-5.3-codex",
-                agent="config/agents/io-message.agent.edn",
-                agent_toolcall=str(temp_agent),
+                model_spec="codex-tc:gpt-5.3-codex",
+                agent="config/agents/io-msg.agent.edn",
+                agent_tc=str(temp_agent),
             )
-            self.assertEqual(resolved.source, "agent_toolcall")
+            self.assertEqual(resolved.source, "agent_tc")
             self.assertEqual(resolved.agent_file, str(temp_agent.resolve()))
         finally:
             temp_agent.unlink(missing_ok=True)
@@ -70,8 +71,8 @@ class AgentPolicyTests(unittest.TestCase):
             resolve_spell_agent(
                 project_root=PROJECT_ROOT,
                 bench_kind="featurebench",
-                model_spec="codex:gpt-5.3-codex",
-                agent_message=str(missing),
+                model_spec="codex-msg:gpt-5.3-codex",
+                agent_msg=str(missing),
             )
 
 

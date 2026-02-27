@@ -229,13 +229,19 @@ def _mk_record(
     )
 
 
-def _build_adapter(condition: str, *, model: str, claude_model: str, codex_model: str, budget: float):
+def _require_model(condition: str, model: str | None, flag_name: str = "--model") -> str:
+    if model is None:
+        raise click.ClickException(f"{flag_name} is required for condition '{condition}'")
+    return model
+
+
+def _build_adapter(condition: str, *, model: str | None, claude_model: str | None, codex_model: str, budget: float):
     if condition == "spell":
-        return SpellAdapter(project_root=PROJECT_ROOT, model_spec=model)
+        return SpellAdapter(project_root=PROJECT_ROOT, model_spec=_require_model(condition, model))
     if condition == "baseline":
-        return BaselineAdapter(project_root=PROJECT_ROOT, model_spec=model)
+        return BaselineAdapter(project_root=PROJECT_ROOT, model_spec=_require_model(condition, model))
     if condition == "claude_code":
-        return ClaudeCodeAdapter(model=claude_model, budget=budget)
+        return ClaudeCodeAdapter(model=_require_model(condition, claude_model, "--claude-model"), budget=budget)
     if condition == "codex":
         return CodexAdapter(project_root=PROJECT_ROOT, model_spec=codex_model)
     raise ValueError(f"Unknown condition: {condition}")
@@ -262,8 +268,8 @@ def _resolve_spell_agent_or_die(
     model_spec: str | None,
     item_datasets: set[str] | None = None,
     agent: str | None = None,
-    agent_message: str | None = None,
-    agent_toolcall: str | None = None,
+    agent_msg: str | None = None,
+    agent_tc: str | None = None,
 ):
     try:
         return resolve_spell_agent(
@@ -272,8 +278,8 @@ def _resolve_spell_agent_or_die(
             model_spec=model_spec,
             item_datasets=item_datasets,
             agent=agent,
-            agent_message=agent_message,
-            agent_toolcall=agent_toolcall,
+            agent_msg=agent_msg,
+            agent_tc=agent_tc,
         )
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
@@ -287,16 +293,16 @@ def cli() -> None:
 @cli.command("general")
 @click.option("--dataset", default="longbench_short", type=click.Choice(list(DATASETS.keys()) + ["all"]))
 @click.option("--condition", default="baseline", type=click.Choice(["baseline", "spell", "claude_code", "codex", "all"]))
-@click.option("--model", default="anthropic:claude-sonnet-4-5-20250929", help="provider:model for baseline/spell")
-@click.option("--claude-model", default="sonnet", help="Model for Claude Code comparator")
+@click.option("--model", default=None, help="provider:model for baseline/spell (required for those conditions)")
+@click.option("--claude-model", default=None, help="Model for Claude Code comparator (required for claude_code condition)")
 @click.option("--codex-model", default="codex", help="Model for Codex harness comparator")
 @click.option("--n", type=int, default=None)
 @click.option("--items", default=None, help="Comma-separated item ids")
 @click.option("--parallel", type=int, default=5, show_default=True)
 @click.option("--budget", type=float, default=1.0, show_default=True)
 @click.option("--agent", default=None, help="Spell agent override")
-@click.option("--agent-message", default=None, help="Spell message-mode agent override")
-@click.option("--agent-toolcall", default=None, help="Spell toolcall-mode agent override")
+@click.option("--agent-msg", default=None, help="Spell msg-mode agent override")
+@click.option("--agent-tc", default=None, help="Spell tc-mode agent override")
 @click.option("--depth", type=int, default=None)
 @click.option("--max-tokens", type=int, default=None)
 @click.option("--timeout", type=int, default=300, show_default=True)
@@ -321,8 +327,8 @@ def run_general(
     parallel: int,
     budget: float,
     agent: str | None,
-    agent_message: str | None,
-    agent_toolcall: str | None,
+    agent_msg: str | None,
+    agent_tc: str | None,
     depth: int | None,
     max_tokens: int | None,
     timeout: int,
@@ -367,8 +373,8 @@ def run_general(
                 model_spec=model,
                 item_datasets=item_datasets,
                 agent=agent,
-                agent_message=agent_message,
-                agent_toolcall=agent_toolcall,
+                agent_msg=agent_msg,
+                agent_tc=agent_tc,
             )
         click.echo("Dry run config:")
         click.echo(
@@ -403,8 +409,8 @@ def run_general(
                 model_spec=model,
                 item_datasets=item_datasets,
                 agent=agent,
-                agent_message=agent_message,
-                agent_toolcall=agent_toolcall,
+                agent_msg=agent_msg,
+                agent_tc=agent_tc,
             )
             click.echo(
                 f"  spell_mode={spell_resolution.spell_mode} "
@@ -421,7 +427,7 @@ def run_general(
                     item_id=item.id,
                     condition=cond,
                     prompt=prompt,
-                    model_spec={"spell": model, "baseline": model, "claude_code": claude_model, "codex": codex_model}[cond],
+                    model_spec={"spell": model, "baseline": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
                     init=_make_spell_init(prompt) if cond == "spell" else None,
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
@@ -486,18 +492,18 @@ def run_general(
 @cli.command("swebench")
 @click.option("--dataset", default="mini", type=click.Choice(["mini", "lite", "verified"]))
 @click.option("--condition", default="both", type=click.Choice(["spell", "claude_code", "codex", "both", "all"]))
-@click.option("--model", default="anthropic:claude-opus-4-5-20251101", help="provider:model for Spell")
-@click.option("--claude-model", default="opus", help="Model for Claude Code comparator")
+@click.option("--model", default=None, help="provider:model for Spell (required for spell condition)")
+@click.option("--claude-model", default=None, help="Model for Claude Code comparator (required for claude_code condition)")
 @click.option("--codex-model", default="codex")
 @click.option("--n", type=int, default=None)
 @click.option("--parallel", type=int, default=1, show_default=True)
 @click.option("--budget", type=float, default=10.0, show_default=True)
 @click.option("--agent", default=None, help="Spell agent override")
-@click.option("--agent-message", default=None, help="Spell message-mode agent override")
-@click.option("--agent-toolcall", default=None, help="Spell toolcall-mode agent override")
-@click.option("--depth", type=int, default=8, show_default=True)
-@click.option("--max-tokens", type=int, default=16384, show_default=True)
-@click.option("--timeout", type=int, default=600, show_default=True)
+@click.option("--agent-msg", default=None, help="Spell msg-mode agent override")
+@click.option("--agent-tc", default=None, help="Spell tc-mode agent override")
+@click.option("--depth", type=int, default=50, show_default=True)
+@click.option("--max-tokens", type=int, default=None)
+@click.option("--timeout", type=int, default=1800, show_default=True)
 @click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
 @click.option("--workspace-root", default=None)
 @click.option("--keep-workspaces", is_flag=True, default=False)
@@ -514,8 +520,8 @@ def run_swebench(
     parallel: int,
     budget: float,
     agent: str | None,
-    agent_message: str | None,
-    agent_toolcall: str | None,
+    agent_msg: str | None,
+    agent_tc: str | None,
     depth: int,
     max_tokens: int,
     timeout: int,
@@ -560,8 +566,8 @@ def run_swebench(
                 bench_kind="swebench",
                 model_spec=model,
                 agent=agent,
-                agent_message=agent_message,
-                agent_toolcall=agent_toolcall,
+                agent_msg=agent_msg,
+                agent_tc=agent_tc,
             )
         click.echo(
             json.dumps(
@@ -597,8 +603,8 @@ def run_swebench(
                 bench_kind="swebench",
                 model_spec=model,
                 agent=agent,
-                agent_message=agent_message,
-                agent_toolcall=agent_toolcall,
+                agent_msg=agent_msg,
+                agent_tc=agent_tc,
             )
             click.echo(
                 f"  spell_mode={spell_resolution.spell_mode} "
@@ -637,7 +643,7 @@ def run_swebench(
                     item_id=item.instance_id,
                     condition=cond,
                     prompt=prompt,
-                    model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}[cond],
+                    model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
                     init=(_make_spell_init(prompt, SWEBENCH_REMINDER_PREAMBLE)
                           if cond == "spell" else None),
@@ -725,8 +731,8 @@ def run_swebench(
         pred_path = Path("results") / "swebench" / f"{cond}_{dataset}_{run_id}.jsonl"
         swe_results = [_SwePrediction(instance_id=record.item_id, patch=record.patch or "") for record in records]
         pred_model_name = {
-            "spell": model,
-            "claude_code": f"claude_code:{claude_model}",
+            "spell": model or "unknown",
+            "claude_code": f"claude_code:{claude_model or 'unknown'}",
             "codex": codex_model,
         }[cond]
         write_predictions_jsonl(swe_results, pred_path, model_name=pred_model_name)
@@ -737,17 +743,17 @@ def run_swebench(
 @click.option("--condition", default="claude_code", type=click.Choice(["spell", "claude_code", "codex", "both", "all"]))
 @click.option("--split", default="lite")
 @click.option("--task-ids", type=int, multiple=True)
-@click.option("--model", default="anthropic:claude-sonnet-4-5-20250929")
-@click.option("--claude-model", default="claude-sonnet-4-5-20250929")
+@click.option("--model", default=None, help="provider:model for Spell (required for spell condition)")
+@click.option("--claude-model", default=None, help="Model for Claude Code comparator (required for claude_code condition)")
 @click.option("--codex-model", default="codex")
 @click.option("--parallel", type=int, default=1, show_default=True)
 @click.option("--budget", type=float, default=10.0, show_default=True)
 @click.option("--agent", default=None)
-@click.option("--agent-message", default=None, help="Spell message-mode agent override")
-@click.option("--agent-toolcall", default=None, help="Spell toolcall-mode agent override")
-@click.option("--depth", type=int, default=12, show_default=True)
-@click.option("--max-tokens", type=int, default=16384, show_default=True)
-@click.option("--timeout", type=int, default=600, show_default=True)
+@click.option("--agent-msg", default=None, help="Spell msg-mode agent override")
+@click.option("--agent-tc", default=None, help="Spell tc-mode agent override")
+@click.option("--depth", type=int, default=50, show_default=True)
+@click.option("--max-tokens", type=int, default=None)
+@click.option("--timeout", type=int, default=1800, show_default=True)
 @click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
 @click.option("--workspace-root", default="/tmp/fb_ws")
 @click.option("--skip-install", is_flag=True, default=False)
@@ -764,8 +770,8 @@ def run_featurebench(
     parallel: int,
     budget: float,
     agent: str | None,
-    agent_message: str | None,
-    agent_toolcall: str | None,
+    agent_msg: str | None,
+    agent_tc: str | None,
     depth: int,
     max_tokens: int,
     timeout: int,
@@ -805,8 +811,8 @@ def run_featurebench(
                 bench_kind="featurebench",
                 model_spec=model,
                 agent=agent,
-                agent_message=agent_message,
-                agent_toolcall=agent_toolcall,
+                agent_msg=agent_msg,
+                agent_tc=agent_tc,
             )
             click.echo(
                 f"  spell_mode={spell_resolution.spell_mode} "
@@ -827,7 +833,7 @@ def run_featurebench(
                     item_id=item["instance_id"],
                     condition=cond,
                     prompt=prompt,
-                    model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}[cond],
+                    model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
                     init=_make_spell_init(prompt) if cond == "spell" else None,
                     agent_file=spell_resolution.agent_file if spell_resolution else None,

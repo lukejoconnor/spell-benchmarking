@@ -39,7 +39,7 @@ def make_prompt(item):
 
 
 def make_adapters():
-    spell_toolcall = SpellAdapter(project_root=PROJECT_ROOT, model_spec="codex-toolcall:gpt-5.3-codex")
+    spell_toolcall = SpellAdapter(project_root=PROJECT_ROOT, model_spec="codex-tc:gpt-5.3-codex")
     codex_harness = CodexAdapter(project_root=PROJECT_ROOT, model_spec="codex")
     spell_messages = SpellAdapter(project_root=PROJECT_ROOT, model_spec="codex:gpt-5.3-codex")
 
@@ -69,14 +69,14 @@ def main():
     spell_toolcall_agent = resolve_spell_agent(
         project_root=PROJECT_ROOT,
         bench_kind="swebench",
-        model_spec="codex-toolcall:gpt-5.3-codex",
+        model_spec="codex-tc:gpt-5.3-codex",
     )
 
     configs = [
         {
             "name": "spell_codex_toolcall",
             "condition": "spell",
-            "model_spec": "codex-toolcall:gpt-5.3-codex",
+            "model_spec": "codex-tc:gpt-5.3-codex",
             "agent_file": spell_toolcall_agent.agent_file,
             "adapter": spell_toolcall,
             "workspace_root": Path(f"/tmp/swebench_workspaces_spell_codex_toolcall_{ts}"),

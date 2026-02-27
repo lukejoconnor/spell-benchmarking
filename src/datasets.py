@@ -367,22 +367,9 @@ def format_prompt_spell(item: BenchmarkItem, context_file: str = None) -> str:
 
     For items with context: context_file points to external file (forces programmatic search).
     For math problems: question is self-contained, no context file.
-    For omni_math: returns a Spell code prefix (starts with '(') that structurally
-    forces the model into a (think ...) block.
-
     NOTE: Prompts that start with '(' bypass CLI's wrap-nl and are treated as raw
     Spell code prefixes. All others get wrapped with the completion wrapper.
     """
-    # Omni-MATH: return raw Spell prefix with think block pre-opened
-    if item.dataset == 'omni_math' and not item.context:
-        escaped_q = _escape_for_spell(item.question.strip())
-        return (
-            f'(quine completion (eval (do '
-            f'(quine prompt "{escaped_q}") '
-            f'; After all (think ...) blocks, return {{:answer <value>}}\n'
-            f'(think "approach" '
-        )
-
     parts = []
 
     if item.context and context_file:
@@ -414,7 +401,6 @@ def format_prompt_spell(item: BenchmarkItem, context_file: str = None) -> str:
         parts.append('')
         parts.append('Solve step by step. Return just the final answer (e.g., 42 or 3/4 or 2\\sqrt{3}).')
     elif item.dataset == 'omni_math':
-        # Should not reach here — omni_math handled above with raw Spell prefix
         parts.append('')
         parts.append('Solve step by step. Return just the final answer.')
     elif item.dataset == 'aime':
