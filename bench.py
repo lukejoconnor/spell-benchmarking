@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, UTC
@@ -21,6 +23,8 @@ except ModuleNotFoundError as exc:  # pragma: no cover
 from src.datasets import (
     DATASETS,
     BenchmarkItem,
+    ScienceAgentBenchItem,
+    load_scienceagentbench,
     load_swebench_verified,
     load_swebench_lite,
     load_swebench_verified_mini,
@@ -32,6 +36,7 @@ from src.evaluation import (
     extract_math_answer,
     extract_mcq_answer,
     extract_numeric_answer,
+    gaia_question_scorer,
     math_equivalent,
     normalize_numeric,
 )
@@ -57,6 +62,11 @@ from src.unified_adapters import (
     build_spell_init,
     run_requests_parallel,
 )
+from src.docker_adapters import (
+    DockerClaudeCodeAdapter,
+    DockerCodexAdapter,
+    DockerSpellAdapter,
+)
 from src.unified_results import (
     UnifiedRunRecord,
     append_jsonl,
@@ -68,6 +78,13 @@ from src.unified_results import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONTEXT_DIR = PROJECT_ROOT / "benchmarking" / "data" / "contexts"
 SWEBENCH_REMINDER_PREAMBLE = '(quine sys-reminder "Recall: you are writing Spell code, not natural language.")'
+SWEBENCH_DOCKER_PREAMBLE = (
+    '(quine sys-reminder "Recall: you are writing Spell code, not natural language. '
+    'You are working inside a Docker container. All file and system operations MUST use '
+    '(io/sh ...) shell commands. Do NOT use io/spit, io/slurp, io/read-file, '
+    'io/write-file, io/ls, io/exists?, io/mkdir — they operate on the host, not the '
+    'container. Use shell equivalents via io/sh instead.")'
+)
 
 
 @dataclass(slots=True)
@@ -108,7 +125,15 @@ def _format_general_prompt(item: BenchmarkItem, condition: str) -> str:
         return format_prompt_spell(item, context_file=context_file)
 
     parts: list[str] = []
-    if item.context and context_file:
+    if item.dataset == "gaia":
+        parts.append(item.question.strip())
+        file_path = (item.metadata or {}).get('file_path', '')
+        if file_path:
+            parts.extend(["", f"Attached file: {file_path}"])
+        parts.append("")
+        parts.append("Use web search, Python, and any tools needed to answer this question.")
+        parts.append("Reply with ONLY the final answer — a number, a short string, or a comma-separated list. No explanation.")
+    elif item.context and context_file:
         parts.extend(
             [
                 f"Read the document at {context_file} ({len(item.context):,} chars) and answer this question:",
@@ -119,7 +144,9 @@ def _format_general_prompt(item: BenchmarkItem, condition: str) -> str:
     else:
         parts.extend(["Solve this problem:", "", item.question.strip()])
 
-    if item.choices:
+    if item.dataset == "gaia":
+        pass  # Already formatted above
+    elif item.choices:
         parts.append("")
         parts.append("Choices:")
         for i, choice in enumerate(item.choices):
@@ -166,6 +193,17 @@ def _evaluate_general(item: BenchmarkItem, response_text: str | None) -> tuple[s
         if answer is None:
             return None, False
         return answer, math_equivalent(answer, item.answer)
+
+    if item.dataset == "gaia":
+        # GAIA: use official scorer with normalization
+        # Extract answer: last line of response (models put answer last)
+        lines = [l.strip() for l in response.split('\n') if l.strip()]
+        answer = lines[-1] if lines else response
+        # Strip markdown citation links: "34689([url](https://...))" -> "34689"
+        answer = re.sub(r'\s*\(\[.*?\]\(.*?\)\)', '', answer).strip()
+        # Strip trailing markdown links: "[source](url)" at end
+        answer = re.sub(r'\s*\[.*?\]\(.*?\)\s*$', '', answer).strip()
+        return answer, gaia_question_scorer(answer, item.answer)
 
     answer = extract_freeform_answer(response)
     return answer, answer.strip().lower() == item.answer.strip().lower()
@@ -235,7 +273,9 @@ def _require_model(condition: str, model: str | None, flag_name: str = "--model"
     return model
 
 
-def _build_adapter(condition: str, *, model: str | None, claude_model: str | None, codex_model: str, budget: float):
+def _build_adapter(condition: str, *, model: str | None, claude_model: str | None, codex_model: str, budget: float, docker: bool = False):
+    if docker:
+        return _build_docker_adapter(condition, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget)
     if condition == "spell":
         return SpellAdapter(project_root=PROJECT_ROOT, model_spec=_require_model(condition, model))
     if condition == "baseline":
@@ -244,6 +284,19 @@ def _build_adapter(condition: str, *, model: str | None, claude_model: str | Non
         return ClaudeCodeAdapter(model=_require_model(condition, claude_model, "--claude-model"), budget=budget)
     if condition == "codex":
         return CodexAdapter(project_root=PROJECT_ROOT, model_spec=codex_model)
+    raise ValueError(f"Unknown condition: {condition}")
+
+
+def _build_docker_adapter(condition: str, *, model: str | None, claude_model: str | None, codex_model: str, budget: float):
+    if condition == "spell":
+        return DockerSpellAdapter(project_root=PROJECT_ROOT, model_spec=_require_model(condition, model))
+    if condition == "claude_code":
+        return DockerClaudeCodeAdapter(model=_require_model(condition, claude_model, "--claude-model"), budget=budget)
+    if condition == "codex":
+        return DockerCodexAdapter(model_spec=codex_model)
+    if condition == "baseline":
+        # Baseline (single LLM call) doesn't need Docker isolation
+        return BaselineAdapter(project_root=PROJECT_ROOT, model_spec=_require_model(condition, model))
     raise ValueError(f"Unknown condition: {condition}")
 
 
@@ -507,6 +560,7 @@ def run_general(
 @click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
 @click.option("--workspace-root", default=None)
 @click.option("--keep-workspaces", is_flag=True, default=False)
+@click.option("--docker", is_flag=True, default=False, help="Run agents inside Docker containers for isolation")
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
 @click.option("--output", default=None)
@@ -528,6 +582,7 @@ def run_swebench(
     reasoning_effort: str | None,
     workspace_root: str | None,
     keep_workspaces: bool,
+    docker: bool,
     dry_run: bool,
     run_id: str | None,
     output: str | None,
@@ -558,6 +613,8 @@ def run_swebench(
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
     click.echo(f"Workspace root: {root}")
+    if docker:
+        click.echo("Docker mode: agents run inside containers")
     click.echo(f"Loaded {len(items)} items")
     if dry_run:
         spell_resolution = None
@@ -595,8 +652,8 @@ def run_swebench(
     cache = RepoCache(root)
 
     for cond in conditions:
-        click.echo(f"\n--- Running {cond} ---")
-        adapter = _build_adapter(cond, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget)
+        click.echo(f"\n--- Running {cond}{' (docker)' if docker else ''} ---")
+        adapter = _build_adapter(cond, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget, docker=docker)
         spell_resolution = None
         if cond == "spell":
             spell_resolution = _resolve_spell_agent_or_die(
@@ -645,7 +702,7 @@ def run_swebench(
                     prompt=prompt,
                     model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
-                    init=(_make_spell_init(prompt, SWEBENCH_REMINDER_PREAMBLE)
+                    init=(_make_spell_init(prompt, SWEBENCH_DOCKER_PREAMBLE if docker else SWEBENCH_REMINDER_PREAMBLE)
                           if cond == "spell" else None),
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
                     budget=budget,
@@ -655,8 +712,16 @@ def run_swebench(
                     workspace=ws_path,
                 )
                 resp = adapter.run(req)
-                patch = wt.diff()
-                changed_files = wt.changed_files()
+
+                # In Docker mode, the patch lives inside the container and is
+                # returned in resp.metadata by the Docker adapter. On the host
+                # (non-Docker), we read it from the worktree.
+                if docker and resp.metadata.get("docker"):
+                    patch = resp.metadata.get("patch", "")
+                    changed_files = resp.metadata.get("changed_files", [])
+                else:
+                    patch = wt.diff()
+                    changed_files = wt.changed_files()
 
                 status = resp.status
                 if status == "ok":
@@ -926,6 +991,388 @@ def run_featurebench(
             append_jsonl(output_file, record)
 
         _print_summary(output_file, run_id, cond)
+
+
+SAB_BENCHMARK_DIR = PROJECT_ROOT / "benchmarking" / "data" / "scienceagentbench" / "benchmark" / "benchmark"
+
+
+def _format_sab_prompt(item: ScienceAgentBenchItem, workspace: Path, use_knowledge: bool = False) -> str:
+    """Format a ScienceAgentBench task as a prompt for code generation.
+
+    Mirrors the prompt structure from the original ScienceAgent but adapted
+    for our adapters (Claude Code, Spell, Codex).
+    """
+    dataset_root = item.dataset_folder_tree.split("\n")[0].strip().lstrip("|-- ").rstrip("/")
+    dataset_path = str(workspace / dataset_root)
+
+    parts = [
+        "You are an expert Python programming assistant that helps scientist users "
+        "to write high-quality code to solve their tasks.",
+        "",
+        "Write a complete, self-contained Python program and save it as `solution.py` "
+        f"in the current directory ({workspace}).",
+        "Do not use interactive commands like `!pip install`.",
+        "Do not suggest partial code or line changes — write the full program.",
+        "",
+        "## Task",
+        "",
+        item.task_inst,
+    ]
+
+    if use_knowledge and item.domain_knowledge:
+        parts.extend(["", "## Domain Knowledge", "", item.domain_knowledge])
+
+    parts.extend([
+        "",
+        "## Dataset",
+        "",
+        f"You can access the dataset at `{dataset_path}`. Here is the directory structure:",
+        "```",
+        item.dataset_folder_tree,
+        "```",
+    ])
+
+    if item.dataset_preview:
+        preview = item.dataset_preview
+        if len(preview) > 8000:
+            preview = preview[:8000] + "\n... (preview truncated)"
+        parts.extend([
+            "",
+            "Here are some helpful previews for the dataset file(s):",
+            preview,
+        ])
+
+    parts.extend([
+        "",
+        "## Output",
+        "",
+        f"Save your output to `{item.output_fname}`.",
+        "Make sure the output directory exists before writing (use `os.makedirs` if needed).",
+    ])
+
+    return "\n".join(parts)
+
+
+def _extract_python_program(response_text: str | None, workspace: Path | None = None) -> str | None:
+    """Extract Python code from agent response or workspace files.
+
+    For agents like Claude Code that write files directly, checks the workspace
+    for .py files. For baseline/Spell that return markdown, extracts from code blocks.
+    """
+    import re
+
+    # First check workspace for written Python files (Claude Code, Codex pattern)
+    if workspace and workspace.exists():
+        py_files = sorted(workspace.glob("*.py"), key=lambda p: p.stat().st_mtime)
+        if py_files:
+            # Take the most recently modified .py file
+            return py_files[-1].read_text(encoding="utf-8")
+
+    if not response_text:
+        return None
+    match = re.search(r"```python(.*?)```", response_text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    # Fallback: if response looks like pure Python (no markdown), return as-is
+    stripped = response_text.strip()
+    if stripped.startswith(("import ", "from ", "#", "def ", "class ")):
+        return stripped
+    return None
+
+
+def _validate_python_syntax(code: str) -> tuple[bool, str | None]:
+    """Check if code is valid Python. Returns (valid, error_message)."""
+    import ast
+    try:
+        ast.parse(code)
+        return True, None
+    except SyntaxError as e:
+        return False, f"SyntaxError at line {e.lineno}: {e.msg}"
+
+
+@cli.command("scienceagentbench")
+@click.option("--condition", default="claude_code", type=click.Choice(["spell", "claude_code", "codex", "both", "all"]))
+@click.option("--n", type=int, default=None, help="Limit to N items")
+@click.option("--instance-ids", default=None, help="Comma-separated instance IDs")
+@click.option("--domain", default=None, help="Filter by domain (partial match)")
+@click.option("--model", default=None, help="provider:model for Spell (required for spell condition)")
+@click.option("--claude-model", default=None, help="Model for Claude Code comparator")
+@click.option("--codex-model", default="codex")
+@click.option("--parallel", type=int, default=1, show_default=True)
+@click.option("--budget", type=float, default=5.0, show_default=True)
+@click.option("--agent", default=None)
+@click.option("--agent-msg", default=None)
+@click.option("--agent-tc", default=None)
+@click.option("--depth", type=int, default=50, show_default=True)
+@click.option("--max-tokens", type=int, default=None)
+@click.option("--timeout", type=int, default=900, show_default=True)
+@click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
+@click.option("--use-knowledge/--no-knowledge", default=False, show_default=True, help="Include domain knowledge in prompt")
+@click.option("--preamble", default=None, help="Spell init preamble expression (inserted before !extend)")
+@click.option("--workspace-root", default="/tmp/sab_ws")
+@click.option("--run-id", default=None)
+@click.option("--output", default=None)
+def run_scienceagentbench(
+    condition: str,
+    n: int | None,
+    instance_ids: str | None,
+    domain: str | None,
+    model: str,
+    claude_model: str,
+    codex_model: str,
+    parallel: int,
+    budget: float,
+    agent: str | None,
+    agent_msg: str | None,
+    agent_tc: str | None,
+    depth: int,
+    max_tokens: int,
+    timeout: int,
+    reasoning_effort: str | None,
+    use_knowledge: bool,
+    preamble: str | None,
+    workspace_root: str,
+    run_id: str | None,
+    output: str | None,
+) -> None:
+    """Run ScienceAgentBench: data-driven scientific code generation."""
+    import re
+    import shutil
+
+    run_id = run_id or _run_id("sab")
+    output_file = Path(output) if output else _default_output(run_id)
+
+    if condition == "both":
+        conditions = ["spell", "claude_code"]
+    elif condition == "all":
+        conditions = ["spell", "claude_code", "codex"]
+    else:
+        conditions = [condition]
+
+    items = load_scienceagentbench(domain=domain)
+
+    if instance_ids:
+        ids = {x.strip() for x in instance_ids.split(",") if x.strip()}
+        items = [item for item in items if item.instance_id in ids]
+    elif n:
+        items = items[:n]
+
+    root = Path(workspace_root)
+    root.mkdir(parents=True, exist_ok=True)
+
+    # Check for benchmark data
+    has_benchmark_data = SAB_BENCHMARK_DIR.exists() and (SAB_BENCHMARK_DIR / "datasets").exists()
+
+    click.echo(f"Run ID: {run_id}")
+    click.echo(f"Output: {output_file}")
+    click.echo(f"Workspace root: {root}")
+    click.echo(f"Items: {len(items)}")
+    click.echo(f"Domains: {', '.join(sorted({i.domain for i in items}))}")
+    click.echo(f"Benchmark data: {'found' if has_benchmark_data else 'NOT FOUND (syntax-only eval)'}")
+
+    def setup_item_workspace(item: ScienceAgentBenchItem, tag: str) -> Path:
+        ws = root / f"sab_{item.instance_id}_{tag}"
+        if ws.exists():
+            shutil.rmtree(ws)
+        ws.mkdir(parents=True)
+        # Copy real dataset files if available, otherwise create placeholders
+        dataset_root = item.dataset_folder_tree.split("\n")[0].strip().lstrip("|-- ").rstrip("/")
+        src_data = SAB_BENCHMARK_DIR / "datasets" / dataset_root
+        if has_benchmark_data and src_data.exists():
+            # Symlink to save disk space; fall back to copy if symlink fails
+            try:
+                os.symlink(src_data, ws / dataset_root)
+            except OSError:
+                shutil.copytree(src_data, ws / dataset_root)
+        else:
+            for line in item.dataset_folder_tree.split("\n"):
+                line = line.strip().lstrip("|").strip().lstrip("-").strip()
+                if not line:
+                    continue
+                path = ws / line.rstrip("/")
+                if line.endswith("/"):
+                    path.mkdir(parents=True, exist_ok=True)
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.touch()
+        # Create output directory
+        out_dir = ws / Path(item.output_fname).parent
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return ws
+
+    for cond in conditions:
+        click.echo(f"\n--- Running {cond} ---")
+        adapter = _build_adapter(cond, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget)
+        spell_resolution = None
+        if cond == "spell":
+            spell_resolution = _resolve_spell_agent_or_die(
+                bench_kind="general",
+                model_spec=model,
+                agent=agent,
+                agent_msg=agent_msg,
+                agent_tc=agent_tc,
+            )
+            click.echo(
+                f"  spell_mode={spell_resolution.spell_mode} "
+                f"agent={spell_resolution.agent_file} source={spell_resolution.source}"
+            )
+
+        def process(item: ScienceAgentBenchItem) -> UnifiedRunRecord:
+            import subprocess as _sp
+            ws = setup_item_workspace(item, cond)
+            try:
+                prompt = _format_sab_prompt(item, ws, use_knowledge=use_knowledge)
+
+                req = RunRequest(
+                    benchmark="scienceagentbench",
+                    dataset="scienceagentbench",
+                    item_id=item.instance_id,
+                    condition=cond,
+                    prompt=prompt,
+                    model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
+                    timeout=timeout,
+                    init=_make_spell_init(prompt, preamble=preamble) if cond == "spell" else None,
+                    agent_file=spell_resolution.agent_file if spell_resolution else None,
+                    budget=budget,
+                    depth=depth,
+                    max_tokens=max_tokens,
+                    reasoning_effort=reasoning_effort,
+                    workspace=ws,
+                )
+                resp = adapter.run(req)
+
+                # Extract Python program from response
+                program = _extract_python_program(resp.response_text, workspace=ws)
+                syntax_valid = False
+                syntax_error = None
+                if program:
+                    syntax_valid, syntax_error = _validate_python_syntax(program)
+                    # Save program to workspace
+                    pred_path = ws / f"pred_{item.gold_program_name}"
+                    pred_path.write_text(program, encoding="utf-8")
+
+                # Execution-based evaluation
+                exec_success = False
+                output_produced = False
+                exec_error = None
+                if program and syntax_valid and has_benchmark_data:
+                    # Run the program in the workspace
+                    pred_path = ws / f"pred_{item.gold_program_name}"
+                    try:
+                        exec_result = _sp.run(
+                            ["uv", "run", "python3", str(pred_path)],
+                            cwd=ws, capture_output=True, timeout=900,
+                        )
+                        if exec_result.returncode == 0:
+                            exec_success = True
+                        else:
+                            exec_error = exec_result.stderr.decode("utf-8", errors="replace")[-500:]
+                    except _sp.TimeoutExpired:
+                        exec_error = "Program execution timed out (900s)"
+
+                    # Check if output file was produced
+                    output_path = ws / item.output_fname
+                    output_produced = output_path.exists() and output_path.stat().st_size > 0
+
+                status = resp.status
+                if status == "ok":
+                    if not program:
+                        status = "no_program"
+                    elif not syntax_valid:
+                        status = "syntax_error"
+                    elif has_benchmark_data:
+                        if output_produced:
+                            status = "output_produced"
+                        elif exec_success:
+                            status = "exec_ok_no_output"
+                        else:
+                            status = "exec_failed"
+                    else:
+                        status = "program_generated"
+
+                # correct = output was produced (best we can check without eval scripts)
+                correct = output_produced if has_benchmark_data else (syntax_valid if program else False)
+
+                return _mk_record(
+                    run_id=run_id,
+                    benchmark="scienceagentbench",
+                    dataset="scienceagentbench",
+                    split=None,
+                    item_id=item.instance_id,
+                    condition=cond,
+                    model_spec=req.model_spec,
+                    agent_file=req.agent_file,
+                    response=RunResponse(
+                        status=status,
+                        response_text=resp.response_text,
+                        tokens_in=resp.tokens_in,
+                        tokens_out=resp.tokens_out,
+                        cost_usd=resp.cost_usd,
+                        latency_ms=resp.latency_ms,
+                        error_message=resp.error_message or syntax_error or exec_error,
+                        error_type=resp.error_type,
+                        metadata=resp.metadata,
+                    ),
+                    response_text=resp.response_text,
+                    patch=program,
+                    answer_extracted=None,
+                    correct=correct,
+                    metadata={
+                        "domain": item.domain,
+                        "subtask_categories": item.subtask_categories,
+                        "output_fname": item.output_fname,
+                        "gold_program_name": item.gold_program_name,
+                        "syntax_valid": syntax_valid,
+                        "program_extracted": program is not None,
+                        "exec_success": exec_success,
+                        "output_produced": output_produced,
+                        **(
+                            {
+                                "spell_mode": spell_resolution.spell_mode,
+                                "resolved_agent_file": spell_resolution.agent_file,
+                                "agent_source": spell_resolution.source,
+                                "agent_policy_key": spell_resolution.policy_key,
+                            }
+                            if (cond == "spell" and spell_resolution)
+                            else {}
+                        ),
+                    },
+                )
+            finally:
+                # Keep workspaces for inspection during pilot
+                pass
+
+        if parallel <= 1:
+            records = []
+            for i, item in enumerate(items):
+                click.echo(f"  [{i+1}/{len(items)}] #{item.instance_id} {item.domain[:30]}: {item.task_inst[:50]}...")
+                records.append(process(item))
+        else:
+            records = [None] * len(items)
+            with ThreadPoolExecutor(max_workers=parallel) as pool:
+                futures = {pool.submit(process, item): idx for idx, item in enumerate(items)}
+                done = 0
+                for fut in as_completed(futures):
+                    idx = futures[fut]
+                    done += 1
+                    records[idx] = fut.result()
+                    click.echo(f"  [{done}/{len(items)}] #{items[idx].instance_id}")
+            records = [r for r in records if r is not None]
+
+        for record in records:
+            append_jsonl(output_file, record)
+
+        # Print summary
+        _print_summary(output_file, run_id, cond)
+
+        # Save extracted programs for potential evaluation
+        pred_dir = Path("results") / "scienceagentbench" / f"{cond}_{run_id}"
+        pred_dir.mkdir(parents=True, exist_ok=True)
+        for item, record in zip(items, records):
+            if record.patch:
+                pred_path = pred_dir / f"pred_{item.gold_program_name}"
+                pred_path.write_text(record.patch, encoding="utf-8")
+        click.echo(f"  Programs saved to: {pred_dir}")
 
 
 @cli.command("summarize")
