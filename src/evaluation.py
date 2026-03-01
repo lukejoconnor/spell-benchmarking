@@ -1,6 +1,7 @@
 """Evaluation and scoring for benchmark results."""
 
 import re
+import string
 from dataclasses import asdict
 
 from .datasets import BenchmarkItem
@@ -408,6 +409,63 @@ def math_equivalent(got: str, expected: str, timeout: float = 5.0) -> bool:
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, old_handler)
+
+
+def _gaia_normalize_str(s: str, remove_punct: bool = True) -> str:
+    """Normalize string per GAIA official scorer: strip whitespace, lowercase, optionally remove punctuation."""
+    no_spaces = re.sub(r'\s', '', s)
+    if remove_punct:
+        translator = str.maketrans('', '', string.punctuation)
+        return no_spaces.lower().translate(translator)
+    return no_spaces.lower()
+
+
+def _gaia_normalize_number(s: str) -> float:
+    """Normalize number string per GAIA official scorer."""
+    for char in ['$', '%', ',']:
+        s = s.replace(char, '')
+    try:
+        return float(s)
+    except ValueError:
+        return float('inf')
+
+
+def gaia_question_scorer(model_answer: str, ground_truth: str) -> bool:
+    """Score a GAIA answer using the official scoring logic.
+
+    Handles three answer types: numbers, comma/semicolon-separated lists, and strings.
+    """
+    if model_answer is None:
+        model_answer = 'None'
+
+    def is_float(s):
+        try:
+            float(s)
+            return True
+        except ValueError:
+            return False
+
+    # If ground truth is a number
+    if is_float(ground_truth):
+        return _gaia_normalize_number(model_answer) == float(ground_truth)
+
+    # If ground truth is a list (comma or semicolon separated)
+    if any(ch in ground_truth for ch in [',', ';']):
+        gt_elems = re.split(r'[,;]', ground_truth)
+        ma_elems = re.split(r'[,;]', model_answer)
+        if len(gt_elems) != len(ma_elems):
+            return False
+        for ma_elem, gt_elem in zip(ma_elems, gt_elems):
+            if is_float(gt_elem):
+                if _gaia_normalize_number(ma_elem) != float(gt_elem):
+                    return False
+            else:
+                if _gaia_normalize_str(ma_elem, remove_punct=False) != _gaia_normalize_str(gt_elem, remove_punct=False):
+                    return False
+        return True
+
+    # String comparison
+    return _gaia_normalize_str(model_answer) == _gaia_normalize_str(ground_truth)
 
 
 def evaluate_result(result: RunResult, item: BenchmarkItem) -> RunResult:

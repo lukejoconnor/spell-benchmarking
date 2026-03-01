@@ -542,6 +542,7 @@ class ClaudeCodeRunner:
             # Build command
             cmd = [
                 'claude',
+                '--setting-sources', '',
                 '-p',  # Print mode
                 '--output-format', 'json',
                 '--model', self.model,
@@ -1098,6 +1099,7 @@ class ClaudeCodeSWERunner:
             # Build command
             cmd = [
                 'claude',
+                '--setting-sources', '',
                 '-p',  # Print mode (non-interactive)
                 '--output-format', 'json',
                 '--model', self.model,
