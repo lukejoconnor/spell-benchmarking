@@ -1,9 +1,11 @@
 """Dataset loading and formatting for benchmark tasks."""
 
+import os
 import random
 from dataclasses import dataclass, field
 from typing import Literal
 from datasets import load_dataset
+from huggingface_hub import snapshot_download
 
 
 @dataclass
@@ -16,6 +18,23 @@ class SWEBenchItem:
     hints_text: str        # Optional hints
     test_patch: str        # Tests that verify fix
     patch: str             # Gold patch (not given to model)
+    metadata: dict = field(default_factory=dict)
+
+
+@dataclass
+class ScienceAgentBenchItem:
+    """Item from ScienceAgentBench for data-driven scientific discovery tasks."""
+    instance_id: str           # Numeric ID (1-102)
+    domain: str                # e.g., "Computational Chemistry"
+    subtask_categories: str    # e.g., "Feature Engineering, Deep Learning"
+    task_inst: str             # Task instruction
+    domain_knowledge: str      # Expert domain knowledge
+    dataset_folder_tree: str   # File tree of input data
+    dataset_preview: str       # Preview of dataset files
+    output_fname: str          # Expected output filename
+    gold_program_name: str     # Gold program filename
+    eval_script_name: str      # Evaluation script filename
+    github_name: str           # Source GitHub repo
     metadata: dict = field(default_factory=dict)
 
 
@@ -381,6 +400,12 @@ def format_prompt_spell(item: BenchmarkItem, context_file: str = None) -> str:
             '',
             f'Question: {item.question.strip()}',
         ])
+    elif item.dataset == 'gaia':
+        # GAIA: general question, optional file attachment
+        parts.append(item.question.strip())
+        file_path = (item.metadata or {}).get('file_path', '')
+        if file_path:
+            parts.extend(['', f'Attached file: {file_path}'])
     else:
         # Self-contained problem (GSM8K math, etc.)
         parts.extend([
@@ -409,11 +434,63 @@ def format_prompt_spell(item: BenchmarkItem, context_file: str = None) -> str:
     elif item.dataset == 'hmmt':
         parts.append('')
         parts.append('Solve step by step. Return just the final answer (e.g., 42 or 3/4 or 2\\sqrt{3}).')
+    elif item.dataset == 'gaia':
+        parts.append('')
+        parts.append('Use web search and any tools needed. Return ONLY the final answer — a number, a short string, or a comma-separated list. No explanation.')
     else:
         parts.append('')
         parts.append('Return just the answer (e.g., "bathroom").')
 
     return "\n".join(parts)
+
+
+def load_gaia(level: int = None, max_items: int = None) -> list[BenchmarkItem]:
+    """Load GAIA benchmark for general AI assistant evaluation.
+
+    165 validation items across 3 levels. Questions require web search,
+    file reading, reasoning, and tool use. Some items have file attachments.
+
+    Args:
+        level: Filter by difficulty (1=easy, 2=medium, 3=hard). None = all.
+        max_items: Optional limit on number of items.
+    """
+    ds = load_dataset('gaia-benchmark/GAIA', '2023_all', split='validation')
+
+    # Download repo snapshot for file attachments
+    data_dir = snapshot_download(repo_id='gaia-benchmark/GAIA', repo_type='dataset')
+
+    items = []
+    for row in ds:
+        if max_items and len(items) >= max_items:
+            break
+
+        row_level = int(row['Level'])
+        if level is not None and row_level != level:
+            continue
+
+        # Resolve file path if present
+        file_path = None
+        if row.get('file_name') and row.get('file_path'):
+            file_path = os.path.join(data_dir, row['file_path'])
+
+        metadata = {
+            'level': row_level,
+            'file_name': row.get('file_name', ''),
+            'file_path': file_path or '',
+            'annotator_steps': (row.get('Annotator Metadata') or {}).get('Steps', ''),
+        }
+
+        items.append(BenchmarkItem(
+            id=row['task_id'],
+            dataset='gaia',
+            context='',  # No bulk context — questions are self-contained or need web/file access
+            question=row['Question'],
+            answer=row['Final answer'],
+            choices=None,
+            metadata=metadata,
+        ))
+
+    return items
 
 
 # Dataset registry
@@ -439,6 +516,10 @@ DATASETS = {
     'hmmt_nov_2025': lambda: load_hmmt('nov', 2025),  # HMMT Nov 2025 (30 problems)
     'omni_math': lambda: load_omni_math(),  # All 4,430 olympiad problems
     'omni_math_hard': lambda: load_omni_math(min_difficulty=6.0),  # Hard subset (difficulty >= 6.0)
+    'gaia': lambda: load_gaia(),  # All 165 validation items
+    'gaia_l1': lambda: load_gaia(level=1),  # Level 1 (53 items, easiest)
+    'gaia_l2': lambda: load_gaia(level=2),  # Level 2 (86 items)
+    'gaia_l3': lambda: load_gaia(level=3),  # Level 3 (26 items, hardest)
 }
 
 
@@ -529,4 +610,58 @@ SWEBENCH_DATASETS = {
     'swebench_verified': load_swebench_verified,
     'swebench_lite': load_swebench_lite,
     'swebench_mini': lambda: load_swebench_verified_mini(50),
+}
+
+
+# =============================================================================
+# ScienceAgentBench Dataset Loaders
+# =============================================================================
+
+def load_scienceagentbench(max_items: int = None, domain: str = None) -> list[ScienceAgentBenchItem]:
+    """Load ScienceAgentBench tasks for data-driven scientific discovery.
+
+    102 tasks from 44 peer-reviewed publications across 4 disciplines:
+    Bioinformatics, Computational Chemistry, Geographic Information Science,
+    Psychology/Cognitive Neuroscience.
+
+    Args:
+        max_items: Optional limit on number of items
+        domain: Optional filter by domain name (case-insensitive partial match)
+    """
+    ds = load_dataset('osunlp/ScienceAgentBench', split='validation')
+
+    items = []
+    for row in ds:
+        if max_items and len(items) >= max_items:
+            break
+
+        if domain and domain.lower() not in row['domain'].lower():
+            continue
+
+        items.append(ScienceAgentBenchItem(
+            instance_id=str(row['instance_id']),
+            domain=row['domain'],
+            subtask_categories=row['subtask_categories'],
+            task_inst=row['task_inst'],
+            domain_knowledge=row['domain_knowledge'],
+            dataset_folder_tree=row['dataset_folder_tree'],
+            dataset_preview=row['dataset_preview'],
+            output_fname=row['output_fname'],
+            gold_program_name=row['gold_program_name'],
+            eval_script_name=row['eval_script_name'],
+            github_name=row['github_name'],
+            metadata={
+                'src_file_or_path': row.get('src_file_or_path', ''),
+            }
+        ))
+
+    return items
+
+
+SCIENCEAGENTBENCH_DATASETS = {
+    'scienceagentbench': load_scienceagentbench,
+    'scienceagentbench_chem': lambda: load_scienceagentbench(domain='chemistry'),
+    'scienceagentbench_bio': lambda: load_scienceagentbench(domain='bioinformatics'),
+    'scienceagentbench_geo': lambda: load_scienceagentbench(domain='geographic'),
+    'scienceagentbench_psych': lambda: load_scienceagentbench(domain='psychology'),
 }

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+CODEX_NO_CUSTOM_SCRIPT = PROJECT_ROOT / "scripts" / "codex-no-custom.sh"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -210,6 +211,8 @@ class ClaudeCodeAdapter:
 
         cmd = [
             "claude",
+            "--setting-sources",
+            "",
             "-p",
             "--output-format",
             "json",
@@ -441,8 +444,9 @@ class CodexAdapter:
         # Use config override for sandbox mode. In some Codex-hosted environments,
         # `--sandbox workspace-write` can be ignored due inherited wrapper settings.
         # `-c sandbox_mode="workspace-write"` is applied reliably.
+        codex_launcher = str(CODEX_NO_CUSTOM_SCRIPT) if CODEX_NO_CUSTOM_SCRIPT.exists() else "codex"
         base_cmd = [
-            "codex",
+            codex_launcher,
             "--ask-for-approval",
             "never",
             "-c",
@@ -511,6 +515,7 @@ class CodexAdapter:
             "requested_model": (req.model_spec or self.model_spec or "codex"),
             "resolved_model": model,
             "reasoning_effort": reasoning_effort,
+            "no_custom_config": codex_launcher != "codex",
             "thread_id": thread_id,
             "events_tail": events[-20:],
             "non_json_stdout_tail": non_json_lines[-20:],
