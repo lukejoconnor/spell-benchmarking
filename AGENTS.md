@@ -156,9 +156,12 @@ Note: ScienceAgentBench "correct" = program executes and produces expected outpu
 
 | Benchmark | Spell | CC | Entry |
 |-----------|-------|----|-------|
-| Terminal-Bench (24, Opus 4.6) | 62.5% | 54.2% | `terminal-bench-pilot` |
+| Terminal-Bench (25, Opus 4.6) | 76% | 52% | `terminal-bench-pilot` |
+| Terminal-Bench (25, gpt-5.3-codex) | 44% | 56%* | `terminal-bench-codex` |
 
-Breakdown: easy 100%/88%, medium 33%/33%, hard 50%/40%. Paired: 22 concordant, Spell wins 2, CC wins 0. Spell uses tool-call transport (not prefill/thinking).
+*CC column for Codex run = Codex CLI (not Claude Code).
+
+Opus 4.6: Spell wins 6, CC wins 0. Codex: Codex CLI wins 5, Spell wins 1 genuine + 1 infra fluke. Model difference dominates framework difference.
 
 ## Infrastructure
 
@@ -189,12 +192,35 @@ Use `uv run` instead of `python3` directly.
 
 ```
 benchmarking/terminal_bench/
-├── spell_agent.py         # Spell BaseAgent (bridges io/sh to docker exec)
+├── base.py                # DockerExecAgent base: install-in-docker + token tracking
+├── spell_agent.py         # SpellAgent: host-side subprocess, already tracks tokens
+├── codex_agent.py         # CodexAgent: Codex CLI in Docker, --json JSONL parsing
+├── cc_agent.py            # ClaudeCodeAgent: CC in Docker, stream-json parsing
 ├── run_pilot.sh           # Runner script for CC vs Spell comparison
 └── __init__.py
 ```
 
 Requires `tb` CLI (`uv tool install terminal-bench`) and Docker. Tasks cached at `~/.cache/terminal-bench/`.
+
+**Agent invocations:**
+```bash
+# All require: PYTHONPATH="${PWD}/benchmarking/terminal_bench:${PYTHONPATH:-}"
+# and: DOCKER_HOST="unix:///Users/loconnor/.colima/default/docker.sock"
+
+# Spell (runs on host, docker exec bridge for io/sh)
+tb run --agent-import-path "spell_agent:SpellAgent" \
+  --model "anthropic-tc:opus46" -k "budget=5.0" -k "sh_timeout=120"
+
+# Codex CLI (installs in Docker, --json for JSONL token tracking)
+tb run --agent-import-path "codex_agent:CodexAgent" \
+  --model "openai/gpt-5.3-codex"
+
+# Claude Code (installs in Docker, stream-json for JSONL token tracking)
+tb run --agent-import-path "cc_agent:ClaudeCodeAgent" \
+  --model "anthropic/claude-opus-4-6" -k "max_budget_usd=5.0"
+```
+
+All three agents report real `total_input_tokens` and `total_output_tokens` in `results.json`. ClaudeCodeAgent also reports `cost_usd` in `agent-logs/result.json`.
 
 ### Clojure harness (`dev/`)
 
