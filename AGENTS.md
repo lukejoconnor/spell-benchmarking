@@ -52,12 +52,34 @@ Maintain a neutral, skeptical stance. Present unfavorable and inconclusive resul
 |-----------|-------|---------------|-------------|
 | SWE-bench | 50-500 | Bug fixing in real repos | `uv run python benchmarking/bench.py swebench --dataset mini --condition spell` |
 | FeatureBench | varies | Feature implementation | `uv run python benchmarking/bench.py featurebench --condition spell` |
+| ScienceAgentBench | 102 | Scientific code generation (data science) | `uv run python benchmarking/bench.py scienceagentbench --condition claude_code` |
 
 ### Coding (Clojure harness)
 
 | Benchmark | Items | What it tests | Run command |
 |-----------|-------|---------------|-------------|
 | Exercism Python | ~225 | Programming exercises, two-attempt with test feedback | `clj -M:dev -m exercism-bench run` |
+
+### Terminal Tasks (Terminal-Bench harness)
+
+| Benchmark | Items | What it tests | Run command |
+|-----------|-------|---------------|-------------|
+| Terminal-Bench 2.0 | ~80 | Shell tasks in Docker containers | `./benchmarking/terminal_bench/run_pilot.sh both` |
+
+Requires Docker (Colima or Docker Desktop). Uses `tb` CLI (`uv tool install terminal-bench`).
+Spell agent: `benchmarking/terminal_bench/spell_agent.py` (BaseAgent, bridges io/sh to docker exec).
+CC agent: built-in `claude-code` agent (installed inside container).
+
+Individual task runs:
+```bash
+export DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock"  # if using Colima
+export PYTHONPATH="${PWD}/benchmarking/terminal_bench"
+tb run --agent-import-path "spell_agent:SpellAgent" --model "anthropic/claude-opus-4-6" \
+  --dataset "terminal-bench-core==0.1.1" -t <task-id> --output-path <dir> --run-id <id> \
+  --n-concurrent 1 -k "budget=5.0" -k "sh_timeout=120"
+```
+
+Run `docker system prune -af --volumes` between tasks to avoid disk exhaustion.
 
 ### Orchestration (Clojure harness)
 
@@ -122,6 +144,22 @@ Most recent results for comparison. Check notebook entries for full details.
 | Exercism d5-d9 (16) | 93.8% | 100% | `exercism-d5-d9-benchmark` |
 | Exercism d4-d5 (30) | 100% | 100% | `exercism-benchmark-pilot` |
 
+### Scientific Code Generation
+
+| Benchmark | Spell | CC | Entry |
+|-----------|-------|----|-------|
+| ScienceAgentBench (5 pilot, Opus 4.6) | 100% | 100% | `scienceagentbench-pilot` |
+
+Note: ScienceAgentBench "correct" = program executes and produces expected output file. Full functional correctness requires running eval scripts (not yet integrated).
+
+### Terminal Tasks
+
+| Benchmark | Spell | CC | Entry |
+|-----------|-------|----|-------|
+| Terminal-Bench (24, Opus 4.6) | 62.5% | 54.2% | `terminal-bench-pilot` |
+
+Breakdown: easy 100%/88%, medium 33%/33%, hard 50%/40%. Paired: 22 concordant, Spell wins 2, CC wins 0. Spell uses tool-call transport (not prefill/thinking).
+
 ## Infrastructure
 
 ### Python harness (`benchmarking/`)
@@ -147,6 +185,17 @@ benchmarking/
 
 Use `uv run` instead of `python3` directly.
 
+### Terminal-Bench harness (`benchmarking/terminal_bench/`)
+
+```
+benchmarking/terminal_bench/
+├── spell_agent.py         # Spell BaseAgent (bridges io/sh to docker exec)
+├── run_pilot.sh           # Runner script for CC vs Spell comparison
+└── __init__.py
+```
+
+Requires `tb` CLI (`uv tool install terminal-bench`) and Docker. Tasks cached at `~/.cache/terminal-bench/`.
+
 ### Clojure harness (`dev/`)
 
 ```
@@ -171,3 +220,13 @@ Results go to `data/exercism-results/` (timestamped directories) and `notebook/e
 **Zero orchestration usage:** Current benchmarks mostly test sequential tool use, not multi-agent orchestration. Spell's advantage comes from code-first semantics (clean return values, deterministic computation) rather than spawn/ask/plet.
 
 **Think/rethink impact:** Adds ~12pp on olympiad math. Requires structural prefix forcing (opening the completion with `(think "approach" ...)`) — prompt instructions alone have zero effect. See `omni-math-manual-scoring`.
+
+**ScienceAgentBench program extraction:** Claude Code writes .py files directly to the workspace; Spell sometimes inlines Python in `io/run-command` calls without writing a file. The harness checks workspace for .py files first, then falls back to extracting from markdown code blocks. Spell's extraction rate is lower (20% vs 100% in pilot) because of this difference.
+
+**ScienceAgentBench full evaluation:** Requires downloading the benchmark zip from SharePoint (password: `scienceagentbench`), which needs a browser. The zip contains `datasets/`, `eval_programs/`, `gold_programs/`, `scoring_rubrics/`. Docker-based evaluation then runs each program and checks output correctness. Without the zip, only syntax validity can be checked.
+
+**Terminal-Bench docker exec bridge:** Spell runs on the host, not inside Docker containers. `SPELL_DOCKER_CONTAINER` and `SPELL_DOCKER_WORKDIR` env vars cause `io/sh` to use `docker exec` instead of local shell. The preamble in `spell_agent.py` instructs the LLM to use only `io/sh` (not `io/spit`, `io/read-file` etc.) since those operate on the host filesystem. See `src/spell/io.clj`.
+
+**Terminal-Bench disk exhaustion:** Each task builds a Docker image. Running many tasks without cleanup fills Colima's VM disk. Use `docker system prune -af --volumes` between tasks. Never run more than 2 tasks concurrently on Colima with default disk (20GB). The `run_pilot.sh` script runs tasks sequentially.
+
+**Terminal-Bench empty tool-call error:** Opus 4.6 occasionally returns an empty `spell_suffix` tool_use (`input: {}`), causing a fatal `missing-tool-call` error. This is not currently retried (see TODO #144). Observed on write-compressor.
