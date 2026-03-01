@@ -220,7 +220,13 @@ tb run --agent-import-path "cc_agent:ClaudeCodeAgent" \
   --model "anthropic/claude-opus-4-6" -k "max_budget_usd=5.0"
 ```
 
-All three agents report real `total_input_tokens` and `total_output_tokens` in `results.json`. ClaudeCodeAgent also reports `cost_usd` in `agent-logs/result.json`.
+All three agents report `input_tokens` (non-cached), `cached_input_tokens`, `total_input_tokens`, and `output_tokens` in `agent-logs/result.json`. ClaudeCodeAgent also reports `cost_usd`.
+
+**Token semantics differ by provider:**
+- **OpenAI** (Codex): `input_tokens` is the TOTAL (includes cached). `cached_input_tokens` is a subset. Non-cached = `input_tokens - cached_input_tokens`.
+- **Anthropic** (CC): `input_tokens` is non-cached only. `cache_creation_input_tokens` and `cache_read_input_tokens` are separate additive fields.
+
+The `ParsedUsage` dataclass normalizes both to: `input_tokens` (non-cached), `cached_input_tokens`, `total_input_tokens` (sum).
 
 ### Clojure harness (`dev/`)
 
