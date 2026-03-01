@@ -34,8 +34,14 @@ class ExecOutput:
 class ParsedUsage:
     """Token usage extracted from agent output."""
     input_tokens: int = 0
+    cached_input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float | None = None
+
+    @property
+    def total_input_tokens(self) -> int:
+        """Total tokens seen by the model (non-cached + cached)."""
+        return self.input_tokens + self.cached_input_tokens
 
 
 # Idempotent NVM + Node 22 install script.
@@ -187,7 +193,9 @@ class DockerExecAgent(BaseAgent):
             "model": self._model_name,
             "latency_s": round(latency_s, 1),
             "input_tokens": usage.input_tokens if usage else 0,
+            "cached_input_tokens": usage.cached_input_tokens if usage else 0,
             "output_tokens": usage.output_tokens if usage else 0,
+            "total_input_tokens": usage.total_input_tokens if usage else 0,
             "cost_usd": usage.cost_usd if usage else None,
         }
         (logging_dir / "result.json").write_text(json.dumps(result_data, indent=2))
@@ -258,8 +266,9 @@ class DockerExecAgent(BaseAgent):
         # Parse usage
         usage = self._parse_usage(result.stdout)
         if usage:
+            cached_str = f" cached={usage.cached_input_tokens:,}" if usage.cached_input_tokens else ""
             logger.info(
-                f"Usage: in={usage.input_tokens:,} out={usage.output_tokens:,}"
+                f"Usage: in={usage.input_tokens:,}{cached_str} out={usage.output_tokens:,}"
                 + (f" cost=${usage.cost_usd:.4f}" if usage.cost_usd else "")
             )
 
@@ -276,7 +285,7 @@ class DockerExecAgent(BaseAgent):
             failure = FailureMode.NONE
 
         return AgentResult(
-            total_input_tokens=usage.input_tokens if usage else 0,
+            total_input_tokens=usage.total_input_tokens if usage else 0,
             total_output_tokens=usage.output_tokens if usage else 0,
             failure_mode=failure,
         )

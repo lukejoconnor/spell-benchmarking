@@ -108,9 +108,10 @@ echo "claude installed: $(claude --version 2>/dev/null || echo unknown)"
         def _int(v) -> int:
             return int(v) if isinstance(v, (int, float)) else 0
 
+        # CC's input_tokens is non-cached only; cached tokens are separate
         input_tokens = _int(usage.get("input_tokens", 0))
-        input_tokens += _int(usage.get("cache_creation_input_tokens", 0))
-        input_tokens += _int(usage.get("cache_read_input_tokens", 0))
+        cached = (_int(usage.get("cache_creation_input_tokens", 0))
+                  + _int(usage.get("cache_read_input_tokens", 0)))
         output_tokens = _int(usage.get("output_tokens", 0))
 
         cost_usd = result_event.get("total_cost_usd")
@@ -121,6 +122,7 @@ echo "claude installed: $(claude --version 2>/dev/null || echo unknown)"
 
         return ParsedUsage(
             input_tokens=input_tokens,
+            cached_input_tokens=cached,
             output_tokens=output_tokens,
             cost_usd=cost_usd,
         )

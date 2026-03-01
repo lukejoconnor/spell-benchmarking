@@ -83,8 +83,9 @@ echo "codex installed: $(codex --version 2>/dev/null || echo unknown)"
         def _int(v) -> int:
             return int(v) if isinstance(v, (int, float)) else 0
 
+        # OpenAI's input_tokens excludes cached; cached_input_tokens is separate
         input_tokens = _int(usage_candidate.get("input_tokens", 0))
-        input_tokens += _int(usage_candidate.get("cached_input_tokens", 0))
+        cached = _int(usage_candidate.get("cached_input_tokens", 0))
         output_tokens = _int(usage_candidate.get("output_tokens", 0))
 
         cost = usage_candidate.get("total_cost_usd") or usage_candidate.get("cost_usd")
@@ -92,6 +93,7 @@ echo "codex installed: $(codex --version 2>/dev/null || echo unknown)"
 
         return ParsedUsage(
             input_tokens=input_tokens,
+            cached_input_tokens=cached,
             output_tokens=output_tokens,
             cost_usd=cost_usd,
         )
