@@ -219,7 +219,19 @@ def install_nvm_node(container: DockerContainer) -> bool:
         if attempt < max_attempts:
             time.sleep(2)
 
-    return False
+    # Fallback for transient NVM/CDN failures: apt-provided node/npm.
+    logger.info("Falling back to apt nodejs/npm install...")
+    fallback = container.exec_run(
+        "apt-get update -qq && apt-get install -y -qq nodejs npm >/dev/null 2>&1 && "
+        "echo \"node installed via apt: $(node --version 2>/dev/null || echo missing)\"",
+        timeout=300,
+    )
+    if fallback.exit_code != 0:
+        logger.error(f"apt nodejs/npm install failed: {fallback.stderr[:500]}")
+        return False
+
+    logger.info(fallback.stdout.strip().splitlines()[-1] if fallback.stdout.strip() else "node installed via apt")
+    return True
 
 
 def parse_jsonl_events(stdout: str) -> list[dict]:
@@ -260,7 +272,7 @@ CC_ALLOWED_TOOLS = [
 def install_claude_code(container: DockerContainer, env: dict[str, str]) -> bool:
     """Install Claude Code CLI inside the container."""
     script = """
-source "$HOME/.nvm/nvm.sh"
+[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"
 npm install -g @anthropic-ai/claude-code@latest
 echo "claude installed: $(claude --version 2>/dev/null || echo unknown)"
 """
@@ -284,7 +296,7 @@ def run_claude_code(
     """Run Claude Code inside the container."""
     escaped = shlex.quote(prompt)
     cmd = (
-        f'source "$HOME/.nvm/nvm.sh" && '
+        f'[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"; '
         f"claude "
         f"--setting-sources '' "
         f"--verbose "
@@ -339,7 +351,7 @@ def parse_claude_code_usage(stdout: str) -> ParsedUsage | None:
 def install_codex(container: DockerContainer, env: dict[str, str]) -> bool:
     """Install Codex CLI inside the container."""
     script = """
-source "$HOME/.nvm/nvm.sh"
+[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"
 npm install -g @openai/codex@latest
 mkdir -p "$HOME/.codex"
 echo '{"OPENAI_API_KEY": "'"$OPENAI_API_KEY"'"}' > "$HOME/.codex/auth.json"
@@ -364,7 +376,7 @@ def run_codex(
     """Run Codex inside the container."""
     escaped = shlex.quote(prompt)
     cmd = (
-        f'source "$HOME/.nvm/nvm.sh" && '
+        f'[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"; '
         f"codex exec --json --ephemeral --skip-git-repo-check "
         f"--sandbox danger-full-access "
         f"-m {shlex.quote(model)} "
