@@ -169,16 +169,20 @@ class DockerContainer:
         )
 
     def diff(self) -> str:
-        """Extract git diff HEAD from the container workspace."""
-        result = self.exec_run("git diff HEAD")
+        """Extract git diff HEAD from the container workspace, including new files."""
+        result = self.exec_run(
+            "git add -A && git diff --cached HEAD; status=$?; git reset -q >/dev/null 2>&1; exit $status"
+        )
         if result.exit_code != 0:
             logger.warning(f"git diff failed: {result.stderr[:200]}")
             return ""
         return result.stdout
 
     def changed_files(self) -> list[str]:
-        """List files changed relative to HEAD."""
-        result = self.exec_run("git diff --name-only HEAD")
+        """List files changed relative to HEAD, including newly created files."""
+        result = self.exec_run(
+            "git add -A && git diff --name-only --cached HEAD; status=$?; git reset -q >/dev/null 2>&1; exit $status"
+        )
         if result.exit_code != 0:
             return []
         return [f.strip() for f in result.stdout.splitlines() if f.strip()]
@@ -203,13 +207,19 @@ class DockerContainer:
 
 def install_nvm_node(container: DockerContainer) -> bool:
     """Install NVM and Node 22 inside a container. Returns True on success."""
-    logger.info("Installing NVM + Node in container...")
-    result = container.exec_run(NVM_NODE_INSTALL, timeout=300)
-    if result.exit_code != 0:
+    max_attempts = 2
+    for attempt in range(1, max_attempts + 1):
+        logger.info(f"Installing NVM + Node in container (attempt {attempt}/{max_attempts})...")
+        result = container.exec_run(NVM_NODE_INSTALL, timeout=300)
+        if result.exit_code == 0:
+            logger.info(result.stdout.strip().splitlines()[-1] if result.stdout.strip() else "Node installed")
+            return True
+
         logger.error(f"NVM/Node install failed: {result.stderr[:500]}")
-        return False
-    logger.info(result.stdout.strip().splitlines()[-1] if result.stdout.strip() else "Node installed")
-    return True
+        if attempt < max_attempts:
+            time.sleep(2)
+
+    return False
 
 
 def parse_jsonl_events(stdout: str) -> list[dict]:

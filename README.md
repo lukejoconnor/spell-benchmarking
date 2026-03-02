@@ -71,12 +71,13 @@ uv run python benchmarking/bench.py swebench [OPTIONS]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--dataset` | `mini` | `mini` (50), `lite` (300), or `verified` (500) |
+| `--dataset` | `mini` | `mini` (50), `lite` (300), `verified` (500), or `pro` (~250) |
 | `--condition` | `both` | `spell`, `claude_code`, `codex`, `both`, or `all` |
 | `--model` | *(none, required)* | `provider:model` spec for Spell |
 | `--claude-model` | *(none, required)* | Model name for Claude Code |
 | `--codex-model` | `codex` | Model for Codex CLI |
 | `--n` | all | Limit to first N items |
+| `--items` | — | Comma-separated SWE-bench instance IDs to run |
 | `--parallel` | 1 | Max concurrent runs |
 | `--budget` | 10.0 | Spell budget in USD |
 | `--depth` | 50 | Max LLM recursion depth |
@@ -169,6 +170,7 @@ Optional filters: `--run-id`, `--condition`.
 | `mini` | SWE-bench Verified | 50 | Stratified mini split |
 | `lite` | SWE-bench Lite | 300 | SWE-bench Lite |
 | `verified` | SWE-bench Verified | 500 | Full verified set |
+| `pro` | SWE-bench Pro | ~250 | Harder production-like subset |
 
 ### Coding (FeatureBench)
 

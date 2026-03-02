@@ -535,18 +535,32 @@ def load_all() -> list[BenchmarkItem]:
 # SWE-bench Dataset Loaders
 # =============================================================================
 
-def load_swebench_verified(max_items: int = None) -> list[SWEBenchItem]:
-    """Load SWE-bench Verified dataset (500 human-validated instances).
+def _load_swebench_dataset(dataset_name: str, max_items: int = None) -> list[SWEBenchItem]:
+    """Load a SWE-bench-style dataset from Hugging Face.
 
-    Args:
-        max_items: Optional limit on number of items
+    Supports SWE-bench Lite, Verified, and Pro, which share core schema fields
+    used by this harness (`instance_id`, `repo`, `base_commit`,
+    `problem_statement`, `hints_text`, `test_patch`, and `patch`).
     """
-    ds = load_dataset('princeton-nlp/SWE-bench_Verified', split='test')
+    ds = load_dataset(dataset_name, split='test')
 
     items = []
     for row in ds:
         if max_items and len(items) >= max_items:
             break
+
+        metadata = {}
+        for key in (
+            'created_at',
+            'version',
+            'environment_setup_commit',
+            'requirements',
+            'interface',
+            'difficulty',
+        ):
+            value = row.get(key, '')
+            if value not in ('', None):
+                metadata[key] = value
 
         items.append(SWEBenchItem(
             instance_id=row['instance_id'],
@@ -556,14 +570,19 @@ def load_swebench_verified(max_items: int = None) -> list[SWEBenchItem]:
             hints_text=row.get('hints_text', ''),
             test_patch=row['test_patch'],
             patch=row['patch'],
-            metadata={
-                'created_at': row.get('created_at', ''),
-                'version': row.get('version', ''),
-                'environment_setup_commit': row.get('environment_setup_commit', ''),
-            }
+            metadata=metadata,
         ))
 
     return items
+
+
+def load_swebench_verified(max_items: int = None) -> list[SWEBenchItem]:
+    """Load SWE-bench Verified dataset (500 human-validated instances).
+
+    Args:
+        max_items: Optional limit on number of items
+    """
+    return _load_swebench_dataset('princeton-nlp/SWE-bench_Verified', max_items=max_items)
 
 
 def load_swebench_lite(max_items: int = None) -> list[SWEBenchItem]:
@@ -572,28 +591,19 @@ def load_swebench_lite(max_items: int = None) -> list[SWEBenchItem]:
     Args:
         max_items: Optional limit on number of items
     """
-    ds = load_dataset('princeton-nlp/SWE-bench_Lite', split='test')
+    return _load_swebench_dataset('princeton-nlp/SWE-bench_Lite', max_items=max_items)
 
-    items = []
-    for row in ds:
-        if max_items and len(items) >= max_items:
-            break
 
-        items.append(SWEBenchItem(
-            instance_id=row['instance_id'],
-            repo=row['repo'],
-            base_commit=row['base_commit'],
-            problem_statement=row['problem_statement'],
-            hints_text=row.get('hints_text', ''),
-            test_patch=row['test_patch'],
-            patch=row['patch'],
-            metadata={
-                'created_at': row.get('created_at', ''),
-                'version': row.get('version', ''),
-            }
-        ))
+def load_swebench_pro(max_items: int = None) -> list[SWEBenchItem]:
+    """Load SWE-bench Pro dataset.
 
-    return items
+    SWE-bench Pro is a newer, harder coding benchmark with production-like
+    tasks and stricter issue statements.
+
+    Args:
+        max_items: Optional limit on number of items.
+    """
+    return _load_swebench_dataset('ScaleAI/SWE-bench_Pro', max_items=max_items)
 
 
 def load_swebench_verified_mini(n: int = 50) -> list[SWEBenchItem]:
@@ -609,6 +619,7 @@ def load_swebench_verified_mini(n: int = 50) -> list[SWEBenchItem]:
 SWEBENCH_DATASETS = {
     'swebench_verified': load_swebench_verified,
     'swebench_lite': load_swebench_lite,
+    'swebench_pro': load_swebench_pro,
     'swebench_mini': lambda: load_swebench_verified_mini(50),
 }
 

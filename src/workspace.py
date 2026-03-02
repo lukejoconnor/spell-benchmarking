@@ -104,25 +104,49 @@ class Worktree:
         self._mutation_lock = mutation_lock
 
     def diff(self) -> str:
-        """Return git diff HEAD as a string."""
+        """Return git diff HEAD as a string, including newly created files."""
         if not self.path.exists():
             return ""
-        result = subprocess.run(
-            ["git", "diff", "HEAD"],
+        add_result = subprocess.run(
+            ["git", "add", "-A"],
             cwd=self.path, capture_output=True, timeout=60,
         )
+        if add_result.returncode != 0:
+            return ""
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--cached", "HEAD"],
+                cwd=self.path, capture_output=True, timeout=60,
+            )
+        finally:
+            subprocess.run(
+                ["git", "reset", "-q"],
+                cwd=self.path, capture_output=True, timeout=60,
+            )
         if result.returncode != 0:
             return ""
         return result.stdout.decode("utf-8", errors="replace")
 
     def changed_files(self) -> list[str]:
-        """Return list of modified file paths."""
+        """Return list of modified file paths, including newly created files."""
         if not self.path.exists():
             return []
-        result = subprocess.run(
-            ["git", "diff", "--name-only", "HEAD"],
+        add_result = subprocess.run(
+            ["git", "add", "-A"],
             cwd=self.path, capture_output=True, timeout=60,
         )
+        if add_result.returncode != 0:
+            return []
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--name-only", "--cached", "HEAD"],
+                cwd=self.path, capture_output=True, timeout=60,
+            )
+        finally:
+            subprocess.run(
+                ["git", "reset", "-q"],
+                cwd=self.path, capture_output=True, timeout=60,
+            )
         text = result.stdout.decode("utf-8", errors="replace")
         return [f.strip() for f in text.splitlines() if f.strip()]
 

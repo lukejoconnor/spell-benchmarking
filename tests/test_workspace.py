@@ -7,7 +7,7 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from src.workspace import RepoCache
+from src.workspace import RepoCache, Worktree
 
 
 def _run_in_parallel(*targets) -> None:
@@ -104,3 +104,35 @@ def test_parallel_worktree_add_and_remove_same_repo_are_serialized(tmp_path: Pat
     )
 
     assert max_by_repo[str(repo_path)] == 1
+
+
+def test_worktree_diff_and_changed_files_include_new_files(tmp_path: Path) -> None:
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir(parents=True, exist_ok=True)
+
+    subprocess.run(["git", "init"], cwd=repo_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "bench@local"], cwd=repo_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "bench"], cwd=repo_path, check=True, capture_output=True)
+
+    (repo_path / "base.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo_path, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo_path, check=True, capture_output=True)
+
+    (repo_path / "new_file.py").write_text("print('hello')\n", encoding="utf-8")
+
+    wt = Worktree(repo_path, repo_path)
+    diff = wt.diff()
+    changed = wt.changed_files()
+
+    assert "new_file.py" in diff
+    assert "new_file.py" in changed
+
+    # diff()/changed_files() should not leave staged changes behind.
+    cached = subprocess.run(
+        ["git", "diff", "--name-only", "--cached", "HEAD"],
+        cwd=repo_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert cached.stdout.strip() == ""

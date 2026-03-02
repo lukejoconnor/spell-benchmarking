@@ -50,7 +50,7 @@ Maintain a neutral, skeptical stance. Present unfavorable and inconclusive resul
 
 | Benchmark | Items | What it tests | Run command |
 |-----------|-------|---------------|-------------|
-| SWE-bench | 50-500 | Bug fixing in real repos | `uv run python benchmarking/bench.py swebench --dataset mini --condition spell` |
+| SWE-bench | 50-731 | Bug fixing in real repos | `uv run python benchmarking/bench.py swebench --dataset pro --condition spell` |
 | FeatureBench | varies | Feature implementation | `uv run python benchmarking/bench.py featurebench --condition spell` |
 | ScienceAgentBench | 102 | Scientific code generation (data science) | `uv run python benchmarking/bench.py scienceagentbench --condition claude_code` |
 
