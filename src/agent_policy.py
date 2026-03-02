@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 SpellMode = Literal["msg", "tc"]
-BenchKind = Literal["general", "swebench", "featurebench"]
+BenchKind = Literal["general", "swebench", "featurebench", "exercism"]
 GeneralFamily = Literal["general_math", "general_longcontext", "general_other"]
 AgentSource = Literal["default", "agent", "agent_msg", "agent_tc"]
 ProviderFamily = Literal["pf", "msg", "tc"]
@@ -85,6 +85,8 @@ def _resolve_family(bench_kind: BenchKind, item_datasets: set[str] | None) -> st
         return "swebench"
     if bench_kind == "featurebench":
         return "featurebench"
+    if bench_kind == "exercism":
+        return "exercism"
     raise ValueError(f"Unknown benchmark kind: {bench_kind}")
 
 

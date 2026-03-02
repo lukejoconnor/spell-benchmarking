@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, UTC
@@ -23,8 +24,10 @@ except ModuleNotFoundError as exc:  # pragma: no cover
 from src.datasets import (
     DATASETS,
     BenchmarkItem,
+    ExercismItem,
     ScienceAgentBenchItem,
     SWEBenchItem,
+    load_exercism,
     load_scienceagentbench,
     load_swebench_verified,
     load_swebench_lite,
@@ -628,6 +631,7 @@ def run_general(
 @click.option("--workspace-root", default=None)
 @click.option("--keep-workspaces", is_flag=True, default=False)
 @click.option("--docker", is_flag=True, default=False, help="Run agents inside Docker containers for isolation")
+@click.option("--trace/--no-trace", default=False, show_default=True, help="Record Spell execution traces")
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
 @click.option("--output", default=None)
@@ -652,6 +656,7 @@ def run_swebench(
     workspace_root: str | None,
     keep_workspaces: bool,
     docker: bool,
+    trace: bool,
     dry_run: bool,
     run_id: str | None,
     output: str | None,
@@ -729,6 +734,7 @@ def run_swebench(
                     "items": sorted(requested_ids) if requested_ids else None,
                     "budget": budget,
                     "depth": depth,
+                    "trace": trace,
                     "agent": spell_resolution.agent_file if spell_resolution else None,
                     "spell_mode": spell_resolution.spell_mode if spell_resolution else None,
                     "agent_source": spell_resolution.source if spell_resolution else None,
@@ -783,6 +789,7 @@ def run_swebench(
                     depth=depth,
                     max_tokens=max_tokens,
                     reasoning_effort=reasoning_effort,
+                    trace=trace if cond == "spell" else False,
                     workspace=ws_path,
                 )
                 resp = adapter.run(req)
@@ -1490,6 +1497,366 @@ def run_scienceagentbench(
                 pred_path = pred_dir / f"pred_{item.gold_program_name}"
                 pred_path.write_text(record.patch, encoding="utf-8")
         click.echo(f"  Programs saved to: {pred_dir}")
+
+
+EXERCISM_PYTEST_TIMEOUT = 60
+
+
+def _setup_exercism_workspace(item: ExercismItem, tag: str) -> Path:
+    """Create a temp directory with exercise files. Returns workspace path."""
+    import tempfile
+    ws = Path(tempfile.mkdtemp(prefix=f"exercism-{item.slug}-{tag}-"))
+    (ws / item.stub_file).write_text(item.stub_content, encoding="utf-8")
+    (ws / item.test_file).write_text(item.test_content, encoding="utf-8")
+    for ef in item.extra_files:
+        (ws / ef["name"]).write_text(ef["content"], encoding="utf-8")
+    return ws
+
+
+def _cleanup_exercism_workspace(ws: Path) -> None:
+    import shutil
+    if ws.exists():
+        shutil.rmtree(ws)
+
+
+def _format_exercism_prompt(item: ExercismItem, ws: Path) -> str:
+    stub_path = ws / item.stub_file
+    test_path = ws / item.test_file
+    return (
+        "You are solving a Python programming exercise.\n\n"
+        "## Instructions\n\n"
+        f"{item.instructions}\n\n"
+        "## Task\n\n"
+        f"The solution file is at {stub_path}. Edit it to implement the solution.\n\n"
+        "Current contents:\n"
+        f"```python\n{item.stub_content}```\n\n"
+        f"Read the test file at {test_path} before starting.\n"
+        f"Verify with: uv tool run pytest {test_path} -v\n\n"
+        "Only use standard libraries. Do not modify the test file."
+    )
+
+
+def _format_exercism_retry_prompt(test_output: str, ws: Path, item: ExercismItem) -> str:
+    stub_path = ws / item.stub_file
+    test_path = ws / item.test_file
+    return (
+        "The tests failed with this output:\n\n"
+        f"```\n{test_output}```\n\n"
+        "The tests are correct — do not modify them. "
+        f"Fix the code in {stub_path} to resolve the errors.\n"
+        f"Verify with: uv tool run pytest {test_path} -v"
+    )
+
+
+def _format_exercism_baseline_prompt(item: ExercismItem) -> str:
+    """Format prompt for baseline (single LLM call, no tool use)."""
+    return (
+        "You are solving a Python programming exercise.\n\n"
+        "## Instructions\n\n"
+        f"{item.instructions}\n\n"
+        "## Stub\n\n"
+        f"```python\n{item.stub_content}```\n\n"
+        "## Tests\n\n"
+        f"```python\n{item.test_content}```\n\n"
+        "Write the complete solution. Return ONLY the Python code, no explanation."
+    )
+
+
+def _run_exercism_pytest(test_path: Path, timeout: int = EXERCISM_PYTEST_TIMEOUT) -> tuple[bool, str]:
+    """Run pytest on the test file. Returns (passed, output)."""
+    try:
+        proc = subprocess.run(
+            ["uv", "tool", "run", "pytest", str(test_path), "-v"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return proc.returncode == 0, proc.stdout + proc.stderr
+    except subprocess.TimeoutExpired:
+        return False, f"TIMEOUT: pytest exceeded {timeout} seconds"
+
+
+@cli.command("exercism")
+@click.option("--condition", default="spell", type=click.Choice(["baseline", "spell", "claude_code", "codex", "all"]))
+@click.option("--difficulty", default=None, help="Difficulty range, e.g. '1-3' or '5'")
+@click.option("--slugs", default=None, help="Comma-separated exercise slugs")
+@click.option("--n", type=int, default=None, help="Limit to N exercises")
+@click.option("--model", default=None, help="provider:model for baseline/spell (required for those conditions)")
+@click.option("--claude-model", default=None, help="Model for Claude Code comparator (required for claude_code condition)")
+@click.option("--codex-model", default="codex", help="Model for Codex harness comparator")
+@click.option("--parallel", type=int, default=1, show_default=True)
+@click.option("--budget", type=float, default=2.0, show_default=True)
+@click.option("--agent", default=None, help="Spell agent override")
+@click.option("--agent-msg", default=None, help="Spell msg-mode agent override")
+@click.option("--agent-tc", default=None, help="Spell tc-mode agent override")
+@click.option("--depth", type=int, default=8, show_default=True)
+@click.option("--max-tokens", type=int, default=None)
+@click.option("--timeout", type=int, default=300, show_default=True)
+@click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
+@click.option("--no-retry", is_flag=True, default=False, help="Skip retry on test failure")
+@click.option("--trace/--no-trace", default=False, show_default=True)
+@click.option("--dry-run", is_flag=True, default=False)
+@click.option("--run-id", default=None)
+@click.option("--output", default=None, help="JSONL output path")
+def run_exercism(
+    condition: str,
+    difficulty: str | None,
+    slugs: str | None,
+    n: int | None,
+    model: str | None,
+    claude_model: str | None,
+    codex_model: str,
+    parallel: int,
+    budget: float,
+    agent: str | None,
+    agent_msg: str | None,
+    agent_tc: str | None,
+    depth: int,
+    max_tokens: int | None,
+    timeout: int,
+    reasoning_effort: str | None,
+    no_retry: bool,
+    trace: bool,
+    dry_run: bool,
+    run_id: str | None,
+    output: str | None,
+) -> None:
+    """Run Exercism Python benchmark with two-attempt protocol."""
+    run_id = run_id or _run_id("exercism")
+    output_file = Path(output) if output else _default_output(run_id)
+    conditions = _parse_conditions(condition, ("baseline", "spell", "claude_code", "codex", "all"))
+
+    # Parse difficulty
+    diff_min, diff_max = None, None
+    if difficulty:
+        parts = difficulty.split("-")
+        if len(parts) == 2:
+            diff_min, diff_max = int(parts[0]), int(parts[1])
+        else:
+            diff_min = diff_max = int(parts[0])
+
+    slug_set = {s.strip() for s in slugs.split(",") if s.strip()} if slugs else None
+
+    items = load_exercism(
+        difficulty_min=diff_min,
+        difficulty_max=diff_max,
+        slugs=slug_set,
+        max_items=n,
+    )
+
+    click.echo(f"Run ID: {run_id}")
+    click.echo(f"Output: {output_file}")
+    click.echo(f"Exercises: {len(items)}")
+    click.echo(f"Retry: {'disabled' if no_retry else 'enabled'}")
+
+    if dry_run:
+        spell_resolution = None
+        if "spell" in conditions:
+            spell_resolution = _resolve_spell_agent_or_die(
+                bench_kind="exercism",
+                model_spec=model,
+                agent=agent,
+                agent_msg=agent_msg,
+                agent_tc=agent_tc,
+            )
+        click.echo(
+            json.dumps(
+                {
+                    "conditions": conditions,
+                    "model": model,
+                    "claude_model": claude_model,
+                    "codex_model": codex_model,
+                    "budget": budget,
+                    "depth": depth,
+                    "no_retry": no_retry,
+                    "trace": trace,
+                    "agent": spell_resolution.agent_file if spell_resolution else None,
+                },
+                indent=2,
+            )
+        )
+        if items:
+            click.echo(f"First: {items[0].slug} (d={items[0].difficulty})")
+        return
+
+    for cond in conditions:
+        click.echo(f"\n--- Running {cond} ---")
+        adapter = _build_adapter(cond, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget)
+        spell_resolution = None
+        if cond in ("spell", "baseline"):
+            spell_resolution = _resolve_spell_agent_or_die(
+                bench_kind="exercism",
+                model_spec=model,
+                agent=agent,
+                agent_msg=agent_msg,
+                agent_tc=agent_tc,
+            )
+            if cond == "spell":
+                click.echo(
+                    f"  spell_mode={spell_resolution.spell_mode} "
+                    f"agent={spell_resolution.agent_file} source={spell_resolution.source}"
+                )
+
+        def process(item: ExercismItem) -> UnifiedRunRecord:
+            ws = _setup_exercism_workspace(item, cond)
+            try:
+                test_path = ws / item.test_file
+                total_cost = 0.0
+                total_tokens_in = 0
+                total_tokens_out = 0
+                attempt = 0
+                passed = False
+
+                # === Attempt 1 ===
+                attempt = 1
+                if cond == "baseline":
+                    prompt = _format_exercism_baseline_prompt(item)
+                else:
+                    prompt = _format_exercism_prompt(item, ws)
+
+                req = RunRequest(
+                    benchmark="exercism",
+                    dataset="exercism",
+                    item_id=item.slug,
+                    condition=cond,
+                    prompt=prompt,
+                    model_spec={"spell": model, "baseline": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
+                    timeout=timeout,
+                    init=_make_spell_init(prompt) if cond == "spell" else None,
+                    agent_file=spell_resolution.agent_file if (spell_resolution and cond == "spell") else None,
+                    budget=budget,
+                    depth=depth,
+                    max_tokens=max_tokens,
+                    reasoning_effort=reasoning_effort,
+                    trace=trace if cond == "spell" else False,
+                    workspace=ws if cond != "baseline" else None,
+                )
+                resp1 = adapter.run(req)
+
+                # For baseline, extract code from response and write to file
+                if cond == "baseline" and resp1.response_text:
+                    code = _extract_python_program(resp1.response_text)
+                    if code:
+                        (ws / item.stub_file).write_text(code, encoding="utf-8")
+
+                total_cost += resp1.cost_usd or 0.0
+                total_tokens_in += resp1.tokens_in or 0
+                total_tokens_out += resp1.tokens_out or 0
+
+                passed, test_output = _run_exercism_pytest(test_path)
+
+                # === Attempt 2 (retry) ===
+                resp2 = None
+                if not passed and not no_retry:
+                    attempt = 2
+                    retry_prompt = _format_exercism_retry_prompt(test_output, ws, item)
+
+                    req2 = RunRequest(
+                        benchmark="exercism",
+                        dataset="exercism",
+                        item_id=item.slug,
+                        condition=cond,
+                        prompt=retry_prompt,
+                        model_spec=req.model_spec,
+                        timeout=timeout,
+                        init=_make_spell_init(retry_prompt) if cond == "spell" else None,
+                        agent_file=req.agent_file,
+                        budget=budget,
+                        depth=depth,
+                        max_tokens=max_tokens,
+                        reasoning_effort=reasoning_effort,
+                        trace=trace if cond == "spell" else False,
+                        workspace=ws if cond != "baseline" else None,
+                    )
+                    resp2 = adapter.run(req2)
+
+                    if cond == "baseline" and resp2.response_text:
+                        code = _extract_python_program(resp2.response_text)
+                        if code:
+                            (ws / item.stub_file).write_text(code, encoding="utf-8")
+
+                    total_cost += resp2.cost_usd or 0.0
+                    total_tokens_in += resp2.tokens_in or 0
+                    total_tokens_out += resp2.tokens_out or 0
+
+                    passed, test_output = _run_exercism_pytest(test_path)
+
+                last_resp = resp2 if resp2 else resp1
+                latency_ms = (resp1.latency_ms or 0.0) + ((resp2.latency_ms or 0.0) if resp2 else 0.0)
+
+                status = "passed" if passed else last_resp.status
+                if not passed and not last_resp.error_message:
+                    status = "tests_failed"
+
+                return _mk_record(
+                    run_id=run_id,
+                    benchmark="exercism",
+                    dataset="exercism",
+                    split=None,
+                    item_id=item.slug,
+                    condition=cond,
+                    model_spec=req.model_spec,
+                    agent_file=req.agent_file,
+                    response=RunResponse(
+                        status=status,
+                        response_text=last_resp.response_text,
+                        tokens_in=total_tokens_in if total_tokens_in else None,
+                        tokens_out=total_tokens_out if total_tokens_out else None,
+                        cost_usd=total_cost if total_cost else None,
+                        latency_ms=latency_ms,
+                        error_message=last_resp.error_message,
+                        error_type=last_resp.error_type,
+                        metadata={**last_resp.metadata, "test_output": test_output[-2000:]},
+                    ),
+                    response_text=last_resp.response_text,
+                    patch=None,
+                    answer_extracted=None,
+                    correct=passed,
+                    metadata={
+                        "difficulty": item.difficulty,
+                        "attempt": attempt,
+                        **(
+                            {
+                                "spell_mode": spell_resolution.spell_mode,
+                                "resolved_agent_file": spell_resolution.agent_file,
+                                "agent_source": spell_resolution.source,
+                                "agent_policy_key": spell_resolution.policy_key,
+                            }
+                            if (cond == "spell" and spell_resolution)
+                            else {}
+                        ),
+                    },
+                )
+            finally:
+                _cleanup_exercism_workspace(ws)
+
+        if parallel <= 1:
+            records = []
+            for i, item in enumerate(items):
+                click.echo(f"  [{i+1}/{len(items)}] {item.slug} (d={item.difficulty})")
+                record = process(item)
+                records.append(record)
+                mark = "PASS" if record.correct else "FAIL"
+                cost = record.cost_usd or 0.0
+                click.echo(f"    {mark} (${cost:.4f})")
+        else:
+            records = [None] * len(items)
+            with ThreadPoolExecutor(max_workers=parallel) as pool:
+                futures = {pool.submit(process, item): idx for idx, item in enumerate(items)}
+                done = 0
+                for fut in as_completed(futures):
+                    idx = futures[fut]
+                    done += 1
+                    records[idx] = fut.result()
+                    item = items[idx]
+                    mark = "PASS" if records[idx].correct else "FAIL"
+                    click.echo(f"  [{done}/{len(items)}] {item.slug} (d={item.difficulty}) {mark}")
+            records = [r for r in records if r is not None]
+
+        for record in records:
+            append_jsonl(output_file, record)
+
+        _print_summary(output_file, run_id, cond)
 
 
 @cli.command("summarize")
