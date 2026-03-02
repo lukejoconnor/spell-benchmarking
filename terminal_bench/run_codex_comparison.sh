@@ -5,17 +5,21 @@
 # Each task runs both conditions before moving to the next.
 #
 # Usage:
-#   ./benchmarking/terminal_bench/run_codex_comparison.sh [task-ids...]
+#   ./terminal_bench/run_codex_comparison.sh [task-ids...]
 
 set -euo pipefail
-cd "$(dirname "$0")/../.."  # cd to spell project root
 
-# Colima Docker socket
-DOCKER_HOST="unix:///Users/loconnor/.colima/default/docker.sock"
-export DOCKER_HOST
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+# Colima Docker socket (if Docker Desktop is not installed)
+if [ -S "${HOME}/.colima/default/docker.sock" ] && [ -z "${DOCKER_HOST:-}" ]; then
+    export DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock"
+fi
 
 DATASET="terminal-bench-core==0.1.1"
-OUTPUT_DIR="benchmarking/results/terminal-bench"
+OUTPUT_DIR="results/terminal-bench"
 TIMESTAMP=$(date +%Y-%m-%d__%H-%M-%S)
 SPELL_OUTPUT="$OUTPUT_DIR/spell_codex_${TIMESTAMP}"
 CODEX_OUTPUT="$OUTPUT_DIR/codex_cli_${TIMESTAMP}"
@@ -39,7 +43,10 @@ else
 fi
 
 mkdir -p "$SPELL_OUTPUT" "$CODEX_OUTPUT"
-export PYTHONPATH="${PWD}/benchmarking/terminal_bench:${PYTHONPATH:-}"
+export PYTHONPATH="${REPO_ROOT}/terminal_bench:${PYTHONPATH:-}"
+if [ -z "${SPELL_ROOT:-}" ] && [ -f "$REPO_ROOT/../deps.edn" ] && [ -f "$REPO_ROOT/../src/spell/benchmark_api.clj" ]; then
+    export SPELL_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
+fi
 
 echo "=== Terminal-Bench 2.0: Codex CLI vs Spell/Codex-tc ==="
 echo "Tasks: ${#TASKS[@]}"
@@ -95,7 +102,7 @@ for task in "${TASKS[@]}"; do
     echo "--- Codex CLI: $task ---"
     docker system prune -af --volumes > /dev/null 2>&1
     if tb run \
-        --agent codex \
+        --agent-import-path "codex_agent:CodexAgent" \
         --model "openai/gpt-5.3-codex" \
         --dataset "$DATASET" \
         -t "$task" \

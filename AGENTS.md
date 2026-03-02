@@ -64,16 +64,16 @@ Maintain a neutral, skeptical stance. Present unfavorable and inconclusive resul
 
 | Benchmark | Items | What it tests | Run command |
 |-----------|-------|---------------|-------------|
-| Terminal-Bench 2.0 | ~80 | Shell tasks in Docker containers | `./benchmarking/terminal_bench/run_pilot.sh both` |
+| Terminal-Bench 2.0 | ~80 | Shell tasks in Docker containers | `./terminal_bench/run_pilot.sh both` |
 
 Requires Docker (Colima or Docker Desktop). Uses `tb` CLI (`uv tool install terminal-bench`).
-Spell agent: `benchmarking/terminal_bench/spell_agent.py` (BaseAgent, bridges io/sh to docker exec).
-CC agent: built-in `claude-code` agent (installed inside container).
+All three conditions use imported Docker agents under `terminal_bench/`.
 
 Individual task runs:
 ```bash
 export DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock"  # if using Colima
-export PYTHONPATH="${PWD}/benchmarking/terminal_bench"
+export PYTHONPATH="${PWD}/terminal_bench"
+export SPELL_ROOT="/path/to/spell"  # needed when benchmarking is checked out standalone
 tb run --agent-import-path "spell_agent:SpellAgent" --model "anthropic/claude-opus-4-6" \
   --dataset "terminal-bench-core==0.1.1" -t <task-id> --output-path <dir> --run-id <id> \
   --n-concurrent 1 -k "budget=5.0" -k "sh_timeout=120"
@@ -188,12 +188,12 @@ benchmarking/
 
 Use `uv run` instead of `python3` directly.
 
-### Terminal-Bench harness (`benchmarking/terminal_bench/`)
+### Terminal-Bench harness (`terminal_bench/`)
 
 ```
-benchmarking/terminal_bench/
+terminal_bench/
 ├── base.py                # DockerExecAgent base: install-in-docker + token tracking
-├── spell_agent.py         # SpellAgent: host-side subprocess, already tracks tokens
+├── spell_agent.py         # SpellAgent: installs Spell runtime + runs benchmark API in Docker
 ├── codex_agent.py         # CodexAgent: Codex CLI in Docker, --json JSONL parsing
 ├── cc_agent.py            # ClaudeCodeAgent: CC in Docker, stream-json parsing
 ├── run_pilot.sh           # Runner script for CC vs Spell comparison
@@ -204,10 +204,11 @@ Requires `tb` CLI (`uv tool install terminal-bench`) and Docker. Tasks cached at
 
 **Agent invocations:**
 ```bash
-# All require: PYTHONPATH="${PWD}/benchmarking/terminal_bench:${PYTHONPATH:-}"
+# All require: PYTHONPATH="${PWD}/terminal_bench:${PYTHONPATH:-}"
 # and: DOCKER_HOST="unix:///Users/loconnor/.colima/default/docker.sock"
 
-# Spell (runs on host, docker exec bridge for io/sh)
+# Spell (runs inside Docker container with bundled /opt/spell runtime)
+# Set SPELL_ROOT when benchmarking repo is not nested under the spell repo root.
 tb run --agent-import-path "spell_agent:SpellAgent" \
   --model "anthropic-tc:opus46" -k "budget=5.0" -k "sh_timeout=120"
 
@@ -257,7 +258,7 @@ Results go to `data/exercism-results/` (timestamped directories) and `notebook/e
 
 **ScienceAgentBench full evaluation:** Requires downloading the benchmark zip from SharePoint (password: `scienceagentbench`), which needs a browser. The zip contains `datasets/`, `eval_programs/`, `gold_programs/`, `scoring_rubrics/`. Docker-based evaluation then runs each program and checks output correctness. Without the zip, only syntax validity can be checked.
 
-**Terminal-Bench docker exec bridge:** Spell runs on the host, not inside Docker containers. `SPELL_DOCKER_CONTAINER` and `SPELL_DOCKER_WORKDIR` env vars cause `io/sh` to use `docker exec` instead of local shell. The preamble in `spell_agent.py` instructs the LLM to use only `io/sh` (not `io/spit`, `io/read-file` etc.) since those operate on the host filesystem. See `src/spell/io.clj`.
+**Terminal-Bench Spell runtime:** SpellAgent now executes inside the task container and copies a minimal Spell runtime bundle (`deps.edn`, `src/`, `config/`) to `/opt/spell` during install. This avoids host-vs-container filesystem asymmetry during scoring.
 
 **Terminal-Bench disk exhaustion:** Each task builds a Docker image. Running many tasks without cleanup fills Colima's VM disk. Use `docker system prune -af --volumes` between tasks. Never run more than 2 tasks concurrently on Colima with default disk (20GB). The `run_pilot.sh` script runs tasks sequentially.
 
