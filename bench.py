@@ -24,9 +24,11 @@ from src.datasets import (
     DATASETS,
     BenchmarkItem,
     ScienceAgentBenchItem,
+    SWEBenchItem,
     load_scienceagentbench,
     load_swebench_verified,
     load_swebench_lite,
+    load_swebench_pro,
     load_swebench_verified_mini,
     format_prompt_baseline,
     format_prompt_spell,
@@ -75,8 +77,26 @@ from src.unified_results import (
     summarize_records,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CONTEXT_DIR = PROJECT_ROOT / "benchmarking" / "data" / "contexts"
+BENCHMARK_ROOT = Path(__file__).resolve().parent
+
+
+def _resolve_spell_root() -> Path:
+    env_spell_root = os.environ.get("SPELL_ROOT")
+    if env_spell_root:
+        return Path(env_spell_root).expanduser().resolve()
+
+    # Nested checkout mode: spell/benchmarking/bench.py
+    nested_candidate = BENCHMARK_ROOT.parent
+    if (nested_candidate / "config" / "agents").exists():
+        return nested_candidate
+
+    # Standalone fallback: leave as benchmark root and let agent resolution
+    # surface a precise error if config files are unavailable.
+    return BENCHMARK_ROOT
+
+
+SPELL_ROOT = _resolve_spell_root()
+CONTEXT_DIR = BENCHMARK_ROOT / "data" / "contexts"
 SWEBENCH_REMINDER_PREAMBLE = '(quine sys-reminder "Recall: you are writing Spell code, not natural language.")'
 SWEBENCH_DOCKER_PREAMBLE = (
     '(quine sys-reminder "Recall: you are writing Spell code, not natural language. '
@@ -171,6 +191,51 @@ def _make_spell_init(prompt: str, preamble: str | None = None) -> str:
     if prompt.lstrip().startswith("("):
         return prompt
     return build_spell_init(prompt, preamble=preamble)
+
+
+def _format_optional_swebench_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    try:
+        return json.dumps(value, indent=2, ensure_ascii=False).strip()
+    except TypeError:
+        return str(value).strip()
+
+
+def _format_swebench_prompt(item: SWEBenchItem) -> str:
+    parts = [
+        f"Repository: {item.repo}",
+        "",
+        "## Issue to Fix",
+        "",
+        item.problem_statement.strip(),
+        "",
+    ]
+
+    hints_text = (item.hints_text or "").strip()
+    if hints_text:
+        parts.extend(["## Hints", "", hints_text, ""])
+
+    requirements = _format_optional_swebench_text((item.metadata or {}).get("requirements"))
+    if requirements:
+        parts.extend(["## Requirements", "", requirements, ""])
+
+    interface = _format_optional_swebench_text((item.metadata or {}).get("interface"))
+    if interface:
+        parts.extend(["## Interface Contract", "", interface, ""])
+
+    parts.extend(
+        [
+            "## Instructions",
+            "",
+            "Fix this bug with minimal code changes.",
+            "Do not commit any changes.",
+            "Run focused checks/tests when possible.",
+        ]
+    )
+    return "\n".join(parts)
 
 
 def _evaluate_general(item: BenchmarkItem, response_text: str | None) -> tuple[str | None, bool | None]:
@@ -277,26 +342,26 @@ def _build_adapter(condition: str, *, model: str | None, claude_model: str | Non
     if docker:
         return _build_docker_adapter(condition, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget)
     if condition == "spell":
-        return SpellAdapter(project_root=PROJECT_ROOT, model_spec=_require_model(condition, model))
+        return SpellAdapter(project_root=SPELL_ROOT, model_spec=_require_model(condition, model))
     if condition == "baseline":
-        return BaselineAdapter(project_root=PROJECT_ROOT, model_spec=_require_model(condition, model))
+        return BaselineAdapter(project_root=SPELL_ROOT, model_spec=_require_model(condition, model))
     if condition == "claude_code":
         return ClaudeCodeAdapter(model=_require_model(condition, claude_model, "--claude-model"), budget=budget)
     if condition == "codex":
-        return CodexAdapter(project_root=PROJECT_ROOT, model_spec=codex_model)
+        return CodexAdapter(project_root=SPELL_ROOT, model_spec=codex_model)
     raise ValueError(f"Unknown condition: {condition}")
 
 
 def _build_docker_adapter(condition: str, *, model: str | None, claude_model: str | None, codex_model: str, budget: float):
     if condition == "spell":
-        return DockerSpellAdapter(project_root=PROJECT_ROOT, model_spec=_require_model(condition, model))
+        return DockerSpellAdapter(project_root=SPELL_ROOT, model_spec=_require_model(condition, model))
     if condition == "claude_code":
         return DockerClaudeCodeAdapter(model=_require_model(condition, claude_model, "--claude-model"), budget=budget)
     if condition == "codex":
         return DockerCodexAdapter(model_spec=codex_model)
     if condition == "baseline":
         # Baseline (single LLM call) doesn't need Docker isolation
-        return BaselineAdapter(project_root=PROJECT_ROOT, model_spec=_require_model(condition, model))
+        return BaselineAdapter(project_root=SPELL_ROOT, model_spec=_require_model(condition, model))
     raise ValueError(f"Unknown condition: {condition}")
 
 
@@ -326,7 +391,7 @@ def _resolve_spell_agent_or_die(
 ):
     try:
         return resolve_spell_agent(
-            project_root=PROJECT_ROOT,
+            project_root=SPELL_ROOT,
             bench_kind=bench_kind,  # type: ignore[arg-type]
             model_spec=model_spec,
             item_datasets=item_datasets,
@@ -543,12 +608,13 @@ def run_general(
 
 
 @cli.command("swebench")
-@click.option("--dataset", default="mini", type=click.Choice(["mini", "lite", "verified"]))
+@click.option("--dataset", default="mini", type=click.Choice(["mini", "lite", "verified", "pro"]))
 @click.option("--condition", default="both", type=click.Choice(["spell", "claude_code", "codex", "both", "all"]))
 @click.option("--model", default=None, help="provider:model for Spell (required for spell condition)")
 @click.option("--claude-model", default=None, help="Model for Claude Code comparator (required for claude_code condition)")
 @click.option("--codex-model", default="codex")
 @click.option("--n", type=int, default=None)
+@click.option("--items", "item_ids", default=None, help="Comma-separated SWE-bench instance IDs to run")
 @click.option("--parallel", type=int, default=1, show_default=True)
 @click.option("--budget", type=float, default=10.0, show_default=True)
 @click.option("--agent", default=None, help="Spell agent override")
@@ -571,6 +637,7 @@ def run_swebench(
     claude_model: str,
     codex_model: str,
     n: int | None,
+    item_ids: str | None,
     parallel: int,
     budget: float,
     agent: str | None,
@@ -597,12 +664,30 @@ def run_swebench(
     else:
         conditions = [condition]
 
-    if dataset == "mini":
-        items = load_swebench_verified_mini(50)
-    elif dataset == "lite":
-        items = load_swebench_lite()
-    else:
-        items = load_swebench_verified()
+    swebench_loaders = {
+        "mini": lambda: load_swebench_verified_mini(50),
+        "lite": load_swebench_lite,
+        "verified": load_swebench_verified,
+        "pro": load_swebench_pro,
+    }
+    items = swebench_loaders[dataset]()
+
+    requested_ids: set[str] | None = None
+    if item_ids:
+        requested_ids = {x.strip() for x in item_ids.split(",") if x.strip()}
+        if not requested_ids:
+            raise click.ClickException("--items was provided but no valid instance IDs were parsed")
+        before = len(items)
+        items = [item for item in items if item.instance_id in requested_ids]
+        found_ids = {item.instance_id for item in items}
+        missing = sorted(requested_ids - found_ids)
+        click.echo(f"Filtered items by --items: {len(items)}/{before} selected")
+        if missing:
+            click.echo(f"Warning: {len(missing)} requested IDs were not found in dataset '{dataset}'")
+            for miss in missing[:10]:
+                click.echo(f"  missing: {miss}")
+            if len(missing) > 10:
+                click.echo(f"  ... and {len(missing) - 10} more")
 
     if n:
         items = items[:n]
@@ -634,6 +719,7 @@ def run_swebench(
                     "model": model,
                     "claude_model": claude_model,
                     "codex_model": codex_model,
+                    "items": sorted(requested_ids) if requested_ids else None,
                     "budget": budget,
                     "depth": depth,
                     "agent": spell_resolution.agent_file if spell_resolution else None,
@@ -672,27 +758,7 @@ def run_swebench(
             wt = setup_swebench_workspace(cache, item, tag=cond)
             ws_path = wt.path
             try:
-                prompt_parts = [
-                    f"Repository: {item.repo}",
-                    "",
-                    "## Issue to Fix",
-                    "",
-                    item.problem_statement.strip(),
-                    "",
-                ]
-                if item.hints_text:
-                    prompt_parts.extend(["## Hints", "", item.hints_text.strip(), ""])
-
-                prompt_parts.extend(
-                    [
-                        "## Instructions",
-                        "",
-                        "Fix this bug with minimal code changes.",
-                        "Do not commit any changes.",
-                        "Run focused checks/tests when possible.",
-                    ]
-                )
-                prompt = "\n".join(prompt_parts)
+                prompt = _format_swebench_prompt(item)
 
                 req = RunRequest(
                     benchmark="swebench",
@@ -993,7 +1059,7 @@ def run_featurebench(
         _print_summary(output_file, run_id, cond)
 
 
-SAB_BENCHMARK_DIR = PROJECT_ROOT / "benchmarking" / "data" / "scienceagentbench" / "benchmark" / "benchmark"
+SAB_BENCHMARK_DIR = BENCHMARK_ROOT / "data" / "scienceagentbench" / "benchmark" / "benchmark"
 
 
 def _format_sab_prompt(item: ScienceAgentBenchItem, workspace: Path, use_knowledge: bool = False) -> str:

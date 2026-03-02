@@ -13,10 +13,27 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _resolve_spell_root() -> Path:
+    env_spell_root = os.environ.get("SPELL_ROOT")
+    if env_spell_root:
+        return Path(env_spell_root).expanduser().resolve()
+
+    nested_candidate = BENCHMARK_ROOT.parent
+    if (nested_candidate / "config" / "agents").exists():
+        return nested_candidate
+
+    return BENCHMARK_ROOT
+
+
+PROJECT_ROOT = _resolve_spell_root()
 CODEX_NO_CUSTOM_SCRIPT = PROJECT_ROOT / "scripts" / "codex-no-custom.sh"
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+for p in (PROJECT_ROOT, BENCHMARK_ROOT):
+    p_str = str(p)
+    if p_str not in sys.path:
+        sys.path.insert(0, p_str)
 
 from spell_benchmark_client import SpellBenchmarkClient
 
