@@ -7,11 +7,16 @@ result event for token usage and cost.
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import shlex
+from pathlib import Path
 
-from base import DockerExecAgent, ParsedUsage, parse_jsonl_events
+try:
+    from .base import DockerExecAgent, ParsedUsage, parse_jsonl_events
+except ImportError:
+    from base import DockerExecAgent, ParsedUsage, parse_jsonl_events
 
 logger = logging.getLogger(__name__)
 
@@ -51,15 +56,41 @@ class ClaudeCodeAgent(DockerExecAgent):
         return f"""
 source "$HOME/.nvm/nvm.sh"
 npm install -g @anthropic-ai/claude-code@{version}
+if [ -n "${{CLAUDE_JSON_B64:-}}" ]; then
+  printf '%s' "$CLAUDE_JSON_B64" | base64 -d > "$HOME/.claude.json"
+fi
 echo "claude installed: $(claude --version 2>/dev/null || echo unknown)"
 """
 
+    def _load_claude_json_b64(self) -> str | None:
+        # Optional explicit override for nonstandard auth locations.
+        if os.environ.get("CLAUDE_JSON_B64"):
+            return os.environ["CLAUDE_JSON_B64"]
+
+        claude_json = Path.home() / ".claude.json"
+        if not claude_json.exists():
+            return None
+        return base64.b64encode(claude_json.read_bytes()).decode("ascii")
+
     def _env_vars(self) -> dict[str, str]:
         env = {
-            "ANTHROPIC_API_KEY": os.environ["ANTHROPIC_API_KEY"],
             "FORCE_AUTO_BACKGROUND_TASKS": "1",
             "ENABLE_BACKGROUND_TASKS": "1",
         }
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if api_key:
+            env["ANTHROPIC_API_KEY"] = api_key
+
+        claude_json_b64 = self._load_claude_json_b64()
+        if claude_json_b64:
+            env["CLAUDE_JSON_B64"] = claude_json_b64
+
+        if not api_key and not claude_json_b64:
+            logger.warning(
+                "No ANTHROPIC_API_KEY or ~/.claude.json found for Claude Code container auth. "
+                "Runs may fail unless one is provided."
+            )
+
         model = self._resolve_model()
         if model:
             env["ANTHROPIC_MODEL"] = model

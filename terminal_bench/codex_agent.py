@@ -10,7 +10,10 @@ import logging
 import os
 import shlex
 
-from base import DockerExecAgent, ParsedUsage, iter_dicts, parse_jsonl_events
+try:
+    from .base import DockerExecAgent, ParsedUsage, iter_dicts, parse_jsonl_events
+except ImportError:
+    from base import DockerExecAgent, ParsedUsage, iter_dicts, parse_jsonl_events
 
 logger = logging.getLogger(__name__)
 

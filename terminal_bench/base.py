@@ -177,6 +177,10 @@ class DockerExecAgent(BaseAgent):
         logger.info(f"{self.name()} CLI installed")
         return True
 
+    def _requires_node(self) -> bool:
+        """Whether this agent requires Node/NVM bootstrap."""
+        return True
+
     def _save_logs(
         self,
         logging_dir: Path,
@@ -206,7 +210,7 @@ class DockerExecAgent(BaseAgent):
 
     @abstractmethod
     def _install_script(self) -> str:
-        """Shell script to install the agent CLI (NVM/Node already available)."""
+        """Shell script to install the agent runtime/CLI."""
         ...
 
     @abstractmethod
@@ -224,6 +228,19 @@ class DockerExecAgent(BaseAgent):
         """Env vars needed inside the container (API keys, etc.)."""
         ...
 
+    def _determine_failure_mode(
+        self,
+        result: ExecOutput,
+        usage: ParsedUsage | None,
+    ) -> FailureMode:
+        """Classify run outcome. Subclasses can inspect parsed output semantics."""
+        del usage  # default logic only uses process status
+        if result.timed_out:
+            return FailureMode.AGENT_TIMEOUT
+        if result.exit_code != 0:
+            return FailureMode.UNKNOWN_AGENT_ERROR
+        return FailureMode.NONE
+
     def perform_task(
         self,
         instruction: str,
@@ -236,8 +253,8 @@ class DockerExecAgent(BaseAgent):
         workdir = self._detect_workdir(container)
         logger.info(f"Container workdir: {workdir}")
 
-        # Install NVM + Node
-        if not self._install_nvm_node(container):
+        # Install Node runtime if needed by this agent.
+        if self._requires_node() and not self._install_nvm_node(container):
             return AgentResult(failure_mode=FailureMode.AGENT_INSTALLATION_FAILED)
 
         # Install agent CLI
@@ -277,12 +294,7 @@ class DockerExecAgent(BaseAgent):
             self._save_logs(logging_dir, result.stdout, result.stderr, usage, latency_s)
 
         # Failure mode
-        if result.timed_out:
-            failure = FailureMode.AGENT_TIMEOUT
-        elif result.exit_code != 0:
-            failure = FailureMode.UNKNOWN_AGENT_ERROR
-        else:
-            failure = FailureMode.NONE
+        failure = self._determine_failure_mode(result, usage)
 
         return AgentResult(
             total_input_tokens=usage.total_input_tokens if usage else 0,

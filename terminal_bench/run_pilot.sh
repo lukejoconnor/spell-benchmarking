@@ -2,15 +2,18 @@
 # Terminal-Bench 2.0 Pilot: CC vs Spell (Opus 4.6)
 #
 # Usage:
-#   ./benchmarking/terminal_bench/run_pilot.sh [cc|spell|both] [task-ids...]
+#   ./terminal_bench/run_pilot.sh [cc|spell|both] [task-ids...]
 #
 # Examples:
-#   ./benchmarking/terminal_bench/run_pilot.sh both                    # run all pilot tasks
-#   ./benchmarking/terminal_bench/run_pilot.sh cc hello-world          # CC only, one task
-#   ./benchmarking/terminal_bench/run_pilot.sh spell csv-to-parquet    # Spell only, one task
+#   ./terminal_bench/run_pilot.sh both                    # run all pilot tasks
+#   ./terminal_bench/run_pilot.sh cc hello-world          # CC only, one task
+#   ./terminal_bench/run_pilot.sh spell csv-to-parquet    # Spell only, one task
 
 set -euo pipefail
-cd "$(dirname "$0")/../.."  # cd to spell project root
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
 
 # Colima Docker socket (if Docker Desktop is not installed)
 if [ -S "${HOME}/.colima/default/docker.sock" ] && [ -z "${DOCKER_HOST:-}" ]; then
@@ -29,10 +32,14 @@ fi
 
 MODEL="anthropic/claude-opus-4-6"
 DATASET="terminal-bench-core==0.1.1"
-OUTPUT_DIR="benchmarking/results/terminal-bench"
+OUTPUT_DIR="results/terminal-bench"
 TIMESTAMP=$(date +%Y-%m-%d__%H-%M-%S)
 
 mkdir -p "$OUTPUT_DIR"
+export PYTHONPATH="${REPO_ROOT}/terminal_bench:${PYTHONPATH:-}"
+if [ -z "${SPELL_ROOT:-}" ] && [ -f "$REPO_ROOT/../deps.edn" ] && [ -f "$REPO_ROOT/../src/spell/benchmark_api.clj" ]; then
+    export SPELL_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
+fi
 
 # Build task-id flags
 TASK_FLAGS=""
@@ -50,7 +57,7 @@ echo ""
 run_cc() {
     echo "--- Running Claude Code ---"
     tb run \
-        --agent claude-code \
+        --agent-import-path "cc_agent:ClaudeCodeAgent" \
         --model "$MODEL" \
         --dataset "$DATASET" \
         $TASK_FLAGS \
@@ -64,8 +71,6 @@ run_cc() {
 
 run_spell() {
     echo "--- Running Spell ---"
-    # Add the agent module to PYTHONPATH so tb can import it
-    export PYTHONPATH="${PWD}/benchmarking/terminal_bench:${PYTHONPATH:-}"
     tb run \
         --agent-import-path "spell_agent:SpellAgent" \
         --model "$MODEL" \
