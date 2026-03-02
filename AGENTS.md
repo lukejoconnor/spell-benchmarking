@@ -54,6 +54,14 @@ Maintain a neutral, skeptical stance. Present unfavorable and inconclusive resul
 | FeatureBench | varies | Feature implementation | `uv run python benchmarking/bench.py featurebench --condition spell` |
 | ScienceAgentBench | 102 | Scientific code generation (data science) | `uv run python benchmarking/bench.py scienceagentbench --condition claude_code` |
 
+SWE-bench harness defaults and workflow:
+- `bench.py swebench` now defaults to `--condition all` (`spell`, `claude_code`, `codex`) and evaluates by default (`--evaluate`).
+- Use `--no-evaluate` to run generation only (write predictions and unified JSONL without running `swebench.harness`).
+- Evaluation runs conditions in series with staged cleanup:
+  - non-final conditions: `cache_level=env`, `clean=false`
+  - final condition: configurable final cleanup (`--eval-final-cache-level`, `--eval-final-clean`)
+- For explicit eval-only runs, use `bench.py swebench-eval`.
+
 ### Coding (Clojure harness)
 
 | Benchmark | Items | What it tests | Run command |
@@ -254,6 +262,12 @@ Results go to `data/exercism-results/` (timestamped directories) and `notebook/e
 **Depth/budget defaults:** Spell defaults to budget $1.00. Most benchmarks need `-b 5` or higher. Depth is unlimited by default.
 
 **SWE-bench classpath:** `SpellAdapter` injects local `-Sdeps` so `spell.benchmark-api` can run from cloned workspace directories.
+
+**SWE-bench evaluation defaults:** `bench.py swebench` now runs official harness evaluation by default after prediction generation. Disable via `--no-evaluate` when iterating quickly.
+
+**SWE-bench Docker socket on Colima:** evaluation uses Docker SDK (`docker.from_env`), which depends on `DOCKER_HOST` instead of Docker CLI context. `bench.py` now auto-falls back to `unix://~/.colima/default/docker.sock` when `DOCKER_HOST` is unset and `/var/run/docker.sock` is missing.
+
+**SWE-bench ARM reality check:** x86_64 eval images can run on Apple Silicon via emulation but are slower and may be less stable on heavy builds. Prefer small pilots first, then scale with caching.
 
 **(stored ...) problem:** Values too large to inline in the completion become opaque `(stored ...)` refs that the LLM can't read back. Affects ~15% of LongBench items. See `longbench-regression-v2`.
 
