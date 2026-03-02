@@ -38,6 +38,8 @@ for p in (PROJECT_ROOT, BENCHMARK_ROOT):
 from spell_benchmark_client import SpellBenchmarkClient
 
 DEFAULT_REASONING_EFFORT = "high"
+SOFTWARE_BENCHMARKS = {"swebench", "featurebench", "scienceagentbench", "exercism"}
+NONSOFTWARE_DEFAULT_FORMAT: dict[str, list[str]] = {"required": ["result"]}
 
 # Per-MTok pricing [input, output] for cost estimation when the CLI
 # doesn't report cost directly (e.g. Codex subscription mode).
@@ -86,6 +88,12 @@ def build_spell_init(prompt: str, preamble: str | None = None) -> str:
     )
 
 
+def _default_format_for_spell(req: "RunRequest") -> dict[str, list[str]] | None:
+    if req.benchmark in SOFTWARE_BENCHMARKS:
+        return None
+    return NONSOFTWARE_DEFAULT_FORMAT
+
+
 @dataclass(slots=True)
 class RunRequest:
     benchmark: str
@@ -106,6 +114,7 @@ class RunRequest:
     responses_api: bool = False
     suffix_grammar: bool = False
     grammar_max_chars: int | None = None
+    format_spec: dict[str, Any] | None = None
     trace: bool = False
     workspace: Path | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -144,6 +153,7 @@ class SpellAdapter:
         self.client.clj_cmd = ["clj", "-Sdeps", sdeps, "-M", "-m", "spell.benchmark-api"]
 
     def run(self, req: RunRequest) -> RunResponse:
+        format_spec = req.format_spec or _default_format_for_spell(req)
         payload = {
             "mode": "spell",
             "model": req.model_spec or self.model_spec,
@@ -157,6 +167,7 @@ class SpellAdapter:
             "responses_api": req.responses_api,
             "suffix_grammar": req.suffix_grammar,
             "grammar_max_chars": req.grammar_max_chars,
+            "format": format_spec,
             "trace": req.trace,
         }
         if req.init is not None:

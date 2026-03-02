@@ -263,6 +263,10 @@ Results go to `data/exercism-results/` (timestamped directories) and `notebook/e
 
 **SWE-bench classpath:** `SpellAdapter` injects local `-Sdeps` so `spell.benchmark-api` can run from cloned workspace directories.
 
+**Non-software default output format (Spell):** The unified Spell adapter now sends `format={"required":["result"]}` by default for non-software benchmarks (`general`/math/long-context). Software benchmarks (`swebench`, `featurebench`, `scienceagentbench`, `exercism`) do not get this default. Override per request with `RunRequest.format_spec`.
+
+**Result-map unwrapping:** When format-constrained runs return maps like `{:result ...}`, `spell.benchmark-api` unwraps that value before writing JSON `result`, so existing answer extractors continue to consume plain answer text.
+
 **SWE-bench evaluation defaults:** `bench.py swebench` now runs official harness evaluation by default after prediction generation. Disable via `--no-evaluate` when iterating quickly.
 
 **SWE-bench Docker socket on Colima:** evaluation uses Docker SDK (`docker.from_env`), which depends on `DOCKER_HOST` instead of Docker CLI context. `bench.py` now auto-falls back to `unix://~/.colima/default/docker.sock` when `DOCKER_HOST` is unset and `/var/run/docker.sock` is missing.
