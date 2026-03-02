@@ -444,8 +444,7 @@ def format_prompt_spell(item: BenchmarkItem, context_file: str = None) -> str:
         parts.append('')
         parts.append('Solve step by step. Return just the final answer (e.g., 42 or 3/4 or 2\\sqrt{3}).')
     elif item.dataset == 'omni_math':
-        parts.append('')
-        parts.append('Solve step by step. Return just the final answer.')
+        pass  # strategy guidance injected via init preamble in bench.py
     elif item.dataset == 'aime':
         parts.append('')
         parts.append('Solve step by step. Return just the final integer answer (AIME answers are always integers 0-999).')

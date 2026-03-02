@@ -109,6 +109,13 @@ SWEBENCH_DOCKER_PREAMBLE = (
     'io/write-file, io/ls, io/exists?, io/mkdir — they operate on the host, not the '
     'container. Use shell equivalents via io/sh instead.")'
 )
+OMNI_MATH_PREAMBLE = (
+    '(quine strategy "Solve the problem using a combination of the following strategies:\\n'
+    '- Pure reasoning via think blocks\\n'
+    '- Numerical computation using Spell (defn, loop/recur, map/reduce, math/)\\n'
+    '- Context pruning to manage your chain of thoughts (rethink + !extend)\\n'
+    '- Sub-agent delegation for exploring alternative approaches")'
+)
 
 
 @dataclass(slots=True)
@@ -213,6 +220,10 @@ def _make_spell_init(prompt: str, preamble: str | None = None) -> str:
     if prompt.lstrip().startswith("("):
         return prompt
     return build_spell_init(prompt, preamble=preamble)
+
+
+def _general_preamble(dataset: str) -> str | None:
+    return {"omni_math": OMNI_MATH_PREAMBLE}.get(dataset)
 
 
 def _format_optional_swebench_text(value: Any) -> str:
@@ -662,7 +673,7 @@ def run_general(
                     prompt=prompt,
                     model_spec={"spell": model, "baseline": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
-                    init=_make_spell_init(prompt) if cond == "spell" else None,
+                    init=_make_spell_init(prompt, preamble=_general_preamble(item.dataset)) if cond == "spell" else None,
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
                     budget=budget,
                     depth=depth,
