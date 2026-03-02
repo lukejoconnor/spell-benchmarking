@@ -29,7 +29,7 @@ def _resolve_spell_root() -> Path:
 
 
 PROJECT_ROOT = _resolve_spell_root()
-CODEX_NO_CUSTOM_SCRIPT = PROJECT_ROOT / "scripts" / "codex-no-custom.sh"
+CODEX_NO_CUSTOM_SCRIPT = BENCHMARK_ROOT / "scripts" / "codex-no-custom.sh"
 for p in (PROJECT_ROOT, BENCHMARK_ROOT):
     p_str = str(p)
     if p_str not in sys.path:
