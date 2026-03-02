@@ -615,6 +615,7 @@ def run_general(
 @click.option("--codex-model", default="codex")
 @click.option("--n", type=int, default=None)
 @click.option("--items", "item_ids", default=None, help="Comma-separated SWE-bench instance IDs to run")
+@click.option("--seed", type=int, default=None, help="Random seed for sampling --n items")
 @click.option("--parallel", type=int, default=1, show_default=True)
 @click.option("--budget", type=float, default=10.0, show_default=True)
 @click.option("--agent", default=None, help="Spell agent override")
@@ -638,6 +639,7 @@ def run_swebench(
     codex_model: str,
     n: int | None,
     item_ids: str | None,
+    seed: int | None,
     parallel: int,
     budget: float,
     agent: str | None,
@@ -670,27 +672,32 @@ def run_swebench(
         "verified": load_swebench_verified,
         "pro": load_swebench_pro,
     }
-    items = swebench_loaders[dataset]()
+    all_items = swebench_loaders[dataset]()
 
     requested_ids: set[str] | None = None
     if item_ids:
         requested_ids = {x.strip() for x in item_ids.split(",") if x.strip()}
         if not requested_ids:
             raise click.ClickException("--items was provided but no valid instance IDs were parsed")
-        before = len(items)
-        items = [item for item in items if item.instance_id in requested_ids]
-        found_ids = {item.instance_id for item in items}
+        before = len(all_items)
+        all_items = [item for item in all_items if item.instance_id in requested_ids]
+        found_ids = {item.instance_id for item in all_items}
         missing = sorted(requested_ids - found_ids)
-        click.echo(f"Filtered items by --items: {len(items)}/{before} selected")
+        click.echo(f"Filtered items by --items: {len(all_items)}/{before} selected")
         if missing:
             click.echo(f"Warning: {len(missing)} requested IDs were not found in dataset '{dataset}'")
             for miss in missing[:10]:
                 click.echo(f"  missing: {miss}")
             if len(missing) > 10:
                 click.echo(f"  ... and {len(missing) - 10} more")
-
-    if n:
-        items = items[:n]
+    elif n:
+        if seed is not None:
+            import random as _rng
+            rng = _rng.Random(seed)
+            all_items = rng.sample(all_items, min(n, len(all_items)))
+        else:
+            all_items = all_items[:n]
+    items = all_items
 
     root = Path(workspace_root) if workspace_root else get_default_workspace_root()
     root.mkdir(parents=True, exist_ok=True)

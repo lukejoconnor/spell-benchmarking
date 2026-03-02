@@ -21,6 +21,10 @@ uv run python benchmarking/bench.py swebench \
 
 # Summarize results
 uv run python benchmarking/bench.py summarize --input results/unified/<file>.jsonl
+
+# Organize loose root one-off files into scratch batches
+uv run python scripts/organize_one_offs.py --dry-run
+uv run python scripts/organize_one_offs.py
 ```
 
 ## Subcommands
@@ -78,6 +82,7 @@ uv run python benchmarking/bench.py swebench [OPTIONS]
 | `--codex-model` | `codex` | Model for Codex CLI |
 | `--n` | all | Limit to first N items |
 | `--items` | — | Comma-separated SWE-bench instance IDs to run |
+| `--seed` | — | Random seed for sampling when using `--n` |
 | `--parallel` | 1 | Max concurrent runs |
 | `--budget` | 10.0 | Spell budget in USD |
 | `--depth` | 50 | Max LLM recursion depth |
@@ -185,6 +190,13 @@ Selected via `--split` and `--task-ids`. Tasks are loaded from the FeatureBench 
 | `claude_code` | Claude Code CLI (`claude -p`) | `--claude-model` |
 | `codex` | Codex CLI (`codex exec`) | `--codex-model` (default: `codex`) |
 | `all` | Run all conditions | all of the above |
+
+## One-Off Files
+
+Exploratory scripts and ad hoc outputs should live under `scratch/batches/` rather than repo root.
+
+- Workflow reference: `docs/one-off-organization.md`
+- Organizer tool: `scripts/organize_one_offs.py`
 
 ## Model Specs
 

@@ -128,7 +128,9 @@ Most recent results for comparison. Check notebook entries for full details.
 | MATH Hard (20) | 90% | — | — | `post-refactor-regression-test` |
 | AIME 2025 (30) | 73.3% | 66.7% | — | `pricing-correction-benchmark-reanalysis` |
 | HMMT Feb (30) | 76.7% | 66.7% | — | `pricing-correction-benchmark-reanalysis` |
-| Omni-MATH (54) | 51.9% | 38.6% | 40.4% | `omni-math-manual-scoring` |
+| Omni-MATH (54, Opus 4.5) | 51.9% | 38.6% | 40.4% | `omni-math-manual-scoring` |
+| Omni-MATH (60, Opus 4.6) | 33.3%* | 40.0% | — | `omni-math-rerun` |
+| Omni-MATH (60, Codex) | 56.7% | — | 53.3%† | `omni-math-rerun` |
 
 ### Long-Context
 
@@ -183,6 +185,9 @@ benchmarking/
 │   └── swebench_output.py # Results formatting
 ├── results/               # JSON output files (gitignored)
 ├── traces/                # Execution traces (gitignored)
+├── logs/                  # Evaluation/run logs (gitignored)
+├── scratch/               # One-off analysis/result batches (gitignored)
+├── docs/one-off-organization.md # One-off organization workflow
 └── data/                  # Cached datasets (gitignored)
 ```
 
@@ -263,3 +268,9 @@ Results go to `data/exercism-results/` (timestamped directories) and `notebook/e
 **Terminal-Bench disk exhaustion:** Each task builds a Docker image. Running many tasks without cleanup fills Colima's VM disk. Use `docker system prune -af --volumes` between tasks. Never run more than 2 tasks concurrently on Colima with default disk (20GB). The `run_pilot.sh` script runs tasks sequentially.
 
 **Terminal-Bench empty tool-call error:** Opus 4.6 occasionally returns an empty `spell_suffix` tool_use (`input: {}`), causing a fatal `missing-tool-call` error. This is not currently retried (see TODO #144). Observed on write-compressor.
+
+**Omni-MATH `missing-tool-call` prevalence:** On Omni-MATH with Opus 4.6 toolcall transport, `missing-tool-call` hits 30% of items (18/60). Much higher than Terminal-Bench. Making this retryable (TODO #144) is critical for math benchmarks on toolcall transport. See `omni-math-rerun`.
+
+**Omni-MATH auto-scorer recall:** `math_equivalent` + `extract_math_answer` has <50% recall on Omni-MATH. Misses: Unicode math symbols (Codex outputs ⌈⌉/√/⟂), yes/no text answers, set ordering, equivalent algebraic expressions, descriptive answers. Manual scoring required for accurate results. *All Omni-MATH Spell/CC/Baseline entries use manual scores. See `omni-math-rerun`.
+
+**Omni-MATH baseline footnotes:** \*Spell/Opus 33.3% includes 19 fatal `missing-tool-call` errors; ex-error accuracy is 48.8% (20/41). †Codex CLI = Codex condition (Codex CLI, not Claude Code).
