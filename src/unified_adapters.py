@@ -39,6 +39,33 @@ from spell_benchmark_client import SpellBenchmarkClient
 
 DEFAULT_REASONING_EFFORT = "high"
 
+# Per-MTok pricing [input, output] for cost estimation when the CLI
+# doesn't report cost directly (e.g. Codex subscription mode).
+_MODEL_PRICING: dict[str, tuple[float, float]] = {
+    "gpt-5-codex": (1.25, 10.00),
+    "gpt-5.1-codex": (1.25, 10.00),
+    "gpt-5.2-codex": (1.75, 14.00),
+    "gpt-5.3-codex": (1.75, 14.00),
+    "gpt-5-mini": (0.25, 2.00),
+    "gpt-5": (1.25, 10.00),
+    "gpt-5.1": (1.25, 10.00),
+    "gpt-5.2": (1.75, 14.00),
+    "gpt-5.3": (1.75, 14.00),
+    "claude-opus-4-6": (5.00, 25.00),
+    "claude-sonnet-4-6": (1.00, 5.00),
+    "claude-haiku-4-5-20251001": (0.25, 1.25),
+}
+
+
+def _estimate_cost(model: str, tokens_in: int | None, tokens_out: int | None) -> float | None:
+    """Estimate cost from token counts using prefix-matched pricing."""
+    if tokens_in is None or tokens_out is None:
+        return None
+    for prefix, (in_rate, out_rate) in _MODEL_PRICING.items():
+        if model.startswith(prefix):
+            return tokens_in * in_rate / 1_000_000 + tokens_out * out_rate / 1_000_000
+    return None
+
 
 def _escape_for_spell(s: str) -> str:
     return (
@@ -356,7 +383,7 @@ def _iter_dicts(v: Any):
             yield from _iter_dicts(child)
 
 
-def _extract_codex_usage(events: list[dict[str, Any]]) -> tuple[int | None, int | None, float | None]:
+def _extract_codex_usage(events: list[dict[str, Any]], model: str = "") -> tuple[int | None, int | None, float | None]:
     def as_int(v: Any) -> int:
         return int(v) if isinstance(v, (int, float)) else 0
 
@@ -385,6 +412,10 @@ def _extract_codex_usage(events: list[dict[str, Any]]) -> tuple[int | None, int 
     if cost is None:
         cost = usage_candidate.get("cost")
     cost_usd = float(cost) if isinstance(cost, (int, float)) else None
+
+    # Fall back to token-based estimation when CLI doesn't report cost
+    if cost_usd is None and model:
+        cost_usd = _estimate_cost(model, tokens_in, tokens_out)
 
     return tokens_in, tokens_out, cost_usd
 
@@ -516,7 +547,7 @@ class CodexAdapter:
         stdout = (proc.stdout or "").strip()
         stderr = (proc.stderr or "").strip()
         events, non_json_lines = _parse_codex_events(stdout)
-        tokens_in, tokens_out, cost_usd = _extract_codex_usage(events)
+        tokens_in, tokens_out, cost_usd = _extract_codex_usage(events, model=model)
         thread_id = _extract_codex_thread_id(events)
 
         response_text = ""
