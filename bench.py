@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, UTC
@@ -129,6 +130,24 @@ def _parse_conditions(value: str, allowed: tuple[str, ...]) -> list[str]:
     if value == "all":
         return [c for c in allowed if c != "all"]
     return [value]
+
+
+def _parse_swebench_conditions(value: str) -> list[str]:
+    if value == "both":
+        return ["spell", "claude_code"]
+    if value == "all":
+        return ["spell", "claude_code", "codex"]
+    return [value]
+
+
+def _swebench_dataset_name(dataset: str) -> str:
+    mapping = {
+        "mini": "princeton-nlp/SWE-bench_Verified",
+        "lite": "princeton-nlp/SWE-bench_Lite",
+        "verified": "princeton-nlp/SWE-bench_Verified",
+        "pro": "ScaleAI/SWE-bench_Pro",
+    }
+    return mapping[dataset]
 
 
 def _ensure_context_file(item: BenchmarkItem) -> str | None:
@@ -406,6 +425,99 @@ def _resolve_spell_agent_or_die(
         raise click.ClickException(str(exc)) from exc
 
 
+def _build_swebench_eval_plan(
+    *,
+    dataset: str,
+    condition: str,
+    run_id: str,
+    predictions_dir: str,
+    dataset_name: str | None,
+    split: str,
+    max_workers: int,
+    timeout: int,
+    namespace: str,
+    instance_image_tag: str,
+    env_image_tag: str,
+    final_cache_level: str,
+    final_clean: bool,
+    verify_predictions: bool,
+) -> tuple[str, list[str], list[dict[str, Any]]]:
+    conditions = _parse_swebench_conditions(condition)
+    resolved_dataset_name = dataset_name or _swebench_dataset_name(dataset)
+    pred_root = Path(predictions_dir)
+
+    plan: list[dict[str, Any]] = []
+    for idx, cond in enumerate(conditions):
+        pred_path = pred_root / f"{cond}_{dataset}_{run_id}.jsonl"
+        if verify_predictions and not pred_path.exists():
+            raise click.ClickException(f"Predictions file not found: {pred_path}")
+
+        is_last = idx == len(conditions) - 1
+        cache_level = final_cache_level if is_last else "env"
+        clean = final_clean if is_last else False
+        cmd = [
+            sys.executable,
+            "-m",
+            "swebench.harness.run_evaluation",
+            "--dataset_name",
+            resolved_dataset_name,
+            "--split",
+            split,
+            "--predictions_path",
+            str(pred_path),
+            "--max_workers",
+            str(max_workers),
+            "--timeout",
+            str(timeout),
+            "--run_id",
+            run_id,
+            "--namespace",
+            namespace,
+            "--instance_image_tag",
+            instance_image_tag,
+            "--env_image_tag",
+            env_image_tag,
+            "--force_rebuild",
+            "false",
+            "--cache_level",
+            cache_level,
+            "--clean",
+            "true" if clean else "false",
+        ]
+        plan.append(
+            {
+                "condition": cond,
+                "predictions_path": str(pred_path),
+                "cache_level": cache_level,
+                "clean": clean,
+                "command": cmd,
+            }
+        )
+
+    return resolved_dataset_name, conditions, plan
+
+
+def _run_swebench_eval_plan(plan: list[dict[str, Any]]) -> None:
+    env = os.environ.copy()
+    colima_sock = Path.home() / ".colima" / "default" / "docker.sock"
+    if not env.get("DOCKER_HOST") and not Path("/var/run/docker.sock").exists() and colima_sock.exists():
+        env["DOCKER_HOST"] = f"unix://{colima_sock}"
+        click.echo(f"Using DOCKER_HOST fallback for evaluation: {env['DOCKER_HOST']}")
+
+    for step in plan:
+        cond = step["condition"]
+        click.echo(
+            f"\n--- Evaluating {cond} "
+            f"(cache_level={step['cache_level']} clean={step['clean']}) ---"
+        )
+        try:
+            subprocess.run(step["command"], check=True, cwd=BENCHMARK_ROOT, env=env)
+        except subprocess.CalledProcessError as exc:
+            raise click.ClickException(
+                f"swebench evaluation failed for condition '{cond}' with exit code {exc.returncode}"
+            ) from exc
+
+
 @click.group()
 def cli() -> None:
     """Unified benchmark runner."""
@@ -612,7 +724,7 @@ def run_general(
 
 @cli.command("swebench")
 @click.option("--dataset", default="mini", type=click.Choice(["mini", "lite", "verified", "pro"]))
-@click.option("--condition", default="both", type=click.Choice(["spell", "claude_code", "codex", "both", "all"]))
+@click.option("--condition", default="all", type=click.Choice(["spell", "claude_code", "codex", "both", "all"]))
 @click.option("--model", default=None, help="provider:model for Spell (required for spell condition)")
 @click.option("--claude-model", default=None, help="Model for Claude Code comparator (required for claude_code condition)")
 @click.option("--codex-model", default="codex")
@@ -632,6 +744,27 @@ def run_general(
 @click.option("--keep-workspaces", is_flag=True, default=False)
 @click.option("--docker", is_flag=True, default=False, help="Run agents inside Docker containers for isolation")
 @click.option("--trace/--no-trace", default=False, show_default=True, help="Record Spell execution traces")
+@click.option("--evaluate/--no-evaluate", default=True, show_default=True, help="Run swebench.harness evaluation after generating predictions")
+@click.option("--eval-predictions-dir", default="results/swebench", show_default=True)
+@click.option("--eval-dataset-name", default=None, help="Override swebench.harness dataset_name")
+@click.option("--eval-split", default="test", show_default=True)
+@click.option("--eval-max-workers", type=int, default=4, show_default=True)
+@click.option("--eval-timeout", type=int, default=1800, show_default=True)
+@click.option(
+    "--eval-namespace",
+    default="none",
+    show_default=True,
+    help='Image namespace passed to swebench.harness.run_evaluation ("none" builds locally)',
+)
+@click.option("--eval-instance-image-tag", default="latest", show_default=True)
+@click.option("--eval-env-image-tag", default="latest", show_default=True)
+@click.option(
+    "--eval-final-cache-level",
+    type=click.Choice(["none", "base", "env", "instance"]),
+    default="base",
+    show_default=True,
+)
+@click.option("--eval-final-clean/--no-eval-final-clean", default=True, show_default=True)
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
 @click.option("--output", default=None)
@@ -657,19 +790,24 @@ def run_swebench(
     keep_workspaces: bool,
     docker: bool,
     trace: bool,
+    evaluate: bool,
+    eval_predictions_dir: str,
+    eval_dataset_name: str | None,
+    eval_split: str,
+    eval_max_workers: int,
+    eval_timeout: int,
+    eval_namespace: str,
+    eval_instance_image_tag: str,
+    eval_env_image_tag: str,
+    eval_final_cache_level: str,
+    eval_final_clean: bool,
     dry_run: bool,
     run_id: str | None,
     output: str | None,
 ) -> None:
     run_id = run_id or _run_id("swebench")
     output_file = Path(output) if output else _default_output(run_id)
-
-    if condition == "both":
-        conditions = ["spell", "claude_code"]
-    elif condition == "all":
-        conditions = ["spell", "claude_code", "codex"]
-    else:
-        conditions = [condition]
+    conditions = _parse_swebench_conditions(condition)
 
     swebench_loaders = {
         "mini": lambda: load_swebench_verified_mini(50),
@@ -740,6 +878,17 @@ def run_swebench(
                     "agent_source": spell_resolution.source if spell_resolution else None,
                     "agent_policy_key": spell_resolution.policy_key if spell_resolution else None,
                     "parallel": parallel,
+                    "evaluate": evaluate,
+                    "eval_predictions_dir": eval_predictions_dir,
+                    "eval_dataset_name": eval_dataset_name,
+                    "eval_split": eval_split,
+                    "eval_max_workers": eval_max_workers,
+                    "eval_timeout": eval_timeout,
+                    "eval_namespace": eval_namespace,
+                    "eval_instance_image_tag": eval_instance_image_tag,
+                    "eval_env_image_tag": eval_env_image_tag,
+                    "eval_final_cache_level": eval_final_cache_level,
+                    "eval_final_clean": eval_final_clean,
                 },
                 indent=2,
             )
@@ -926,6 +1075,111 @@ def run_swebench(
         }[cond]
         write_predictions_jsonl(swe_results, pred_path, model_name=pred_model_name)
         click.echo(f"Predictions: {pred_path}")
+
+    if evaluate:
+        click.echo("\n=== Running SWE-bench evaluation ===")
+        resolved_dataset_name, eval_conditions, plan = _build_swebench_eval_plan(
+            dataset=dataset,
+            condition=condition,
+            run_id=run_id,
+            predictions_dir=eval_predictions_dir,
+            dataset_name=eval_dataset_name,
+            split=eval_split,
+            max_workers=eval_max_workers,
+            timeout=eval_timeout,
+            namespace=eval_namespace,
+            instance_image_tag=eval_instance_image_tag,
+            env_image_tag=eval_env_image_tag,
+            final_cache_level=eval_final_cache_level,
+            final_clean=eval_final_clean,
+            verify_predictions=True,
+        )
+        click.echo(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "dataset": dataset,
+                    "dataset_name": resolved_dataset_name,
+                    "conditions": eval_conditions,
+                    "namespace": eval_namespace,
+                    "plan": plan,
+                },
+                indent=2,
+            )
+        )
+        _run_swebench_eval_plan(plan)
+
+
+@cli.command("swebench-eval")
+@click.option("--dataset", default="mini", type=click.Choice(["mini", "lite", "verified", "pro"]))
+@click.option("--condition", default="all", type=click.Choice(["spell", "claude_code", "codex", "both", "all"]))
+@click.option("--run-id", required=True, help="Run ID used in results/swebench/<condition>_<dataset>_<run-id>.jsonl")
+@click.option("--predictions-dir", default="results/swebench", show_default=True)
+@click.option("--dataset-name", default=None, help="Override swebench.harness dataset_name")
+@click.option("--split", default="test", show_default=True)
+@click.option("--max-workers", type=int, default=4, show_default=True)
+@click.option("--timeout", type=int, default=1800, show_default=True)
+@click.option(
+    "--namespace",
+    default="none",
+    show_default=True,
+    help='Image namespace passed to swebench.harness.run_evaluation ("none" builds locally)',
+)
+@click.option("--instance-image-tag", default="latest", show_default=True)
+@click.option("--env-image-tag", default="latest", show_default=True)
+@click.option("--final-cache-level", type=click.Choice(["none", "base", "env", "instance"]), default="base", show_default=True)
+@click.option("--final-clean/--no-final-clean", default=True, show_default=True)
+@click.option("--dry-run", is_flag=True, default=False)
+def run_swebench_eval(
+    dataset: str,
+    condition: str,
+    run_id: str,
+    predictions_dir: str,
+    dataset_name: str | None,
+    split: str,
+    max_workers: int,
+    timeout: int,
+    namespace: str,
+    instance_image_tag: str,
+    env_image_tag: str,
+    final_cache_level: str,
+    final_clean: bool,
+    dry_run: bool,
+) -> None:
+    resolved_dataset_name, conditions, plan = _build_swebench_eval_plan(
+        dataset=dataset,
+        condition=condition,
+        run_id=run_id,
+        predictions_dir=predictions_dir,
+        dataset_name=dataset_name,
+        split=split,
+        max_workers=max_workers,
+        timeout=timeout,
+        namespace=namespace,
+        instance_image_tag=instance_image_tag,
+        env_image_tag=env_image_tag,
+        final_cache_level=final_cache_level,
+        final_clean=final_clean,
+        verify_predictions=True,
+    )
+
+    click.echo(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "dataset": dataset,
+                "dataset_name": resolved_dataset_name,
+                "conditions": conditions,
+                "namespace": namespace,
+                "plan": plan,
+            },
+            indent=2,
+        )
+    )
+    if dry_run:
+        return
+
+    _run_swebench_eval_plan(plan)
 
 
 @cli.command("featurebench")

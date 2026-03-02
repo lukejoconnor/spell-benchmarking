@@ -67,7 +67,7 @@ uv run python benchmarking/bench.py general [OPTIONS]
 
 ### `swebench` — Bug Fixing in Real Repositories
 
-Clones a repository, checks out a base commit, runs the agent in the workspace, and captures the resulting patch.
+Clones a repository, checks out a base commit, runs the agent in the workspace, captures the resulting patch, then evaluates with the official SWE-bench harness by default.
 
 ```bash
 uv run python benchmarking/bench.py swebench [OPTIONS]
@@ -76,7 +76,7 @@ uv run python benchmarking/bench.py swebench [OPTIONS]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--dataset` | `mini` | `mini` (50), `lite` (300), `verified` (500), or `pro` (~250) |
-| `--condition` | `both` | `spell`, `claude_code`, `codex`, `both`, or `all` |
+| `--condition` | `all` | `spell`, `claude_code`, `codex`, `both`, or `all` |
 | `--model` | *(none, required)* | `provider:model` spec for Spell |
 | `--claude-model` | *(none, required)* | Model name for Claude Code |
 | `--codex-model` | `codex` | Model for Codex CLI |
@@ -91,12 +91,45 @@ uv run python benchmarking/bench.py swebench [OPTIONS]
 | `--reasoning-effort` | `high` | `low`, `medium`, or `high` |
 | `--workspace-root` | `/tmp/swe_ws` | Directory for cloned workspaces |
 | `--keep-workspaces` | off | Don't delete workspaces after run |
+| `--evaluate / --no-evaluate` | on | Run `swebench.harness.run_evaluation` after predictions are written |
+| `--eval-max-workers` | 4 | Max concurrent evaluation workers |
+| `--eval-final-cache-level` | `base` | Cache level used on final condition only |
+| `--eval-final-clean / --no-eval-final-clean` | on | Whether final condition performs cleanup |
 | `--agent` | — | Override Spell agent EDN file |
 | `--agent-msg` | — | Override agent for message-mode |
 | `--agent-tc` | — | Override agent for toolcall-mode |
 | `--dry-run` | — | Print config and exit |
 | `--run-id` | auto | Custom run ID |
 | `--output` | auto | Output JSONL path |
+
+Evaluation cleanup sequence for multi-condition runs:
+- Non-final conditions: `cache_level=env`, `clean=false` (reuse env images)
+- Final condition: `cache_level=<eval-final-cache-level>`, `clean=<eval-final-clean>`
+
+### `swebench-eval` — Official SWE-bench Harness Evaluation
+
+Evaluates prediction JSONL outputs with `swebench.harness.run_evaluation` and
+defaults to running all conditions in sequence while preserving env cache until
+the final condition.
+
+```bash
+uv run python benchmarking/bench.py swebench-eval [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--dataset` | `mini` | `mini`, `lite`, `verified`, or `pro` |
+| `--condition` | `all` | `spell`, `claude_code`, `codex`, `both`, or `all` |
+| `--run-id` | *(required)* | Run ID produced by `bench.py swebench` |
+| `--predictions-dir` | `results/swebench` | Directory containing `<condition>_<dataset>_<run-id>.jsonl` |
+| `--namespace` | `none` | Harness namespace (`none` builds/uses local images) |
+| `--final-cache-level` | `base` | Cache level used on final condition only |
+| `--final-clean / --no-final-clean` | on | Whether final condition performs cleanup |
+| `--dry-run` | off | Print command plan without executing |
+
+Default cleanup sequence for multi-condition runs:
+- Non-final conditions: `cache_level=env`, `clean=false` (reuse env images)
+- Final condition: `cache_level=base`, `clean=true` (prune env + instance images)
 
 ### `featurebench` — Feature Implementation
 
