@@ -24,6 +24,14 @@ DEFAULT_AGENT_POLICY: dict[tuple[ProviderFamily, SpellMode], str] = {
     ("tc", "tc"): "config/agents/io-tc.agent.edn",
 }
 
+# Math benchmarks use agents without web namespace (TODO #152).
+# Web search wastes tokens on competition math problems.
+MATH_AGENT_POLICY: dict[tuple[ProviderFamily, SpellMode], str] = {
+    ("pf", "msg"): "config/agents/math-pf.agent.edn",
+    ("msg", "msg"): "config/agents/math-msg.agent.edn",
+    ("tc", "tc"): "config/agents/math-tc.agent.edn",
+}
+
 
 @dataclass(frozen=True)
 class ResolvedSpellAgent:
@@ -119,8 +127,10 @@ def resolve_spell_agent(
         source = "agent"
     else:
         key = (provider_family, spell_mode)
+        # Use math-specific agents (no web) for math benchmarks
+        policy = MATH_AGENT_POLICY if family == "general_math" else DEFAULT_AGENT_POLICY
         try:
-            selected = DEFAULT_AGENT_POLICY[key]
+            selected = policy[key]
         except KeyError as exc:  # pragma: no cover - defensive
             raise ValueError(f"No default Spell agent policy for key: {key}") from exc
         source = "default"
