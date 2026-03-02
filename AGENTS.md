@@ -131,6 +131,8 @@ Most recent results for comparison. Check notebook entries for full details.
 | Omni-MATH (54, Opus 4.5) | 51.9% | 38.6% | 40.4% | `omni-math-manual-scoring` |
 | Omni-MATH (60, Opus 4.6) | 33.3%* | 40.0% | — | `omni-math-rerun` |
 | Omni-MATH (60, Codex) | 56.7% | — | 53.3%† | `omni-math-rerun` |
+| AIME 2026 (30, Opus 4.6) | 93.3% | 96.7%‡ | — | `aime-2026-full` |
+| AIME 2026 (30, Codex) | 96.7% | — | 100%† | `aime-2026-full` |
 
 ### Long-Context
 
@@ -273,4 +275,4 @@ Results go to `data/exercism-results/` (timestamped directories) and `notebook/e
 
 **Omni-MATH auto-scorer recall:** `math_equivalent` + `extract_math_answer` has <50% recall on Omni-MATH. Misses: Unicode math symbols (Codex outputs ⌈⌉/√/⟂), yes/no text answers, set ordering, equivalent algebraic expressions, descriptive answers. Manual scoring required for accurate results. *All Omni-MATH Spell/CC/Baseline entries use manual scores. See `omni-math-rerun`.
 
-**Omni-MATH baseline footnotes:** \*Spell/Opus 33.3% includes 19 fatal `missing-tool-call` errors; ex-error accuracy is 48.8% (20/41). †Codex CLI = Codex condition (Codex CLI, not Claude Code).
+**Omni-MATH baseline footnotes:** \*Spell/Opus 33.3% includes 19 fatal `missing-tool-call` errors; ex-error accuracy is 48.8% (20/41). †Codex CLI = Codex condition (Codex CLI, not Claude Code). ‡CC/Opus AIME 2026 auto-scored 93.3% but item 7 was a format false negative (`**396**` bold markdown); corrected to 96.7%.
