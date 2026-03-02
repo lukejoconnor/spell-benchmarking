@@ -755,9 +755,10 @@ def run_swebench(
             )
 
         def process(item) -> UnifiedRunRecord:
-            wt = setup_swebench_workspace(cache, item, tag=cond)
-            ws_path = wt.path
+            wt = None
             try:
+                wt = setup_swebench_workspace(cache, item, tag=cond)
+                ws_path = wt.path
                 prompt = _format_swebench_prompt(item)
 
                 req = RunRequest(
@@ -833,8 +834,51 @@ def run_swebench(
                         ),
                     },
                 )
+            except Exception as exc:
+                # Keep long swebench runs alive even when one instance has an
+                # unreachable base commit or workspace setup failure.
+                err_text = str(exc)
+                return _mk_record(
+                    run_id=run_id,
+                    benchmark="swebench",
+                    dataset=dataset,
+                    split=dataset,
+                    item_id=item.instance_id,
+                    condition=cond,
+                    model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
+                    agent_file=spell_resolution.agent_file if spell_resolution else None,
+                    response=RunResponse(
+                        status="error",
+                        response_text="",
+                        tokens_in=None,
+                        tokens_out=None,
+                        cost_usd=None,
+                        latency_ms=None,
+                        error_message=err_text,
+                        error_type="workspace_error",
+                        metadata={},
+                    ),
+                    response_text="",
+                    patch=None,
+                    answer_extracted=None,
+                    correct=None,
+                    metadata={
+                        "repo": item.repo,
+                        "base_commit": item.base_commit,
+                        **(
+                            {
+                                "spell_mode": spell_resolution.spell_mode,
+                                "resolved_agent_file": spell_resolution.agent_file,
+                                "agent_source": spell_resolution.source,
+                                "agent_policy_key": spell_resolution.policy_key,
+                            }
+                            if (cond == "spell" and spell_resolution)
+                            else {}
+                        ),
+                    },
+                )
             finally:
-                if not keep_workspaces:
+                if wt is not None and not keep_workspaces:
                     wt.remove()
 
         if parallel <= 1:
