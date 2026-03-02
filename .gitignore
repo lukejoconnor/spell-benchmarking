@@ -12,6 +12,7 @@ results/
 logs/
 traces/
 scratch/
+uv.lock
 
 # Nested local repos / local environment artifacts
 heurigym/
