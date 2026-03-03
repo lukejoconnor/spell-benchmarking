@@ -14,5 +14,5 @@ dependencies = [
 
 [project.optional-dependencies]
 swebench = [
-    "swebench>=2.0.0",
+    "swebench @ git+https://github.com/lukejoconnor/SWE-bench.git@024a459",
 ]

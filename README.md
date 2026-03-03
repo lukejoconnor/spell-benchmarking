@@ -75,7 +75,7 @@ uv run python benchmarking/bench.py swebench [OPTIONS]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--dataset` | `mini` | `mini` (50), `lite` (300), `verified` (500), or `pro` (~250) |
+| `--dataset` | `mini` | `mini` (50), `lite` (300), `verified` (500), or `pro` (731) |
 | `--condition` | `all` | `spell`, `claude_code`, `codex`, `both`, or `all` |
 | `--model` | *(none, required)* | `provider:model` spec for Spell |
 | `--claude-model` | *(none, required)* | Model name for Claude Code |
@@ -105,6 +105,24 @@ uv run python benchmarking/bench.py swebench [OPTIONS]
 Evaluation cleanup sequence for multi-condition runs:
 - Non-final conditions: `cache_level=env`, `clean=false` (reuse env images)
 - Final condition: `cache_level=<eval-final-cache-level>`, `clean=<eval-final-clean>`
+
+SWE-bench Pro support in this repo relies on a patched `swebench` fork pinned in
+`pyproject.toml`:
+
+```bash
+uv sync --extra swebench
+uv run --extra swebench python -c "import inspect, swebench; print(swebench.__version__); print(inspect.getfile(swebench))"
+```
+
+Example Pro evaluation run:
+
+```bash
+uv run python benchmarking/bench.py swebench-eval \
+  --dataset pro \
+  --condition spell \
+  --run-id <existing-run-id> \
+  --namespace none
+```
 
 ### `swebench-eval` — Official SWE-bench Harness Evaluation
 
@@ -208,7 +226,7 @@ Optional filters: `--run-id`, `--condition`.
 | `mini` | SWE-bench Verified | 50 | Stratified mini split |
 | `lite` | SWE-bench Lite | 300 | SWE-bench Lite |
 | `verified` | SWE-bench Verified | 500 | Full verified set |
-| `pro` | SWE-bench Pro | ~250 | Harder production-like subset |
+| `pro` | SWE-bench Pro | 731 | Harder production-like subset |
 
 ### Coding (FeatureBench)
 
