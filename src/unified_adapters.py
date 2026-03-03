@@ -207,8 +207,8 @@ class SpellAdapter:
         )
 
 
-class BaselineAdapter:
-    condition = "baseline"
+class OneShotAdapter:
+    condition = "one_shot"
 
     def __init__(self, project_root: Path, model_spec: str):
         self.project_root = project_root
@@ -217,7 +217,7 @@ class BaselineAdapter:
 
     def run(self, req: RunRequest) -> RunResponse:
         payload = {
-            "mode": "baseline",
+            "mode": "one_shot",
             "prompt": req.prompt,
             "model": req.model_spec or self.model_spec,
             "budget": req.budget,

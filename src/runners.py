@@ -1,4 +1,4 @@
-"""Legacy runners for baseline and Spell conditions.
+"""Legacy runners for one-shot and Spell conditions.
 
 Prefer `benchmarking/bench.py` + `src/unified_adapters.py` for active benchmark runs.
 """
@@ -15,7 +15,7 @@ from pathlib import Path
 import anthropic
 import openai
 
-from .datasets import BenchmarkItem, SWEBenchItem, format_prompt_baseline, format_prompt_spell
+from .datasets import BenchmarkItem, SWEBenchItem, format_prompt_one_shot, format_prompt_spell
 
 # Directory for context files (within spell project for tools/read-file access)
 CONTEXT_DIR = Path(__file__).parent.parent.parent / 'benchmarking' / 'data' / 'contexts'
@@ -42,7 +42,7 @@ class TraceLogger:
 
         Args:
             item_id: Benchmark item ID
-            condition: 'baseline', 'spell', or 'claude_code'
+            condition: 'one_shot', 'spell', or 'claude_code'
             trace_data: Dict with keys like:
                 - prompt: The full prompt sent
                 - raw_response: Full response (including reasoning)
@@ -145,8 +145,8 @@ def estimate_cost(model: str, tokens_in: int, tokens_out: int) -> float:
     return (tokens_in * 3.0 + tokens_out * 15.0) / 1_000_000
 
 
-class BaselineRunner:
-    """Run baseline condition: single LLM call."""
+class OneShotRunner:
+    """Run one-shot condition: single LLM call."""
 
     def __init__(self, model_spec: str, thinking: bool = False, thinking_budget: int = 10000,
                  reasoning_effort: str = "high"):
@@ -163,8 +163,8 @@ class BaselineRunner:
             raise ValueError(f"Unknown provider: {self.provider}")
 
     def run(self, item: BenchmarkItem) -> RunResult:
-        """Run a single item through baseline condition."""
-        prompt = format_prompt_baseline(item)
+        """Run a single item through one-shot condition."""
+        prompt = format_prompt_one_shot(item)
         start = time.time()
 
         try:
@@ -221,7 +221,7 @@ class BaselineRunner:
 
             run_result = RunResult(
                 item_id=item.id,
-                condition='baseline',
+                condition='one_shot',
                 model=f'{self.provider}:{self.model}',
                 response=response,
                 answer_extracted=None,  # Filled by evaluator
@@ -234,7 +234,7 @@ class BaselineRunner:
 
             # Log trace if logger is configured
             if _trace_logger:
-                _trace_logger.log_run(item.id, 'baseline', {
+                _trace_logger.log_run(item.id, 'one_shot', {
                     'prompt': prompt,
                     'response': response,
                     'tokens_in': tokens_in,
@@ -254,7 +254,7 @@ class BaselineRunner:
 
             # Log trace for error
             if _trace_logger:
-                _trace_logger.log_run(item.id, 'baseline', {
+                _trace_logger.log_run(item.id, 'one_shot', {
                     'prompt': prompt,
                     'error': error_msg,
                     'latency_ms': latency_ms,
@@ -265,7 +265,7 @@ class BaselineRunner:
 
             return RunResult(
                 item_id=item.id,
-                condition='baseline',
+                condition='one_shot',
                 model=f'{self.provider}:{self.model}',
                 response='',
                 answer_extracted=None,
@@ -509,7 +509,7 @@ class SpellRunner:
 
 
 class ClaudeCodeRunner:
-    """Run Claude Code condition: agentic baseline with tool use."""
+    """Run Claude Code condition: agentic with tool use."""
 
     def __init__(self, model: str = 'sonnet', timeout: int = 300, max_budget: float = 1.0):
         """Initialize Claude Code runner.
@@ -774,7 +774,7 @@ class ClaudeCodeRunner:
 
 def run_batch(
     items: list[BenchmarkItem],
-    runner: BaselineRunner | SpellRunner | ClaudeCodeRunner,
+    runner: OneShotRunner | SpellRunner | ClaudeCodeRunner,
     max_parallel: int = 5,
     progress_callback=None,
 ) -> list[RunResult]:
@@ -782,7 +782,7 @@ def run_batch(
 
     Args:
         items: List of benchmark items to run
-        runner: Runner instance (BaselineRunner or SpellRunner)
+        runner: Runner instance (OneShotRunner or SpellRunner)
         max_parallel: Maximum concurrent workers (default 5)
         progress_callback: Optional callback(item_id, result) for progress updates
     """

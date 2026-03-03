@@ -38,7 +38,7 @@ from src.datasets import (
     load_swebench_lite,
     load_swebench_pro,
     load_swebench_verified_mini,
-    format_prompt_baseline,
+    format_prompt_one_shot,
     format_prompt_spell,
 )
 from src.evaluation import (
@@ -63,7 +63,7 @@ from src.swebench_output import write_predictions_jsonl
 from src.swebench_prep import setup_swebench_workspace, get_default_workspace_root
 from src.workspace import RepoCache
 from src.unified_adapters import (
-    BaselineAdapter,
+    OneShotAdapter,
     ClaudeCodeAdapter,
     CodexAdapter,
     RunRequest,
@@ -205,8 +205,8 @@ def _ensure_context_file(item: BenchmarkItem) -> str | None:
 
 def _format_general_prompt(item: BenchmarkItem, condition: str) -> str:
     context_file = _ensure_context_file(item)
-    if condition == "baseline":
-        return format_prompt_baseline(item)
+    if condition == "one_shot":
+        return format_prompt_one_shot(item)
     if condition == "spell":
         return format_prompt_spell(item, context_file=context_file)
 
@@ -472,8 +472,8 @@ def _build_adapter(condition: str, *, model: str | None, claude_model: str | Non
         return _build_docker_adapter(condition, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget)
     if condition == "spell":
         return SpellAdapter(project_root=SPELL_ROOT, model_spec=_require_model(condition, model))
-    if condition == "baseline":
-        return BaselineAdapter(project_root=SPELL_ROOT, model_spec=_require_model(condition, model))
+    if condition == "one_shot":
+        return OneShotAdapter(project_root=SPELL_ROOT, model_spec=_require_model(condition, model))
     if condition == "claude_code":
         return ClaudeCodeAdapter(model=_require_model(condition, claude_model, "--claude-model"), budget=budget)
     if condition == "codex":
@@ -488,9 +488,9 @@ def _build_docker_adapter(condition: str, *, model: str | None, claude_model: st
         return DockerClaudeCodeAdapter(model=_require_model(condition, claude_model, "--claude-model"), budget=budget)
     if condition == "codex":
         return DockerCodexAdapter(model_spec=codex_model)
-    if condition == "baseline":
-        # Baseline (single LLM call) doesn't need Docker isolation
-        return BaselineAdapter(project_root=SPELL_ROOT, model_spec=_require_model(condition, model))
+    if condition == "one_shot":
+        # One-shot (single LLM call) doesn't need Docker isolation
+        return OneShotAdapter(project_root=SPELL_ROOT, model_spec=_require_model(condition, model))
     raise ValueError(f"Unknown condition: {condition}")
 
 
@@ -815,8 +815,8 @@ def cli() -> None:
 
 @cli.command("general")
 @click.option("--dataset", default="longbench_short", type=click.Choice(list(DATASETS.keys()) + ["all"]))
-@click.option("--condition", default="baseline", type=click.Choice(["baseline", "spell", "claude_code", "codex", "all"]))
-@click.option("--model", default=None, help="provider:model for baseline/spell (required for those conditions)")
+@click.option("--condition", default="one_shot", type=click.Choice(["one_shot", "spell", "claude_code", "codex", "all"]))
+@click.option("--model", default=None, help="provider:model for one_shot/spell (required for those conditions)")
 @click.option("--claude-model", default=None, help="Model for Claude Code comparator (required for claude_code condition)")
 @click.option("--codex-model", default="codex", help="Model for Codex harness comparator")
 @click.option("--n", type=int, default=None)
@@ -868,7 +868,7 @@ def run_general(
 ) -> None:
     run_id = run_id or _run_id("general")
     output_file = Path(output) if output else _default_output(run_id)
-    conditions = _parse_conditions(condition, ("baseline", "spell", "claude_code", "codex", "all"))
+    conditions = _parse_conditions(condition, ("one_shot", "spell", "claude_code", "codex", "all"))
 
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
@@ -979,7 +979,7 @@ def run_general(
                     item_id=item.id,
                     condition=cond,
                     prompt=prompt,
-                    model_spec={"spell": model, "baseline": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
+                    model_spec={"spell": model, "one_shot": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
                     init=_make_spell_init(prompt, preamble=_general_preamble(item.dataset)) if cond == "spell" else None,
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
@@ -1907,7 +1907,7 @@ def _extract_python_program(response_text: str | None, workspace: Path | None = 
     """Extract Python code from agent response or workspace files.
 
     For agents like Claude Code that write files directly, checks the workspace
-    for .py files. For baseline/Spell that return markdown, extracts from code blocks.
+    for .py files. For one_shot/Spell that return markdown, extracts from code blocks.
     """
     import re
 
@@ -2274,8 +2274,8 @@ def _format_exercism_retry_prompt(test_output: str, ws: Path, item: ExercismItem
     )
 
 
-def _format_exercism_baseline_prompt(item: ExercismItem) -> str:
-    """Format prompt for baseline (single LLM call, no tool use)."""
+def _format_exercism_one_shot_prompt(item: ExercismItem) -> str:
+    """Format prompt for one-shot (single LLM call, no tool use)."""
     return (
         "You are solving a Python programming exercise.\n\n"
         "## Instructions\n\n"
@@ -2303,11 +2303,11 @@ def _run_exercism_pytest(test_path: Path, timeout: int = EXERCISM_PYTEST_TIMEOUT
 
 
 @cli.command("exercism")
-@click.option("--condition", default="spell", type=click.Choice(["baseline", "spell", "claude_code", "codex", "all"]))
+@click.option("--condition", default="spell", type=click.Choice(["one_shot", "spell", "claude_code", "codex", "all"]))
 @click.option("--difficulty", default=None, help="Difficulty range, e.g. '1-3' or '5'")
 @click.option("--slugs", default=None, help="Comma-separated exercise slugs")
 @click.option("--n", type=int, default=None, help="Limit to N exercises")
-@click.option("--model", default=None, help="provider:model for baseline/spell (required for those conditions)")
+@click.option("--model", default=None, help="provider:model for one_shot/spell (required for those conditions)")
 @click.option("--claude-model", default=None, help="Model for Claude Code comparator (required for claude_code condition)")
 @click.option("--codex-model", default="codex", help="Model for Codex harness comparator")
 @click.option("--parallel", type=int, default=1, show_default=True)
@@ -2350,7 +2350,7 @@ def run_exercism(
     """Run Exercism Python benchmark with two-attempt protocol."""
     run_id = run_id or _run_id("exercism")
     output_file = Path(output) if output else _default_output(run_id)
-    conditions = _parse_conditions(condition, ("baseline", "spell", "claude_code", "codex", "all"))
+    conditions = _parse_conditions(condition, ("one_shot", "spell", "claude_code", "codex", "all"))
 
     # Parse difficulty
     diff_min, diff_max = None, None
@@ -2435,8 +2435,8 @@ def run_exercism(
 
                 # === Attempt 1 ===
                 attempt = 1
-                if cond == "baseline":
-                    prompt = _format_exercism_baseline_prompt(item)
+                if cond == "one_shot":
+                    prompt = _format_exercism_one_shot_prompt(item)
                 else:
                     prompt = _format_exercism_prompt(item, ws)
 
@@ -2446,7 +2446,7 @@ def run_exercism(
                     item_id=item.slug,
                     condition=cond,
                     prompt=prompt,
-                    model_spec={"spell": model, "baseline": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
+                    model_spec={"spell": model, "one_shot": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
                     init=_make_spell_init(prompt) if cond == "spell" else None,
                     agent_file=spell_resolution.agent_file if (spell_resolution and cond == "spell") else None,
@@ -2455,12 +2455,12 @@ def run_exercism(
                     max_tokens=max_tokens,
                     reasoning_effort=reasoning_effort,
                     trace=trace if cond == "spell" else False,
-                    workspace=ws if cond != "baseline" else None,
+                    workspace=ws if cond != "one_shot" else None,
                 )
                 resp1 = adapter.run(req)
 
-                # For baseline, extract code from response and write to file
-                if cond == "baseline" and resp1.response_text:
+                # For one_shot, extract code from response and write to file
+                if cond == "one_shot" and resp1.response_text:
                     code = _extract_python_program(resp1.response_text)
                     if code:
                         (ws / item.stub_file).write_text(code, encoding="utf-8")
@@ -2492,11 +2492,11 @@ def run_exercism(
                         max_tokens=max_tokens,
                         reasoning_effort=reasoning_effort,
                         trace=trace if cond == "spell" else False,
-                        workspace=ws if cond != "baseline" else None,
+                        workspace=ws if cond != "one_shot" else None,
                     )
                     resp2 = adapter.run(req2)
 
-                    if cond == "baseline" and resp2.response_text:
+                    if cond == "one_shot" and resp2.response_text:
                         code = _extract_python_program(resp2.response_text)
                         if code:
                             (ws / item.stub_file).write_text(code, encoding="utf-8")

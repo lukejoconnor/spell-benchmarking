@@ -5,11 +5,11 @@
 Follow this sequence when running benchmarks:
 
 1. **Pilot a small subset** (3-5 items) to verify the harness works and results look reasonable
-2. **Sanity check results** — are accuracy, cost, and error rates in the expected range? Compare against the baseline results below
+2. **Sanity check results** — are accuracy, cost, and error rates in the expected range? Compare against the one-shot results below
 3. **Branch based on outcome:**
    - If worse than expected: troubleshoot before running full suite (check errors, compare traces)
    - If reasonable: run the full benchmark and display results with comparison to prior runs
-4. **Postmortem: what went wrong** — focus on errors first, then wrong answers where another method (baseline, CC, prior Spell run) got it right. Dig into traces for root causes
+4. **Postmortem: what went wrong** — focus on errors first, then wrong answers where another method (one-shot, CC, prior Spell run) got it right. Dig into traces for root causes
 5. **Postmortem: what went right** — which Spell features were actually used? Did think/rethink, call-now, agents/spawn, or other orchestration primitives contribute to correct answers?
 
 ## Reporting Convention
@@ -99,7 +99,7 @@ Run `docker system prune -af --volumes` between tasks to avoid disk exhaustion.
 ### Common flags (Python harness)
 
 ```bash
---condition {baseline,spell,claude_code,codex,all}   # Which system to run
+--condition {one_shot,spell,claude_code,codex,all}   # Which system to run
 --n N                                  # Limit to N items
 --model anthropic:claude-opus-4-5-20251101   # Model override
 --thinking --reasoning-effort high     # Extended thinking
@@ -110,7 +110,7 @@ Run `docker system prune -af --volumes` between tasks to avoid disk exhaustion.
 `reasoning_effort` defaults to `high` in unified adapters unless explicitly overridden.
 
 Condition semantics:
-- `baseline`: single LLM call (text-only). Use any provider/model via `--model` (including Codex-backed single-call models).
+- `one_shot`: single LLM call (text-only). Use any provider/model via `--model` (including Codex-backed single-call models).
 - `codex`: Codex CLI harness (agent loop). Default model is `codex` via `--codex-model codex`.
   - In the harness adapter, `codex` resolves to `gpt-5-codex` for stable Codex CLI compatibility.
 - `spell` (including SWE-bench workspaces): adapter injects local `-Sdeps` so `spell.benchmark-api` resolves even when `cwd` is a cloned repo workspace.
@@ -124,13 +124,13 @@ Condition semantics:
 --model sonnet        # Model shorthand
 ```
 
-## Baseline Results
+## One-Shot Results
 
 Most recent results for comparison. Check notebook entries for full details.
 
 ### Math
 
-| Benchmark | Spell | CC | Baseline | Entry |
+| Benchmark | Spell | CC | One-Shot | Entry |
 |-----------|-------|----|----------|-------|
 | GSM8K (30) | 100% | — | — | `post-refactor-regression-test` |
 | MATH Hard (20) | 90% | — | — | `post-refactor-regression-test` |
@@ -188,7 +188,7 @@ benchmarking/
 ├── manual_swebench_high_reasoning.py # Manual SWE-bench runner for focused diagnostics
 ├── src/
 │   ├── datasets.py        # Dataset loading
-│   ├── unified_adapters.py # Condition adapters (Spell/Baseline/Claude/Codex)
+│   ├── unified_adapters.py # Condition adapters (Spell/OneShot/Claude/Codex)
 │   ├── unified_results.py  # Unified JSONL schema + summaries
 │   ├── evaluation.py      # Scoring (exact match, regex extraction)
 │   ├── swebench_prep.py   # SWE-bench workspace setup
@@ -291,6 +291,6 @@ Results go to `data/exercism-results/` (timestamped directories) and `notebook/e
 
 **Omni-MATH `missing-tool-call` prevalence:** On Omni-MATH with Opus 4.6 toolcall transport, `missing-tool-call` hits 30% of items (18/60). Much higher than Terminal-Bench. Making this retryable (TODO #144) is critical for math benchmarks on toolcall transport. See `omni-math-rerun`.
 
-**Omni-MATH auto-scorer recall:** `math_equivalent` + `extract_math_answer` has <50% recall on Omni-MATH. Misses: Unicode math symbols (Codex outputs ⌈⌉/√/⟂), yes/no text answers, set ordering, equivalent algebraic expressions, descriptive answers. Manual scoring required for accurate results. *All Omni-MATH Spell/CC/Baseline entries use manual scores. See `omni-math-rerun`.
+**Omni-MATH auto-scorer recall:** `math_equivalent` + `extract_math_answer` has <50% recall on Omni-MATH. Misses: Unicode math symbols (Codex outputs ⌈⌉/√/⟂), yes/no text answers, set ordering, equivalent algebraic expressions, descriptive answers. Manual scoring required for accurate results. *All Omni-MATH Spell/CC/One-Shot entries use manual scores. See `omni-math-rerun`.
 
-**Omni-MATH baseline footnotes:** \*Spell/Opus 33.3% includes 19 fatal `missing-tool-call` errors; ex-error accuracy is 48.8% (20/41). †Codex CLI = Codex condition (Codex CLI, not Claude Code). ‡CC/Opus AIME 2026 auto-scored 93.3% but item 7 was a format false negative (`**396**` bold markdown); corrected to 96.7%.
+**Omni-MATH one-shot footnotes:** \*Spell/Opus 33.3% includes 19 fatal `missing-tool-call` errors; ex-error accuracy is 48.8% (20/41). †Codex CLI = Codex condition (Codex CLI, not Claude Code). ‡CC/Opus AIME 2026 auto-scored 93.3% but item 7 was a format false negative (`**396**` bold markdown); corrected to 96.7%.
