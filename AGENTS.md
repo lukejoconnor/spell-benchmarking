@@ -54,6 +54,14 @@ Maintain a neutral, skeptical stance. Present unfavorable and inconclusive resul
 | FeatureBench | varies | Feature implementation | `uv run python benchmarking/bench.py featurebench --condition spell` |
 | ScienceAgentBench | 102 | Scientific code generation (data science) | `uv run python benchmarking/bench.py scienceagentbench --condition claude_code` |
 
+SWE-bench harness defaults and workflow:
+- `bench.py swebench` now defaults to `--condition all` (`spell`, `claude_code`, `codex`) and evaluates by default (`--evaluate`).
+- Use `--no-evaluate` to run generation only (write predictions and unified JSONL without running `swebench.harness`).
+- Evaluation runs conditions in series with staged cleanup:
+  - non-final conditions: `cache_level=env`, `clean=false`
+  - final condition: configurable final cleanup (`--eval-final-cache-level`, `--eval-final-clean`)
+- For explicit eval-only runs, use `bench.py swebench-eval`.
+
 ### Coding (Clojure harness)
 
 | Benchmark | Items | What it tests | Run command |
@@ -131,6 +139,8 @@ Most recent results for comparison. Check notebook entries for full details.
 | Omni-MATH (54, Opus 4.5) | 51.9% | 38.6% | 40.4% | `omni-math-manual-scoring` |
 | Omni-MATH (60, Opus 4.6) | 33.3%* | 40.0% | — | `omni-math-rerun` |
 | Omni-MATH (60, Codex) | 56.7% | — | 53.3%† | `omni-math-rerun` |
+| AIME 2026 (30, Opus 4.6) | 93.3% | 96.7%‡ | — | `aime-2026-full` |
+| AIME 2026 (30, Codex) | 96.7% | — | 100%† | `aime-2026-full` |
 
 ### Long-Context
 
@@ -253,6 +263,16 @@ Results go to `data/exercism-results/` (timestamped directories) and `notebook/e
 
 **SWE-bench classpath:** `SpellAdapter` injects local `-Sdeps` so `spell.benchmark-api` can run from cloned workspace directories.
 
+**Non-software default output format (Spell):** The unified Spell adapter now sends `format={"required":["result"]}` by default for non-software benchmarks (`general`/math/long-context). Software benchmarks (`swebench`, `featurebench`, `scienceagentbench`, `exercism`) do not get this default. Override per request with `RunRequest.format_spec`.
+
+**Result-map unwrapping:** When format-constrained runs return maps like `{:result ...}`, `spell.benchmark-api` unwraps that value before writing JSON `result`, so existing answer extractors continue to consume plain answer text.
+
+**SWE-bench evaluation defaults:** `bench.py swebench` now runs official harness evaluation by default after prediction generation. Disable via `--no-evaluate` when iterating quickly.
+
+**SWE-bench Docker socket on Colima:** evaluation uses Docker SDK (`docker.from_env`), which depends on `DOCKER_HOST` instead of Docker CLI context. `bench.py` now auto-falls back to `unix://~/.colima/default/docker.sock` when `DOCKER_HOST` is unset and `/var/run/docker.sock` is missing.
+
+**SWE-bench ARM reality check:** x86_64 eval images can run on Apple Silicon via emulation but are slower and may be less stable on heavy builds. Prefer small pilots first, then scale with caching.
+
 **(stored ...) problem:** Values too large to inline in the completion become opaque `(stored ...)` refs that the LLM can't read back. Affects ~15% of LongBench items. See `longbench-regression-v2`.
 
 **Zero orchestration usage:** Current benchmarks mostly test sequential tool use, not multi-agent orchestration. Spell's advantage comes from code-first semantics (clean return values, deterministic computation) rather than spawn/ask/plet.
@@ -273,4 +293,4 @@ Results go to `data/exercism-results/` (timestamped directories) and `notebook/e
 
 **Omni-MATH auto-scorer recall:** `math_equivalent` + `extract_math_answer` has <50% recall on Omni-MATH. Misses: Unicode math symbols (Codex outputs ⌈⌉/√/⟂), yes/no text answers, set ordering, equivalent algebraic expressions, descriptive answers. Manual scoring required for accurate results. *All Omni-MATH Spell/CC/Baseline entries use manual scores. See `omni-math-rerun`.
 
-**Omni-MATH baseline footnotes:** \*Spell/Opus 33.3% includes 19 fatal `missing-tool-call` errors; ex-error accuracy is 48.8% (20/41). †Codex CLI = Codex condition (Codex CLI, not Claude Code).
+**Omni-MATH baseline footnotes:** \*Spell/Opus 33.3% includes 19 fatal `missing-tool-call` errors; ex-error accuracy is 48.8% (20/41). †Codex CLI = Codex condition (Codex CLI, not Claude Code). ‡CC/Opus AIME 2026 auto-scored 93.3% but item 7 was a format false negative (`**396**` bold markdown); corrected to 96.7%.

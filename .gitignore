@@ -19,6 +19,8 @@ heurigym/
 notebook/
 .python-version
 1:timeout60
+.codex-clean-home/*
+!.codex-clean-home/.gitkeep
 
 # Editor
 .idea/

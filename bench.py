@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, UTC
@@ -23,8 +25,10 @@ except ModuleNotFoundError as exc:  # pragma: no cover
 from src.datasets import (
     DATASETS,
     BenchmarkItem,
+    ExercismItem,
     ScienceAgentBenchItem,
     SWEBenchItem,
+    load_exercism,
     load_scienceagentbench,
     load_swebench_verified,
     load_swebench_lite,
@@ -76,6 +80,14 @@ from src.unified_results import (
     parse_model_spec,
     summarize_records,
 )
+from src.swebench_pro_eval import (
+    check_docker_manifest_access,
+    convert_predictions_jsonl_to_scale_json,
+    dockerhub_image_for_instance,
+    ensure_scale_pro_eval_repo,
+    load_raw_samples,
+    write_raw_sample_jsonl,
+)
 
 BENCHMARK_ROOT = Path(__file__).resolve().parent
 
@@ -97,6 +109,24 @@ def _resolve_spell_root() -> Path:
 
 SPELL_ROOT = _resolve_spell_root()
 CONTEXT_DIR = BENCHMARK_ROOT / "data" / "contexts"
+SCALE_PRO_EVAL_REPO_DEFAULT = "data/swebench_pro_eval/SWE-bench_Pro-os"
+SCALE_PRO_OUTPUT_DIR_DEFAULT = "results/swebench_pro_eval"
+
+
+@dataclass
+class ProEvalConfig:
+    """Groups ScaleAI SWE-bench Pro evaluation options."""
+
+    eval_repo: str = SCALE_PRO_EVAL_REPO_DEFAULT
+    raw_sample_path: str | None = None
+    output_dir: str = SCALE_PRO_OUTPUT_DIR_DEFAULT
+    dockerhub_username: str = "jefzda"
+    strip_trace_artifacts: bool = True
+    use_local_docker: bool = True
+    block_network: bool = False
+    redo: bool = False
+
+
 SWEBENCH_REMINDER_PREAMBLE = '(quine sys-reminder "Recall: you are writing Spell code, not natural language.")'
 SWEBENCH_DOCKER_PREAMBLE = (
     '(quine sys-reminder "Recall: you are writing Spell code, not natural language. '
@@ -104,6 +134,13 @@ SWEBENCH_DOCKER_PREAMBLE = (
     '(io/sh ...) shell commands. Do NOT use io/spit, io/slurp, io/read-file, '
     'io/write-file, io/ls, io/exists?, io/mkdir — they operate on the host, not the '
     'container. Use shell equivalents via io/sh instead.")'
+)
+OMNI_MATH_PREAMBLE = (
+    '(quine strategy "Solve the problem using a combination of the following strategies:\\n'
+    '- Pure reasoning via think blocks\\n'
+    '- Numerical computation using Spell (defn, loop/recur, map/reduce, math/)\\n'
+    '- Context pruning to manage your chain of thoughts (rethink + !extend)\\n'
+    '- Sub-agent delegation for exploring alternative approaches")'
 )
 
 
@@ -126,6 +163,24 @@ def _parse_conditions(value: str, allowed: tuple[str, ...]) -> list[str]:
     if value == "all":
         return [c for c in allowed if c != "all"]
     return [value]
+
+
+def _parse_swebench_conditions(value: str) -> list[str]:
+    if value == "both":
+        return ["spell", "claude_code"]
+    if value == "all":
+        return ["spell", "claude_code", "codex"]
+    return [value]
+
+
+def _swebench_dataset_name(dataset: str) -> str:
+    mapping = {
+        "mini": "princeton-nlp/SWE-bench_Verified",
+        "lite": "princeton-nlp/SWE-bench_Lite",
+        "verified": "princeton-nlp/SWE-bench_Verified",
+        "pro": "ScaleAI/SWE-bench_Pro",
+    }
+    return mapping[dataset]
 
 
 def _ensure_context_file(item: BenchmarkItem) -> str | None:
@@ -191,6 +246,10 @@ def _make_spell_init(prompt: str, preamble: str | None = None) -> str:
     if prompt.lstrip().startswith("("):
         return prompt
     return build_spell_init(prompt, preamble=preamble)
+
+
+def _general_preamble(dataset: str) -> str | None:
+    return {"omni_math": OMNI_MATH_PREAMBLE}.get(dataset)
 
 
 def _format_optional_swebench_text(value: Any) -> str:
@@ -403,6 +462,282 @@ def _resolve_spell_agent_or_die(
         raise click.ClickException(str(exc)) from exc
 
 
+def _default_swebench_pro_raw_sample_path(dataset_name: str, split: str) -> Path:
+    dataset_slug = dataset_name.replace("/", "_")
+    return BENCHMARK_ROOT / "data" / "swebench_pro_eval" / f"{dataset_slug}_{split}.jsonl"
+
+
+def _build_swebench_pro_command(
+    *,
+    raw_sample_path: Path,
+    patch_path: Path,
+    output_dir: Path,
+    max_workers: int,
+    dockerhub_username: str,
+    use_local_docker: bool,
+    block_network: bool,
+    redo: bool,
+) -> list[str]:
+    cmd = [
+        "uv",
+        "run",
+        "--with",
+        "pandas>=1.5.0",
+        "--with",
+        "tqdm>=4.64.0",
+        "--with",
+        "docker>=6.0.0",
+        "--with",
+        "datasets>=2.14.0",
+        "python",
+        "swe_bench_pro_eval.py",
+        "--raw_sample_path",
+        str(raw_sample_path),
+        "--patch_path",
+        str(patch_path),
+        "--output_dir",
+        str(output_dir),
+        "--scripts_dir",
+        "run_scripts",
+        "--num_workers",
+        str(max_workers),
+        "--dockerhub_username",
+        dockerhub_username,
+    ]
+    if use_local_docker:
+        cmd.append("--use_local_docker")
+    if block_network:
+        cmd.append("--block_network")
+    if redo:
+        cmd.append("--redo")
+    return cmd
+
+
+def _build_swebench_eval_plan(
+    *,
+    dataset: str,
+    condition: str,
+    run_id: str,
+    predictions_dir: str,
+    dataset_name: str | None,
+    split: str,
+    max_workers: int,
+    timeout: int,
+    namespace: str,
+    instance_image_tag: str,
+    env_image_tag: str,
+    final_cache_level: str,
+    final_clean: bool,
+    verify_predictions: bool,
+    pro: ProEvalConfig,
+) -> tuple[str, list[str], list[dict[str, Any]]]:
+    conditions = _parse_swebench_conditions(condition)
+    resolved_dataset_name = dataset_name or _swebench_dataset_name(dataset)
+    pred_root = Path(predictions_dir)
+
+    plan: list[dict[str, Any]] = []
+    if dataset == "pro":
+        eval_repo_path = Path(pro.eval_repo)
+        raw_sample = Path(pro.raw_sample_path) if pro.raw_sample_path else _default_swebench_pro_raw_sample_path(
+            resolved_dataset_name, split
+        )
+        output_root = Path(pro.output_dir) / run_id
+
+        for cond in conditions:
+            pred_path = pred_root / f"{cond}_{dataset}_{run_id}.jsonl"
+            if verify_predictions and not pred_path.exists():
+                raise click.ClickException(f"Predictions file not found: {pred_path}")
+
+            converted_path = output_root / f"{cond}_{dataset}_{run_id}.patches.json"
+            condition_output_dir = output_root / cond
+            cmd = _build_swebench_pro_command(
+                raw_sample_path=raw_sample.resolve(),
+                patch_path=converted_path.resolve(),
+                output_dir=condition_output_dir.resolve(),
+                max_workers=max_workers,
+                dockerhub_username=pro.dockerhub_username,
+                use_local_docker=pro.use_local_docker,
+                block_network=pro.block_network,
+                redo=pro.redo,
+            )
+            plan.append(
+                {
+                    "mode": "scaleai_pro",
+                    "condition": cond,
+                    "predictions_path": str(pred_path),
+                    "converted_patch_path": str(converted_path),
+                    "output_dir": str(condition_output_dir),
+                    "eval_repo_path": str(eval_repo_path),
+                    "raw_sample_path": str(raw_sample),
+                    "dataset_name": resolved_dataset_name,
+                    "split": split,
+                    "dockerhub_username": pro.dockerhub_username,
+                    "strip_trace_artifacts": pro.strip_trace_artifacts,
+                    "command": cmd,
+                }
+            )
+        return resolved_dataset_name, conditions, plan
+
+    for idx, cond in enumerate(conditions):
+        pred_path = pred_root / f"{cond}_{dataset}_{run_id}.jsonl"
+        if verify_predictions and not pred_path.exists():
+            raise click.ClickException(f"Predictions file not found: {pred_path}")
+
+        is_last = idx == len(conditions) - 1
+        cache_level = final_cache_level if is_last else "env"
+        clean = final_clean if is_last else False
+        cmd = [
+            sys.executable,
+            "-m",
+            "swebench.harness.run_evaluation",
+            "--dataset_name",
+            resolved_dataset_name,
+            "--split",
+            split,
+            "--predictions_path",
+            str(pred_path),
+            "--max_workers",
+            str(max_workers),
+            "--timeout",
+            str(timeout),
+            "--run_id",
+            run_id,
+            "--namespace",
+            namespace,
+            "--instance_image_tag",
+            instance_image_tag,
+            "--env_image_tag",
+            env_image_tag,
+            "--force_rebuild",
+            "false",
+            "--cache_level",
+            cache_level,
+            "--clean",
+            "true" if clean else "false",
+        ]
+        plan.append(
+            {
+                "mode": "standard",
+                "condition": cond,
+                "predictions_path": str(pred_path),
+                "cache_level": cache_level,
+                "clean": clean,
+                "command": cmd,
+            }
+        )
+
+    return resolved_dataset_name, conditions, plan
+
+
+def _run_swebench_pro_eval_step(step: dict[str, Any], env: dict[str, str]) -> None:
+    cond = step["condition"]
+    eval_repo_path = Path(step["eval_repo_path"])
+    raw_sample_path = Path(step["raw_sample_path"])
+    pred_path = Path(step["predictions_path"])
+    converted_path = Path(step["converted_patch_path"])
+    output_dir = Path(step["output_dir"])
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    click.echo(f"\n--- Evaluating {cond} (ScaleAI SWE-bench Pro) ---")
+
+    try:
+        eval_repo = ensure_scale_pro_eval_repo(eval_repo_path)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if not raw_sample_path.exists():
+        click.echo(f"Materializing raw sample metadata: {raw_sample_path}")
+        write_raw_sample_jsonl(
+            raw_sample_path,
+            dataset_name=step["dataset_name"],
+            split=step["split"],
+        )
+
+    conversion_stats = convert_predictions_jsonl_to_scale_json(
+        pred_path,
+        converted_path,
+        default_prefix=cond,
+        strip_trace_artifacts=bool(step.get("strip_trace_artifacts", True)),
+    )
+    click.echo(
+        f"Prepared {conversion_stats['count']} Pro patches -> {converted_path} "
+        f"(trace sections removed: {conversion_stats['removed_trace_sections']})"
+    )
+
+    raw_samples = load_raw_samples(raw_sample_path)
+    converted_payload = json.loads(converted_path.read_text(encoding="utf-8"))
+    if not converted_payload:
+        raise click.ClickException(f"No converted Pro patches produced from {pred_path}")
+
+    sample_instance_id = converted_payload[0]["instance_id"]
+    try:
+        image_uri = dockerhub_image_for_instance(
+            raw_samples,
+            sample_instance_id,
+            dockerhub_username=step["dockerhub_username"],
+        )
+    except KeyError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    ok, err = check_docker_manifest_access(image_uri, env=env)
+    if not ok:
+        hint = ""
+        err_lower = err.lower()
+        if "unauthorized" in err_lower or "authentication required" in err_lower:
+            hint = " (try `docker login` if these images are private in your environment)"
+        raise click.ClickException(
+            f"Cannot access Docker image {image_uri}: {err}{hint}"
+        )
+    click.echo(f"Docker image access check passed: {image_uri}")
+
+    try:
+        subprocess.run(step["command"], check=True, cwd=eval_repo, env=env)
+    except subprocess.CalledProcessError as exc:
+        raise click.ClickException(
+            f"SWE-bench Pro evaluation failed for condition '{cond}' with exit code {exc.returncode}"
+        ) from exc
+
+    eval_results_path = output_dir / "eval_results.json"
+    if not eval_results_path.exists():
+        raise click.ClickException(
+            f"SWE-bench Pro evaluation finished but missing {eval_results_path}"
+        )
+
+    eval_results = json.loads(eval_results_path.read_text(encoding="utf-8"))
+    total = len(eval_results)
+    resolved = sum(1 for v in eval_results.values() if v)
+    accuracy = (resolved / total) if total else 0.0
+    click.echo(
+        f"Pro eval summary ({cond}): {accuracy:.1%} ({resolved}/{total}) "
+        f"[{eval_results_path}]"
+    )
+
+
+def _run_swebench_eval_plan(plan: list[dict[str, Any]]) -> None:
+    env = os.environ.copy()
+    colima_sock = Path.home() / ".colima" / "default" / "docker.sock"
+    if not env.get("DOCKER_HOST") and not Path("/var/run/docker.sock").exists() and colima_sock.exists():
+        env["DOCKER_HOST"] = f"unix://{colima_sock}"
+        click.echo(f"Using DOCKER_HOST fallback for evaluation: {env['DOCKER_HOST']}")
+
+    for step in plan:
+        if step.get("mode") == "scaleai_pro":
+            _run_swebench_pro_eval_step(step, env)
+            continue
+
+        cond = step["condition"]
+        click.echo(
+            f"\n--- Evaluating {cond} "
+            f"(cache_level={step['cache_level']} clean={step['clean']}) ---"
+        )
+        try:
+            subprocess.run(step["command"], check=True, cwd=BENCHMARK_ROOT, env=env)
+        except subprocess.CalledProcessError as exc:
+            raise click.ClickException(
+                f"swebench evaluation failed for condition '{cond}' with exit code {exc.returncode}"
+            ) from exc
+
+
 @click.group()
 def cli() -> None:
     """Unified benchmark runner."""
@@ -547,7 +882,7 @@ def run_general(
                     prompt=prompt,
                     model_spec={"spell": model, "baseline": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
-                    init=_make_spell_init(prompt) if cond == "spell" else None,
+                    init=_make_spell_init(prompt, preamble=_general_preamble(item.dataset)) if cond == "spell" else None,
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
                     budget=budget,
                     depth=depth,
@@ -609,7 +944,7 @@ def run_general(
 
 @cli.command("swebench")
 @click.option("--dataset", default="mini", type=click.Choice(["mini", "lite", "verified", "pro"]))
-@click.option("--condition", default="both", type=click.Choice(["spell", "claude_code", "codex", "both", "all"]))
+@click.option("--condition", default="all", type=click.Choice(["spell", "claude_code", "codex", "both", "all"]))
 @click.option("--model", default=None, help="provider:model for Spell (required for spell condition)")
 @click.option("--claude-model", default=None, help="Model for Claude Code comparator (required for claude_code condition)")
 @click.option("--codex-model", default="codex")
@@ -628,6 +963,75 @@ def run_general(
 @click.option("--workspace-root", default=None)
 @click.option("--keep-workspaces", is_flag=True, default=False)
 @click.option("--docker", is_flag=True, default=False, help="Run agents inside Docker containers for isolation")
+@click.option("--trace/--no-trace", default=False, show_default=True, help="Record Spell execution traces")
+@click.option("--evaluate/--no-evaluate", default=True, show_default=True, help="Run swebench.harness evaluation after generating predictions")
+@click.option("--eval-predictions-dir", default="results/swebench", show_default=True)
+@click.option("--eval-dataset-name", default=None, help="Override swebench.harness dataset_name")
+@click.option("--eval-split", default="test", show_default=True)
+@click.option("--eval-max-workers", type=int, default=4, show_default=True)
+@click.option("--eval-timeout", type=int, default=1800, show_default=True)
+@click.option(
+    "--eval-namespace",
+    default="none",
+    show_default=True,
+    help='Image namespace passed to swebench.harness.run_evaluation ("none" builds locally)',
+)
+@click.option("--eval-instance-image-tag", default="latest", show_default=True)
+@click.option("--eval-env-image-tag", default="latest", show_default=True)
+@click.option(
+    "--eval-final-cache-level",
+    type=click.Choice(["none", "base", "env", "instance"]),
+    default="base",
+    show_default=True,
+)
+@click.option("--eval-final-clean/--no-eval-final-clean", default=True, show_default=True)
+@click.option(
+    "--pro-eval-repo",
+    default=SCALE_PRO_EVAL_REPO_DEFAULT,
+    show_default=True,
+    help="Path for local clone of ScaleAI SWE-bench Pro eval assets",
+)
+@click.option(
+    "--pro-raw-sample-path",
+    default=None,
+    help="Optional CSV/JSONL raw sample metadata path for SWE-bench Pro",
+)
+@click.option(
+    "--pro-output-dir",
+    default=SCALE_PRO_OUTPUT_DIR_DEFAULT,
+    show_default=True,
+    help="Output directory for SWE-bench Pro eval artifacts",
+)
+@click.option(
+    "--pro-dockerhub-username",
+    default="jefzda",
+    show_default=True,
+    help="DockerHub namespace containing sweap-images",
+)
+@click.option(
+    "--pro-strip-trace-artifacts/--no-pro-strip-trace-artifacts",
+    default=True,
+    show_default=True,
+    help="Strip trace artifact files from patches before SWE-bench Pro eval",
+)
+@click.option(
+    "--pro-use-local-docker/--no-pro-use-local-docker",
+    default=True,
+    show_default=True,
+    help="Use local Docker runtime for SWE-bench Pro eval",
+)
+@click.option(
+    "--pro-block-network/--no-pro-block-network",
+    default=False,
+    show_default=True,
+    help="Block network access inside SWE-bench Pro eval containers",
+)
+@click.option(
+    "--pro-redo/--no-pro-redo",
+    default=False,
+    show_default=True,
+    help="Re-run SWE-bench Pro eval even if output files already exist",
+)
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
 @click.option("--output", default=None)
@@ -652,19 +1056,33 @@ def run_swebench(
     workspace_root: str | None,
     keep_workspaces: bool,
     docker: bool,
+    trace: bool,
+    evaluate: bool,
+    eval_predictions_dir: str,
+    eval_dataset_name: str | None,
+    eval_split: str,
+    eval_max_workers: int,
+    eval_timeout: int,
+    eval_namespace: str,
+    eval_instance_image_tag: str,
+    eval_env_image_tag: str,
+    eval_final_cache_level: str,
+    eval_final_clean: bool,
+    pro_eval_repo: str,
+    pro_raw_sample_path: str | None,
+    pro_output_dir: str,
+    pro_dockerhub_username: str,
+    pro_strip_trace_artifacts: bool,
+    pro_use_local_docker: bool,
+    pro_block_network: bool,
+    pro_redo: bool,
     dry_run: bool,
     run_id: str | None,
     output: str | None,
 ) -> None:
     run_id = run_id or _run_id("swebench")
     output_file = Path(output) if output else _default_output(run_id)
-
-    if condition == "both":
-        conditions = ["spell", "claude_code"]
-    elif condition == "all":
-        conditions = ["spell", "claude_code", "codex"]
-    else:
-        conditions = [condition]
+    conditions = _parse_swebench_conditions(condition)
 
     swebench_loaders = {
         "mini": lambda: load_swebench_verified_mini(50),
@@ -729,11 +1147,31 @@ def run_swebench(
                     "items": sorted(requested_ids) if requested_ids else None,
                     "budget": budget,
                     "depth": depth,
+                    "trace": trace,
                     "agent": spell_resolution.agent_file if spell_resolution else None,
                     "spell_mode": spell_resolution.spell_mode if spell_resolution else None,
                     "agent_source": spell_resolution.source if spell_resolution else None,
                     "agent_policy_key": spell_resolution.policy_key if spell_resolution else None,
                     "parallel": parallel,
+                    "evaluate": evaluate,
+                    "eval_predictions_dir": eval_predictions_dir,
+                    "eval_dataset_name": eval_dataset_name,
+                    "eval_split": eval_split,
+                    "eval_max_workers": eval_max_workers,
+                    "eval_timeout": eval_timeout,
+                    "eval_namespace": eval_namespace,
+                    "eval_instance_image_tag": eval_instance_image_tag,
+                    "eval_env_image_tag": eval_env_image_tag,
+                    "eval_final_cache_level": eval_final_cache_level,
+                    "eval_final_clean": eval_final_clean,
+                    "pro_eval_repo": pro_eval_repo,
+                    "pro_raw_sample_path": pro_raw_sample_path,
+                    "pro_output_dir": pro_output_dir,
+                    "pro_dockerhub_username": pro_dockerhub_username,
+                    "pro_strip_trace_artifacts": pro_strip_trace_artifacts,
+                    "pro_use_local_docker": pro_use_local_docker,
+                    "pro_block_network": pro_block_network,
+                    "pro_redo": pro_redo,
                 },
                 indent=2,
             )
@@ -783,6 +1221,7 @@ def run_swebench(
                     depth=depth,
                     max_tokens=max_tokens,
                     reasoning_effort=reasoning_effort,
+                    trace=trace if cond == "spell" else False,
                     workspace=ws_path,
                 )
                 resp = adapter.run(req)
@@ -919,6 +1358,188 @@ def run_swebench(
         }[cond]
         write_predictions_jsonl(swe_results, pred_path, model_name=pred_model_name)
         click.echo(f"Predictions: {pred_path}")
+
+    if evaluate:
+        click.echo("\n=== Running SWE-bench evaluation ===")
+        pro_config = ProEvalConfig(
+            eval_repo=pro_eval_repo,
+            raw_sample_path=pro_raw_sample_path,
+            output_dir=pro_output_dir,
+            dockerhub_username=pro_dockerhub_username,
+            strip_trace_artifacts=pro_strip_trace_artifacts,
+            use_local_docker=pro_use_local_docker,
+            block_network=pro_block_network,
+            redo=pro_redo,
+        )
+        resolved_dataset_name, eval_conditions, plan = _build_swebench_eval_plan(
+            dataset=dataset,
+            condition=condition,
+            run_id=run_id,
+            predictions_dir=eval_predictions_dir,
+            dataset_name=eval_dataset_name,
+            split=eval_split,
+            max_workers=eval_max_workers,
+            timeout=eval_timeout,
+            namespace=eval_namespace,
+            instance_image_tag=eval_instance_image_tag,
+            env_image_tag=eval_env_image_tag,
+            final_cache_level=eval_final_cache_level,
+            final_clean=eval_final_clean,
+            verify_predictions=True,
+            pro=pro_config,
+        )
+        click.echo(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "dataset": dataset,
+                    "dataset_name": resolved_dataset_name,
+                    "conditions": eval_conditions,
+                    "namespace": eval_namespace,
+                    "plan": plan,
+                },
+                indent=2,
+            )
+        )
+        _run_swebench_eval_plan(plan)
+
+
+@cli.command("swebench-eval")
+@click.option("--dataset", default="mini", type=click.Choice(["mini", "lite", "verified", "pro"]))
+@click.option("--condition", default="all", type=click.Choice(["spell", "claude_code", "codex", "both", "all"]))
+@click.option("--run-id", required=True, help="Run ID used in results/swebench/<condition>_<dataset>_<run-id>.jsonl")
+@click.option("--predictions-dir", default="results/swebench", show_default=True)
+@click.option("--dataset-name", default=None, help="Override swebench.harness dataset_name")
+@click.option("--split", default="test", show_default=True)
+@click.option("--max-workers", type=int, default=4, show_default=True)
+@click.option("--timeout", type=int, default=1800, show_default=True)
+@click.option(
+    "--namespace",
+    default="none",
+    show_default=True,
+    help='Image namespace passed to swebench.harness.run_evaluation ("none" builds locally)',
+)
+@click.option("--instance-image-tag", default="latest", show_default=True)
+@click.option("--env-image-tag", default="latest", show_default=True)
+@click.option("--final-cache-level", type=click.Choice(["none", "base", "env", "instance"]), default="base", show_default=True)
+@click.option("--final-clean/--no-final-clean", default=True, show_default=True)
+@click.option(
+    "--pro-eval-repo",
+    default=SCALE_PRO_EVAL_REPO_DEFAULT,
+    show_default=True,
+    help="Path for local clone of ScaleAI SWE-bench Pro eval assets",
+)
+@click.option(
+    "--pro-raw-sample-path",
+    default=None,
+    help="Optional CSV/JSONL raw sample metadata path for SWE-bench Pro",
+)
+@click.option(
+    "--pro-output-dir",
+    default=SCALE_PRO_OUTPUT_DIR_DEFAULT,
+    show_default=True,
+    help="Output directory for SWE-bench Pro eval artifacts",
+)
+@click.option(
+    "--pro-dockerhub-username",
+    default="jefzda",
+    show_default=True,
+    help="DockerHub namespace containing sweap-images",
+)
+@click.option(
+    "--pro-strip-trace-artifacts/--no-pro-strip-trace-artifacts",
+    default=True,
+    show_default=True,
+    help="Strip trace artifact files from patches before SWE-bench Pro eval",
+)
+@click.option(
+    "--pro-use-local-docker/--no-pro-use-local-docker",
+    default=True,
+    show_default=True,
+    help="Use local Docker runtime for SWE-bench Pro eval",
+)
+@click.option(
+    "--pro-block-network/--no-pro-block-network",
+    default=False,
+    show_default=True,
+    help="Block network access inside SWE-bench Pro eval containers",
+)
+@click.option(
+    "--pro-redo/--no-pro-redo",
+    default=False,
+    show_default=True,
+    help="Re-run SWE-bench Pro eval even if output files already exist",
+)
+@click.option("--dry-run", is_flag=True, default=False)
+def run_swebench_eval(
+    dataset: str,
+    condition: str,
+    run_id: str,
+    predictions_dir: str,
+    dataset_name: str | None,
+    split: str,
+    max_workers: int,
+    timeout: int,
+    namespace: str,
+    instance_image_tag: str,
+    env_image_tag: str,
+    final_cache_level: str,
+    final_clean: bool,
+    pro_eval_repo: str,
+    pro_raw_sample_path: str | None,
+    pro_output_dir: str,
+    pro_dockerhub_username: str,
+    pro_strip_trace_artifacts: bool,
+    pro_use_local_docker: bool,
+    pro_block_network: bool,
+    pro_redo: bool,
+    dry_run: bool,
+) -> None:
+    pro_config = ProEvalConfig(
+        eval_repo=pro_eval_repo,
+        raw_sample_path=pro_raw_sample_path,
+        output_dir=pro_output_dir,
+        dockerhub_username=pro_dockerhub_username,
+        strip_trace_artifacts=pro_strip_trace_artifacts,
+        use_local_docker=pro_use_local_docker,
+        block_network=pro_block_network,
+        redo=pro_redo,
+    )
+    resolved_dataset_name, conditions, plan = _build_swebench_eval_plan(
+        dataset=dataset,
+        condition=condition,
+        run_id=run_id,
+        predictions_dir=predictions_dir,
+        dataset_name=dataset_name,
+        split=split,
+        max_workers=max_workers,
+        timeout=timeout,
+        namespace=namespace,
+        instance_image_tag=instance_image_tag,
+        env_image_tag=env_image_tag,
+        final_cache_level=final_cache_level,
+        final_clean=final_clean,
+        verify_predictions=True,
+        pro=pro_config,
+    )
+
+    click.echo(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "dataset": dataset,
+                "dataset_name": resolved_dataset_name,
+                "conditions": conditions,
+                "namespace": namespace,
+                "plan": plan,
+            },
+            indent=2,
+        )
+    )
+    if dry_run:
+        return
+
+    _run_swebench_eval_plan(plan)
 
 
 @cli.command("featurebench")
@@ -1490,6 +2111,366 @@ def run_scienceagentbench(
                 pred_path = pred_dir / f"pred_{item.gold_program_name}"
                 pred_path.write_text(record.patch, encoding="utf-8")
         click.echo(f"  Programs saved to: {pred_dir}")
+
+
+EXERCISM_PYTEST_TIMEOUT = 60
+
+
+def _setup_exercism_workspace(item: ExercismItem, tag: str) -> Path:
+    """Create a temp directory with exercise files. Returns workspace path."""
+    import tempfile
+    ws = Path(tempfile.mkdtemp(prefix=f"exercism-{item.slug}-{tag}-"))
+    (ws / item.stub_file).write_text(item.stub_content, encoding="utf-8")
+    (ws / item.test_file).write_text(item.test_content, encoding="utf-8")
+    for ef in item.extra_files:
+        (ws / ef["name"]).write_text(ef["content"], encoding="utf-8")
+    return ws
+
+
+def _cleanup_exercism_workspace(ws: Path) -> None:
+    import shutil
+    if ws.exists():
+        shutil.rmtree(ws)
+
+
+def _format_exercism_prompt(item: ExercismItem, ws: Path) -> str:
+    stub_path = ws / item.stub_file
+    test_path = ws / item.test_file
+    return (
+        "You are solving a Python programming exercise.\n\n"
+        "## Instructions\n\n"
+        f"{item.instructions}\n\n"
+        "## Task\n\n"
+        f"The solution file is at {stub_path}. Edit it to implement the solution.\n\n"
+        "Current contents:\n"
+        f"```python\n{item.stub_content}```\n\n"
+        f"Read the test file at {test_path} before starting.\n"
+        f"Verify with: uv tool run pytest {test_path} -v\n\n"
+        "Only use standard libraries. Do not modify the test file."
+    )
+
+
+def _format_exercism_retry_prompt(test_output: str, ws: Path, item: ExercismItem) -> str:
+    stub_path = ws / item.stub_file
+    test_path = ws / item.test_file
+    return (
+        "The tests failed with this output:\n\n"
+        f"```\n{test_output}```\n\n"
+        "The tests are correct — do not modify them. "
+        f"Fix the code in {stub_path} to resolve the errors.\n"
+        f"Verify with: uv tool run pytest {test_path} -v"
+    )
+
+
+def _format_exercism_baseline_prompt(item: ExercismItem) -> str:
+    """Format prompt for baseline (single LLM call, no tool use)."""
+    return (
+        "You are solving a Python programming exercise.\n\n"
+        "## Instructions\n\n"
+        f"{item.instructions}\n\n"
+        "## Stub\n\n"
+        f"```python\n{item.stub_content}```\n\n"
+        "## Tests\n\n"
+        f"```python\n{item.test_content}```\n\n"
+        "Write the complete solution. Return ONLY the Python code, no explanation."
+    )
+
+
+def _run_exercism_pytest(test_path: Path, timeout: int = EXERCISM_PYTEST_TIMEOUT) -> tuple[bool, str]:
+    """Run pytest on the test file. Returns (passed, output)."""
+    try:
+        proc = subprocess.run(
+            ["uv", "tool", "run", "pytest", str(test_path), "-v"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return proc.returncode == 0, proc.stdout + proc.stderr
+    except subprocess.TimeoutExpired:
+        return False, f"TIMEOUT: pytest exceeded {timeout} seconds"
+
+
+@cli.command("exercism")
+@click.option("--condition", default="spell", type=click.Choice(["baseline", "spell", "claude_code", "codex", "all"]))
+@click.option("--difficulty", default=None, help="Difficulty range, e.g. '1-3' or '5'")
+@click.option("--slugs", default=None, help="Comma-separated exercise slugs")
+@click.option("--n", type=int, default=None, help="Limit to N exercises")
+@click.option("--model", default=None, help="provider:model for baseline/spell (required for those conditions)")
+@click.option("--claude-model", default=None, help="Model for Claude Code comparator (required for claude_code condition)")
+@click.option("--codex-model", default="codex", help="Model for Codex harness comparator")
+@click.option("--parallel", type=int, default=1, show_default=True)
+@click.option("--budget", type=float, default=2.0, show_default=True)
+@click.option("--agent", default=None, help="Spell agent override")
+@click.option("--agent-msg", default=None, help="Spell msg-mode agent override")
+@click.option("--agent-tc", default=None, help="Spell tc-mode agent override")
+@click.option("--depth", type=int, default=8, show_default=True)
+@click.option("--max-tokens", type=int, default=None)
+@click.option("--timeout", type=int, default=300, show_default=True)
+@click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
+@click.option("--no-retry", is_flag=True, default=False, help="Skip retry on test failure")
+@click.option("--trace/--no-trace", default=False, show_default=True)
+@click.option("--dry-run", is_flag=True, default=False)
+@click.option("--run-id", default=None)
+@click.option("--output", default=None, help="JSONL output path")
+def run_exercism(
+    condition: str,
+    difficulty: str | None,
+    slugs: str | None,
+    n: int | None,
+    model: str | None,
+    claude_model: str | None,
+    codex_model: str,
+    parallel: int,
+    budget: float,
+    agent: str | None,
+    agent_msg: str | None,
+    agent_tc: str | None,
+    depth: int,
+    max_tokens: int | None,
+    timeout: int,
+    reasoning_effort: str | None,
+    no_retry: bool,
+    trace: bool,
+    dry_run: bool,
+    run_id: str | None,
+    output: str | None,
+) -> None:
+    """Run Exercism Python benchmark with two-attempt protocol."""
+    run_id = run_id or _run_id("exercism")
+    output_file = Path(output) if output else _default_output(run_id)
+    conditions = _parse_conditions(condition, ("baseline", "spell", "claude_code", "codex", "all"))
+
+    # Parse difficulty
+    diff_min, diff_max = None, None
+    if difficulty:
+        parts = difficulty.split("-")
+        if len(parts) == 2:
+            diff_min, diff_max = int(parts[0]), int(parts[1])
+        else:
+            diff_min = diff_max = int(parts[0])
+
+    slug_set = {s.strip() for s in slugs.split(",") if s.strip()} if slugs else None
+
+    items = load_exercism(
+        difficulty_min=diff_min,
+        difficulty_max=diff_max,
+        slugs=slug_set,
+        max_items=n,
+    )
+
+    click.echo(f"Run ID: {run_id}")
+    click.echo(f"Output: {output_file}")
+    click.echo(f"Exercises: {len(items)}")
+    click.echo(f"Retry: {'disabled' if no_retry else 'enabled'}")
+
+    if dry_run:
+        spell_resolution = None
+        if "spell" in conditions:
+            spell_resolution = _resolve_spell_agent_or_die(
+                bench_kind="exercism",
+                model_spec=model,
+                agent=agent,
+                agent_msg=agent_msg,
+                agent_tc=agent_tc,
+            )
+        click.echo(
+            json.dumps(
+                {
+                    "conditions": conditions,
+                    "model": model,
+                    "claude_model": claude_model,
+                    "codex_model": codex_model,
+                    "budget": budget,
+                    "depth": depth,
+                    "no_retry": no_retry,
+                    "trace": trace,
+                    "agent": spell_resolution.agent_file if spell_resolution else None,
+                },
+                indent=2,
+            )
+        )
+        if items:
+            click.echo(f"First: {items[0].slug} (d={items[0].difficulty})")
+        return
+
+    for cond in conditions:
+        click.echo(f"\n--- Running {cond} ---")
+        adapter = _build_adapter(cond, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget)
+        spell_resolution = None
+        if cond in ("spell", "baseline"):
+            spell_resolution = _resolve_spell_agent_or_die(
+                bench_kind="exercism",
+                model_spec=model,
+                agent=agent,
+                agent_msg=agent_msg,
+                agent_tc=agent_tc,
+            )
+            if cond == "spell":
+                click.echo(
+                    f"  spell_mode={spell_resolution.spell_mode} "
+                    f"agent={spell_resolution.agent_file} source={spell_resolution.source}"
+                )
+
+        def process(item: ExercismItem) -> UnifiedRunRecord:
+            ws = _setup_exercism_workspace(item, cond)
+            try:
+                test_path = ws / item.test_file
+                total_cost = 0.0
+                total_tokens_in = 0
+                total_tokens_out = 0
+                attempt = 0
+                passed = False
+
+                # === Attempt 1 ===
+                attempt = 1
+                if cond == "baseline":
+                    prompt = _format_exercism_baseline_prompt(item)
+                else:
+                    prompt = _format_exercism_prompt(item, ws)
+
+                req = RunRequest(
+                    benchmark="exercism",
+                    dataset="exercism",
+                    item_id=item.slug,
+                    condition=cond,
+                    prompt=prompt,
+                    model_spec={"spell": model, "baseline": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
+                    timeout=timeout,
+                    init=_make_spell_init(prompt) if cond == "spell" else None,
+                    agent_file=spell_resolution.agent_file if (spell_resolution and cond == "spell") else None,
+                    budget=budget,
+                    depth=depth,
+                    max_tokens=max_tokens,
+                    reasoning_effort=reasoning_effort,
+                    trace=trace if cond == "spell" else False,
+                    workspace=ws if cond != "baseline" else None,
+                )
+                resp1 = adapter.run(req)
+
+                # For baseline, extract code from response and write to file
+                if cond == "baseline" and resp1.response_text:
+                    code = _extract_python_program(resp1.response_text)
+                    if code:
+                        (ws / item.stub_file).write_text(code, encoding="utf-8")
+
+                total_cost += resp1.cost_usd or 0.0
+                total_tokens_in += resp1.tokens_in or 0
+                total_tokens_out += resp1.tokens_out or 0
+
+                passed, test_output = _run_exercism_pytest(test_path)
+
+                # === Attempt 2 (retry) ===
+                resp2 = None
+                if not passed and not no_retry:
+                    attempt = 2
+                    retry_prompt = _format_exercism_retry_prompt(test_output, ws, item)
+
+                    req2 = RunRequest(
+                        benchmark="exercism",
+                        dataset="exercism",
+                        item_id=item.slug,
+                        condition=cond,
+                        prompt=retry_prompt,
+                        model_spec=req.model_spec,
+                        timeout=timeout,
+                        init=_make_spell_init(retry_prompt) if cond == "spell" else None,
+                        agent_file=req.agent_file,
+                        budget=budget,
+                        depth=depth,
+                        max_tokens=max_tokens,
+                        reasoning_effort=reasoning_effort,
+                        trace=trace if cond == "spell" else False,
+                        workspace=ws if cond != "baseline" else None,
+                    )
+                    resp2 = adapter.run(req2)
+
+                    if cond == "baseline" and resp2.response_text:
+                        code = _extract_python_program(resp2.response_text)
+                        if code:
+                            (ws / item.stub_file).write_text(code, encoding="utf-8")
+
+                    total_cost += resp2.cost_usd or 0.0
+                    total_tokens_in += resp2.tokens_in or 0
+                    total_tokens_out += resp2.tokens_out or 0
+
+                    passed, test_output = _run_exercism_pytest(test_path)
+
+                last_resp = resp2 if resp2 else resp1
+                latency_ms = (resp1.latency_ms or 0.0) + ((resp2.latency_ms or 0.0) if resp2 else 0.0)
+
+                status = "passed" if passed else last_resp.status
+                if not passed and not last_resp.error_message:
+                    status = "tests_failed"
+
+                return _mk_record(
+                    run_id=run_id,
+                    benchmark="exercism",
+                    dataset="exercism",
+                    split=None,
+                    item_id=item.slug,
+                    condition=cond,
+                    model_spec=req.model_spec,
+                    agent_file=req.agent_file,
+                    response=RunResponse(
+                        status=status,
+                        response_text=last_resp.response_text,
+                        tokens_in=total_tokens_in if total_tokens_in else None,
+                        tokens_out=total_tokens_out if total_tokens_out else None,
+                        cost_usd=total_cost if total_cost else None,
+                        latency_ms=latency_ms,
+                        error_message=last_resp.error_message,
+                        error_type=last_resp.error_type,
+                        metadata={**last_resp.metadata, "test_output": test_output[-2000:]},
+                    ),
+                    response_text=last_resp.response_text,
+                    patch=None,
+                    answer_extracted=None,
+                    correct=passed,
+                    metadata={
+                        "difficulty": item.difficulty,
+                        "attempt": attempt,
+                        **(
+                            {
+                                "spell_mode": spell_resolution.spell_mode,
+                                "resolved_agent_file": spell_resolution.agent_file,
+                                "agent_source": spell_resolution.source,
+                                "agent_policy_key": spell_resolution.policy_key,
+                            }
+                            if (cond == "spell" and spell_resolution)
+                            else {}
+                        ),
+                    },
+                )
+            finally:
+                _cleanup_exercism_workspace(ws)
+
+        if parallel <= 1:
+            records = []
+            for i, item in enumerate(items):
+                click.echo(f"  [{i+1}/{len(items)}] {item.slug} (d={item.difficulty})")
+                record = process(item)
+                records.append(record)
+                mark = "PASS" if record.correct else "FAIL"
+                cost = record.cost_usd or 0.0
+                click.echo(f"    {mark} (${cost:.4f})")
+        else:
+            records = [None] * len(items)
+            with ThreadPoolExecutor(max_workers=parallel) as pool:
+                futures = {pool.submit(process, item): idx for idx, item in enumerate(items)}
+                done = 0
+                for fut in as_completed(futures):
+                    idx = futures[fut]
+                    done += 1
+                    records[idx] = fut.result()
+                    item = items[idx]
+                    mark = "PASS" if records[idx].correct else "FAIL"
+                    click.echo(f"  [{done}/{len(items)}] {item.slug} (d={item.difficulty}) {mark}")
+            records = [r for r in records if r is not None]
+
+        for record in records:
+            append_jsonl(output_file, record)
+
+        _print_summary(output_file, run_id, cond)
 
 
 @cli.command("summarize")

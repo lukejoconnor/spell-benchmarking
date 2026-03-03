@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 SpellMode = Literal["msg", "tc"]
-BenchKind = Literal["general", "swebench", "featurebench"]
+BenchKind = Literal["general", "swebench", "featurebench", "exercism"]
 GeneralFamily = Literal["general_math", "general_longcontext", "general_other"]
 AgentSource = Literal["default", "agent", "agent_msg", "agent_tc"]
 ProviderFamily = Literal["pf", "msg", "tc"]
@@ -22,6 +22,14 @@ DEFAULT_AGENT_POLICY: dict[tuple[ProviderFamily, SpellMode], str] = {
     ("pf", "msg"): "config/agents/io-pf.agent.edn",
     ("msg", "msg"): "config/agents/io-msg.agent.edn",
     ("tc", "tc"): "config/agents/io-tc.agent.edn",
+}
+
+# Math benchmarks use agents without web namespace (TODO #152).
+# Web search wastes tokens on competition math problems.
+MATH_AGENT_POLICY: dict[tuple[ProviderFamily, SpellMode], str] = {
+    ("pf", "msg"): "config/agents/math-pf.agent.edn",
+    ("msg", "msg"): "config/agents/math-msg.agent.edn",
+    ("tc", "tc"): "config/agents/math-tc.agent.edn",
 }
 
 
@@ -77,6 +85,8 @@ def _resolve_family(bench_kind: BenchKind, item_datasets: set[str] | None) -> st
         return "swebench"
     if bench_kind == "featurebench":
         return "featurebench"
+    if bench_kind == "exercism":
+        return "exercism"
     raise ValueError(f"Unknown benchmark kind: {bench_kind}")
 
 
@@ -119,8 +129,10 @@ def resolve_spell_agent(
         source = "agent"
     else:
         key = (provider_family, spell_mode)
+        # Use math-specific agents (no web) for math benchmarks
+        policy = MATH_AGENT_POLICY if family == "general_math" else DEFAULT_AGENT_POLICY
         try:
-            selected = DEFAULT_AGENT_POLICY[key]
+            selected = policy[key]
         except KeyError as exc:  # pragma: no cover - defensive
             raise ValueError(f"No default Spell agent policy for key: {key}") from exc
         source = "default"

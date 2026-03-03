@@ -1,8 +1,11 @@
 """Dataset loading and formatting for benchmark tasks."""
 
+import json as _json
 import os
 import random
+import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 from datasets import load_dataset
 from huggingface_hub import snapshot_download
@@ -35,6 +38,21 @@ class ScienceAgentBenchItem:
     gold_program_name: str     # Gold program filename
     eval_script_name: str      # Evaluation script filename
     github_name: str           # Source GitHub repo
+    metadata: dict = field(default_factory=dict)
+
+
+@dataclass
+class ExercismItem:
+    """Item from Exercism Python practice exercises."""
+    slug: str              # e.g., "hello-world"
+    name: str              # e.g., "Hello World"
+    difficulty: int        # 1-9
+    instructions: str      # Markdown instructions
+    stub_file: str         # e.g., "hello_world.py"
+    stub_content: str      # Initial stub code
+    test_file: str         # e.g., "hello_world_test.py"
+    test_content: str      # Pytest test file
+    extra_files: list[dict] = field(default_factory=list)  # [{name, content}]
     metadata: dict = field(default_factory=dict)
 
 
@@ -426,8 +444,7 @@ def format_prompt_spell(item: BenchmarkItem, context_file: str = None) -> str:
         parts.append('')
         parts.append('Solve step by step. Return just the final answer (e.g., 42 or 3/4 or 2\\sqrt{3}).')
     elif item.dataset == 'omni_math':
-        parts.append('')
-        parts.append('Solve step by step. Return just the final answer.')
+        pass  # strategy guidance injected via init preamble in bench.py
     elif item.dataset == 'aime':
         parts.append('')
         parts.append('Solve step by step. Return just the final integer answer (AIME answers are always integers 0-999).')
@@ -491,6 +508,109 @@ def load_gaia(level: int = None, max_items: int = None) -> list[BenchmarkItem]:
         ))
 
     return items
+
+
+# =============================================================================
+# Exercism Dataset Loader
+# =============================================================================
+
+EXERCISM_REPO_URL = "https://github.com/exercism/python.git"
+_BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
+EXERCISM_DIR = _BENCHMARK_ROOT / "data" / "exercism-python"
+
+
+def _ensure_exercism_repo() -> Path:
+    """Clone exercism/python if not already present."""
+    if not EXERCISM_DIR.is_dir():
+        EXERCISM_DIR.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "clone", "--depth", "1", EXERCISM_REPO_URL, str(EXERCISM_DIR)],
+            check=True,
+        )
+    return EXERCISM_DIR
+
+
+def _slug_to_snake(slug: str) -> str:
+    return slug.replace("-", "_")
+
+
+def load_exercism(
+    difficulty_min: int | None = None,
+    difficulty_max: int | None = None,
+    slugs: set[str] | None = None,
+    max_items: int | None = None,
+) -> list[ExercismItem]:
+    """Load Exercism Python practice exercises.
+
+    Args:
+        difficulty_min: Minimum difficulty (inclusive, 1-9)
+        difficulty_max: Maximum difficulty (inclusive, 1-9)
+        slugs: If provided, only load these specific exercise slugs
+        max_items: Optional limit on number of items
+    """
+    repo = _ensure_exercism_repo()
+    config_path = repo / "config.json"
+    config = _json.loads(config_path.read_text(encoding="utf-8"))
+
+    items: list[ExercismItem] = []
+    for ex in config["exercises"]["practice"]:
+        if max_items and len(items) >= max_items:
+            break
+
+        slug = ex["slug"]
+        difficulty = ex.get("difficulty", 0)
+        status = ex.get("status", "active")
+
+        if status == "deprecated":
+            continue
+        if slugs and slug not in slugs:
+            continue
+        if difficulty_min is not None and difficulty < difficulty_min:
+            continue
+        if difficulty_max is not None and difficulty > difficulty_max:
+            continue
+
+        snake = _slug_to_snake(slug)
+        base_dir = repo / "exercises" / "practice" / slug
+        instructions_file = base_dir / ".docs" / "instructions.md"
+        stub_file = base_dir / f"{snake}.py"
+        test_file = base_dir / f"{snake}_test.py"
+
+        if not all(f.exists() for f in (instructions_file, stub_file, test_file)):
+            continue
+
+        # Collect extra .py files (e.g., test_utils.py)
+        extra_files = []
+        for py_file in sorted(base_dir.glob("*.py")):
+            name = py_file.name
+            if name in (f"{snake}.py", f"{snake}_test.py"):
+                continue
+            extra_files.append({"name": name, "content": py_file.read_text(encoding="utf-8")})
+
+        items.append(ExercismItem(
+            slug=slug,
+            name=ex.get("name", slug),
+            difficulty=difficulty,
+            instructions=instructions_file.read_text(encoding="utf-8"),
+            stub_file=f"{snake}.py",
+            stub_content=stub_file.read_text(encoding="utf-8"),
+            test_file=f"{snake}_test.py",
+            test_content=test_file.read_text(encoding="utf-8"),
+            extra_files=extra_files,
+            metadata={
+                "topics": ex.get("topics", []),
+            },
+        ))
+
+    return items
+
+
+EXERCISM_DATASETS = {
+    'exercism': load_exercism,
+    'exercism_d1_d3': lambda: load_exercism(difficulty_min=1, difficulty_max=3),
+    'exercism_d4_d5': lambda: load_exercism(difficulty_min=4, difficulty_max=5),
+    'exercism_d5_d9': lambda: load_exercism(difficulty_min=5, difficulty_max=9),
+}
 
 
 # Dataset registry
