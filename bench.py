@@ -80,6 +80,14 @@ from src.unified_results import (
     parse_model_spec,
     summarize_records,
 )
+from src.swebench_pro_eval import (
+    check_docker_manifest_access,
+    convert_predictions_jsonl_to_scale_json,
+    dockerhub_image_for_instance,
+    ensure_scale_pro_eval_repo,
+    load_raw_samples,
+    write_raw_sample_jsonl,
+)
 
 BENCHMARK_ROOT = Path(__file__).resolve().parent
 
@@ -101,6 +109,8 @@ def _resolve_spell_root() -> Path:
 
 SPELL_ROOT = _resolve_spell_root()
 CONTEXT_DIR = BENCHMARK_ROOT / "data" / "contexts"
+SCALE_PRO_EVAL_REPO_DEFAULT = "data/swebench_pro_eval/SWE-bench_Pro-os"
+SCALE_PRO_OUTPUT_DIR_DEFAULT = "results/swebench_pro_eval"
 SWEBENCH_REMINDER_PREAMBLE = '(quine sys-reminder "Recall: you are writing Spell code, not natural language.")'
 SWEBENCH_DOCKER_PREAMBLE = (
     '(quine sys-reminder "Recall: you are writing Spell code, not natural language. '
@@ -436,6 +446,57 @@ def _resolve_spell_agent_or_die(
         raise click.ClickException(str(exc)) from exc
 
 
+def _default_swebench_pro_raw_sample_path(dataset_name: str, split: str) -> Path:
+    dataset_slug = dataset_name.replace("/", "_")
+    return BENCHMARK_ROOT / "data" / "swebench_pro_eval" / f"{dataset_slug}_{split}.jsonl"
+
+
+def _build_swebench_pro_command(
+    *,
+    raw_sample_path: Path,
+    patch_path: Path,
+    output_dir: Path,
+    max_workers: int,
+    dockerhub_username: str,
+    use_local_docker: bool,
+    block_network: bool,
+    redo: bool,
+) -> list[str]:
+    cmd = [
+        "uv",
+        "run",
+        "--with",
+        "pandas>=1.5.0",
+        "--with",
+        "tqdm>=4.64.0",
+        "--with",
+        "docker>=6.0.0",
+        "--with",
+        "datasets>=2.14.0",
+        "python",
+        "swe_bench_pro_eval.py",
+        "--raw_sample_path",
+        str(raw_sample_path),
+        "--patch_path",
+        str(patch_path),
+        "--output_dir",
+        str(output_dir),
+        "--scripts_dir",
+        "run_scripts",
+        "--num_workers",
+        str(max_workers),
+        "--dockerhub_username",
+        dockerhub_username,
+    ]
+    if use_local_docker:
+        cmd.append("--use_local_docker")
+    if block_network:
+        cmd.append("--block_network")
+    if redo:
+        cmd.append("--redo")
+    return cmd
+
+
 def _build_swebench_eval_plan(
     *,
     dataset: str,
@@ -452,12 +513,62 @@ def _build_swebench_eval_plan(
     final_cache_level: str,
     final_clean: bool,
     verify_predictions: bool,
+    pro_eval_repo: str,
+    pro_raw_sample_path: str | None,
+    pro_output_dir: str,
+    pro_dockerhub_username: str,
+    pro_strip_trace_artifacts: bool,
+    pro_use_local_docker: bool,
+    pro_block_network: bool,
+    pro_redo: bool,
 ) -> tuple[str, list[str], list[dict[str, Any]]]:
     conditions = _parse_swebench_conditions(condition)
     resolved_dataset_name = dataset_name or _swebench_dataset_name(dataset)
     pred_root = Path(predictions_dir)
 
     plan: list[dict[str, Any]] = []
+    if dataset == "pro":
+        eval_repo_path = Path(pro_eval_repo)
+        raw_sample = Path(pro_raw_sample_path) if pro_raw_sample_path else _default_swebench_pro_raw_sample_path(
+            resolved_dataset_name, split
+        )
+        output_root = Path(pro_output_dir) / run_id
+
+        for cond in conditions:
+            pred_path = pred_root / f"{cond}_{dataset}_{run_id}.jsonl"
+            if verify_predictions and not pred_path.exists():
+                raise click.ClickException(f"Predictions file not found: {pred_path}")
+
+            converted_path = output_root / f"{cond}_{dataset}_{run_id}.patches.json"
+            condition_output_dir = output_root / cond
+            cmd = _build_swebench_pro_command(
+                raw_sample_path=raw_sample.resolve(),
+                patch_path=converted_path.resolve(),
+                output_dir=condition_output_dir.resolve(),
+                max_workers=max_workers,
+                dockerhub_username=pro_dockerhub_username,
+                use_local_docker=pro_use_local_docker,
+                block_network=pro_block_network,
+                redo=pro_redo,
+            )
+            plan.append(
+                {
+                    "mode": "scaleai_pro",
+                    "condition": cond,
+                    "predictions_path": str(pred_path),
+                    "converted_patch_path": str(converted_path),
+                    "output_dir": str(condition_output_dir),
+                    "eval_repo_path": str(eval_repo_path),
+                    "raw_sample_path": str(raw_sample),
+                    "dataset_name": resolved_dataset_name,
+                    "split": split,
+                    "dockerhub_username": pro_dockerhub_username,
+                    "strip_trace_artifacts": pro_strip_trace_artifacts,
+                    "command": cmd,
+                }
+            )
+        return resolved_dataset_name, conditions, plan
+
     for idx, cond in enumerate(conditions):
         pred_path = pred_root / f"{cond}_{dataset}_{run_id}.jsonl"
         if verify_predictions and not pred_path.exists():
@@ -497,6 +608,7 @@ def _build_swebench_eval_plan(
         ]
         plan.append(
             {
+                "mode": "standard",
                 "condition": cond,
                 "predictions_path": str(pred_path),
                 "cache_level": cache_level,
@@ -508,6 +620,90 @@ def _build_swebench_eval_plan(
     return resolved_dataset_name, conditions, plan
 
 
+def _run_swebench_pro_eval_step(step: dict[str, Any], env: dict[str, str]) -> None:
+    cond = step["condition"]
+    eval_repo_path = Path(step["eval_repo_path"])
+    raw_sample_path = Path(step["raw_sample_path"])
+    pred_path = Path(step["predictions_path"])
+    converted_path = Path(step["converted_patch_path"])
+    output_dir = Path(step["output_dir"])
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    click.echo(f"\n--- Evaluating {cond} (ScaleAI SWE-bench Pro) ---")
+
+    try:
+        eval_repo = ensure_scale_pro_eval_repo(eval_repo_path)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if not raw_sample_path.exists():
+        click.echo(f"Materializing raw sample metadata: {raw_sample_path}")
+        write_raw_sample_jsonl(
+            raw_sample_path,
+            dataset_name=step["dataset_name"],
+            split=step["split"],
+        )
+
+    conversion_stats = convert_predictions_jsonl_to_scale_json(
+        pred_path,
+        converted_path,
+        default_prefix=cond,
+        strip_trace_artifacts=bool(step.get("strip_trace_artifacts", True)),
+    )
+    click.echo(
+        f"Prepared {conversion_stats['count']} Pro patches -> {converted_path} "
+        f"(trace sections removed: {conversion_stats['removed_trace_sections']})"
+    )
+
+    raw_samples = load_raw_samples(raw_sample_path)
+    converted_payload = json.loads(converted_path.read_text(encoding="utf-8"))
+    if not converted_payload:
+        raise click.ClickException(f"No converted Pro patches produced from {pred_path}")
+
+    sample_instance_id = converted_payload[0]["instance_id"]
+    try:
+        image_uri = dockerhub_image_for_instance(
+            raw_samples,
+            sample_instance_id,
+            dockerhub_username=step["dockerhub_username"],
+        )
+    except KeyError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    ok, err = check_docker_manifest_access(image_uri, env=env)
+    if not ok:
+        hint = ""
+        err_lower = err.lower()
+        if "unauthorized" in err_lower or "authentication required" in err_lower:
+            hint = " (try `docker login` if these images are private in your environment)"
+        raise click.ClickException(
+            f"Cannot access Docker image {image_uri}: {err}{hint}"
+        )
+    click.echo(f"Docker image access check passed: {image_uri}")
+
+    try:
+        subprocess.run(step["command"], check=True, cwd=eval_repo, env=env)
+    except subprocess.CalledProcessError as exc:
+        raise click.ClickException(
+            f"SWE-bench Pro evaluation failed for condition '{cond}' with exit code {exc.returncode}"
+        ) from exc
+
+    eval_results_path = output_dir / "eval_results.json"
+    if not eval_results_path.exists():
+        raise click.ClickException(
+            f"SWE-bench Pro evaluation finished but missing {eval_results_path}"
+        )
+
+    eval_results = json.loads(eval_results_path.read_text(encoding="utf-8"))
+    total = len(eval_results)
+    resolved = sum(1 for v in eval_results.values() if v)
+    accuracy = (resolved / total) if total else 0.0
+    click.echo(
+        f"Pro eval summary ({cond}): {accuracy:.1%} ({resolved}/{total}) "
+        f"[{eval_results_path}]"
+    )
+
+
 def _run_swebench_eval_plan(plan: list[dict[str, Any]]) -> None:
     env = os.environ.copy()
     colima_sock = Path.home() / ".colima" / "default" / "docker.sock"
@@ -516,6 +712,10 @@ def _run_swebench_eval_plan(plan: list[dict[str, Any]]) -> None:
         click.echo(f"Using DOCKER_HOST fallback for evaluation: {env['DOCKER_HOST']}")
 
     for step in plan:
+        if step.get("mode") == "scaleai_pro":
+            _run_swebench_pro_eval_step(step, env)
+            continue
+
         cond = step["condition"]
         click.echo(
             f"\n--- Evaluating {cond} "
@@ -776,6 +976,53 @@ def run_general(
     show_default=True,
 )
 @click.option("--eval-final-clean/--no-eval-final-clean", default=True, show_default=True)
+@click.option(
+    "--pro-eval-repo",
+    default=SCALE_PRO_EVAL_REPO_DEFAULT,
+    show_default=True,
+    help="Path for local clone of ScaleAI SWE-bench Pro eval assets",
+)
+@click.option(
+    "--pro-raw-sample-path",
+    default=None,
+    help="Optional CSV/JSONL raw sample metadata path for SWE-bench Pro",
+)
+@click.option(
+    "--pro-output-dir",
+    default=SCALE_PRO_OUTPUT_DIR_DEFAULT,
+    show_default=True,
+    help="Output directory for SWE-bench Pro eval artifacts",
+)
+@click.option(
+    "--pro-dockerhub-username",
+    default="jefzda",
+    show_default=True,
+    help="DockerHub namespace containing sweap-images",
+)
+@click.option(
+    "--pro-strip-trace-artifacts/--no-pro-strip-trace-artifacts",
+    default=True,
+    show_default=True,
+    help="Strip trace artifact files from patches before SWE-bench Pro eval",
+)
+@click.option(
+    "--pro-use-local-docker/--no-pro-use-local-docker",
+    default=True,
+    show_default=True,
+    help="Use local Docker runtime for SWE-bench Pro eval",
+)
+@click.option(
+    "--pro-block-network/--no-pro-block-network",
+    default=False,
+    show_default=True,
+    help="Block network access inside SWE-bench Pro eval containers",
+)
+@click.option(
+    "--pro-redo/--no-pro-redo",
+    default=False,
+    show_default=True,
+    help="Re-run SWE-bench Pro eval even if output files already exist",
+)
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
 @click.option("--output", default=None)
@@ -812,6 +1059,14 @@ def run_swebench(
     eval_env_image_tag: str,
     eval_final_cache_level: str,
     eval_final_clean: bool,
+    pro_eval_repo: str,
+    pro_raw_sample_path: str | None,
+    pro_output_dir: str,
+    pro_dockerhub_username: str,
+    pro_strip_trace_artifacts: bool,
+    pro_use_local_docker: bool,
+    pro_block_network: bool,
+    pro_redo: bool,
     dry_run: bool,
     run_id: str | None,
     output: str | None,
@@ -900,6 +1155,14 @@ def run_swebench(
                     "eval_env_image_tag": eval_env_image_tag,
                     "eval_final_cache_level": eval_final_cache_level,
                     "eval_final_clean": eval_final_clean,
+                    "pro_eval_repo": pro_eval_repo,
+                    "pro_raw_sample_path": pro_raw_sample_path,
+                    "pro_output_dir": pro_output_dir,
+                    "pro_dockerhub_username": pro_dockerhub_username,
+                    "pro_strip_trace_artifacts": pro_strip_trace_artifacts,
+                    "pro_use_local_docker": pro_use_local_docker,
+                    "pro_block_network": pro_block_network,
+                    "pro_redo": pro_redo,
                 },
                 indent=2,
             )
@@ -1104,6 +1367,14 @@ def run_swebench(
             final_cache_level=eval_final_cache_level,
             final_clean=eval_final_clean,
             verify_predictions=True,
+            pro_eval_repo=pro_eval_repo,
+            pro_raw_sample_path=pro_raw_sample_path,
+            pro_output_dir=pro_output_dir,
+            pro_dockerhub_username=pro_dockerhub_username,
+            pro_strip_trace_artifacts=pro_strip_trace_artifacts,
+            pro_use_local_docker=pro_use_local_docker,
+            pro_block_network=pro_block_network,
+            pro_redo=pro_redo,
         )
         click.echo(
             json.dumps(
@@ -1140,6 +1411,53 @@ def run_swebench(
 @click.option("--env-image-tag", default="latest", show_default=True)
 @click.option("--final-cache-level", type=click.Choice(["none", "base", "env", "instance"]), default="base", show_default=True)
 @click.option("--final-clean/--no-final-clean", default=True, show_default=True)
+@click.option(
+    "--pro-eval-repo",
+    default=SCALE_PRO_EVAL_REPO_DEFAULT,
+    show_default=True,
+    help="Path for local clone of ScaleAI SWE-bench Pro eval assets",
+)
+@click.option(
+    "--pro-raw-sample-path",
+    default=None,
+    help="Optional CSV/JSONL raw sample metadata path for SWE-bench Pro",
+)
+@click.option(
+    "--pro-output-dir",
+    default=SCALE_PRO_OUTPUT_DIR_DEFAULT,
+    show_default=True,
+    help="Output directory for SWE-bench Pro eval artifacts",
+)
+@click.option(
+    "--pro-dockerhub-username",
+    default="jefzda",
+    show_default=True,
+    help="DockerHub namespace containing sweap-images",
+)
+@click.option(
+    "--pro-strip-trace-artifacts/--no-pro-strip-trace-artifacts",
+    default=True,
+    show_default=True,
+    help="Strip trace artifact files from patches before SWE-bench Pro eval",
+)
+@click.option(
+    "--pro-use-local-docker/--no-pro-use-local-docker",
+    default=True,
+    show_default=True,
+    help="Use local Docker runtime for SWE-bench Pro eval",
+)
+@click.option(
+    "--pro-block-network/--no-pro-block-network",
+    default=False,
+    show_default=True,
+    help="Block network access inside SWE-bench Pro eval containers",
+)
+@click.option(
+    "--pro-redo/--no-pro-redo",
+    default=False,
+    show_default=True,
+    help="Re-run SWE-bench Pro eval even if output files already exist",
+)
 @click.option("--dry-run", is_flag=True, default=False)
 def run_swebench_eval(
     dataset: str,
@@ -1155,6 +1473,14 @@ def run_swebench_eval(
     env_image_tag: str,
     final_cache_level: str,
     final_clean: bool,
+    pro_eval_repo: str,
+    pro_raw_sample_path: str | None,
+    pro_output_dir: str,
+    pro_dockerhub_username: str,
+    pro_strip_trace_artifacts: bool,
+    pro_use_local_docker: bool,
+    pro_block_network: bool,
+    pro_redo: bool,
     dry_run: bool,
 ) -> None:
     resolved_dataset_name, conditions, plan = _build_swebench_eval_plan(
@@ -1172,6 +1498,14 @@ def run_swebench_eval(
         final_cache_level=final_cache_level,
         final_clean=final_clean,
         verify_predictions=True,
+        pro_eval_repo=pro_eval_repo,
+        pro_raw_sample_path=pro_raw_sample_path,
+        pro_output_dir=pro_output_dir,
+        pro_dockerhub_username=pro_dockerhub_username,
+        pro_strip_trace_artifacts=pro_strip_trace_artifacts,
+        pro_use_local_docker=pro_use_local_docker,
+        pro_block_network=pro_block_network,
+        pro_redo=pro_redo,
     )
 
     click.echo(
