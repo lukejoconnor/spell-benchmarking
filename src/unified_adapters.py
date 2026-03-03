@@ -10,6 +10,7 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -116,6 +117,7 @@ class RunRequest:
     grammar_max_chars: int | None = None
     format_spec: dict[str, Any] | None = None
     trace: bool = False
+    trace_dir: Path | None = None
     workspace: Path | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -170,6 +172,8 @@ class SpellAdapter:
             "format": format_spec,
             "trace": req.trace,
         }
+        if req.trace_dir is not None:
+            payload["trace_dir"] = str(req.trace_dir)
         if req.init is not None:
             payload["init"] = req.init
         else:
@@ -270,7 +274,8 @@ class ClaudeCodeAdapter:
             "",
             "-p",
             "--output-format",
-            "json",
+            "stream-json",
+            "--verbose",
             "--dangerously-skip-permissions",
             "--model",
             model,
@@ -306,52 +311,80 @@ class ClaudeCodeAdapter:
             )
 
         latency_ms = (time.time() - start) * 1000
-        stdout = proc.stdout.strip()
-        stderr = proc.stderr.strip()
+        stdout = (proc.stdout or "").strip()
+        stderr = (proc.stderr or "").strip()
+        events, _ = _parse_jsonl_events(stdout)
 
-        parsed: dict[str, Any] | None = None
-        if stdout:
-            try:
-                parsed = json.loads(stdout)
-            except json.JSONDecodeError:
-                parsed = None
+        result_event: dict[str, Any] | None = None
+        for event in reversed(events):
+            if event.get("type") == "result":
+                result_event = event
+                break
 
-        if proc.returncode == 0 and parsed:
-            usage = parsed.get("usage", {})
-            tokens_in = (
-                usage.get("input_tokens", 0)
-                + usage.get("cache_creation_input_tokens", 0)
-                + usage.get("cache_read_input_tokens", 0)
-            )
-            tokens_out = usage.get("output_tokens", 0)
+        def as_int(v: Any) -> int:
+            return int(v) if isinstance(v, (int, float)) else 0
+
+        usage = result_event.get("usage", {}) if isinstance(result_event, dict) else {}
+        if not isinstance(usage, dict):
+            usage = {}
+        tokens_in = as_int(usage.get("input_tokens")) + as_int(usage.get("cache_creation_input_tokens")) + as_int(
+            usage.get("cache_read_input_tokens")
+        )
+        tokens_out = as_int(usage.get("output_tokens"))
+        cost_raw = result_event.get("total_cost_usd") if isinstance(result_event, dict) else None
+        cost_usd = float(cost_raw) if isinstance(cost_raw, (int, float)) else None
+        response_text = str(result_event.get("result", "")) if isinstance(result_event, dict) else ""
+        num_turns = result_event.get("num_turns") if isinstance(result_event, dict) else None
+        session_id = result_event.get("session_id") if isinstance(result_event, dict) else None
+
+        trace_file: Path | None = None
+        if req.trace_dir is not None:
+            trace_payload = {
+                "item_id": req.item_id,
+                "condition": self.condition,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "model": model,
+                "prompt": req.prompt,
+                "events": events,
+                "stderr": stderr,
+                "exit_code": proc.returncode,
+                "latency_ms": latency_ms,
+            }
+            trace_file = _write_trace(req.trace_dir, req.item_id, self.condition, trace_payload)
+
+        metadata = {
+            "num_turns": num_turns,
+            "session_id": session_id,
+            "stderr": stderr[:4000],
+            "trace_file": str(trace_file) if trace_file else None,
+        }
+        metadata = {k: v for k, v in metadata.items() if v is not None}
+
+        if proc.returncode == 0 and result_event:
             return RunResponse(
                 status="ok",
-                response_text=parsed.get("result", ""),
+                response_text=response_text,
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
-                cost_usd=parsed.get("total_cost_usd"),
+                cost_usd=cost_usd,
                 latency_ms=latency_ms,
-                metadata={
-                    "num_turns": parsed.get("num_turns"),
-                    "session_id": parsed.get("session_id"),
-                    "stderr": stderr,
-                },
+                metadata=metadata,
             )
 
         error_message = stderr or f"Exit code {proc.returncode}"
-        if parsed is None and stdout:
-            error_message = f"Invalid JSON output from claude CLI: {stdout[:400]}"
+        if not result_event and stdout:
+            error_message = f"No result event found in Claude stream-json output: {stdout[:400]}"
 
         return RunResponse(
             status="error",
-            response_text=(parsed or {}).get("result", "") if isinstance(parsed, dict) else "",
-            tokens_in=None,
-            tokens_out=None,
-            cost_usd=None,
+            response_text=response_text,
+            tokens_in=tokens_in if result_event else None,
+            tokens_out=tokens_out if result_event else None,
+            cost_usd=cost_usd,
             latency_ms=latency_ms,
             error_message=error_message,
             error_type="cli_error",
-            metadata={"stdout": stdout[:4000], "stderr": stderr[:4000]},
+            metadata=metadata,
         )
 
 
@@ -366,7 +399,7 @@ def _normalize_codex_model(model_spec: str | None, fallback: str | None = None) 
     return raw
 
 
-def _parse_codex_events(stdout: str) -> tuple[list[dict[str, Any]], list[str]]:
+def _parse_jsonl_events(stdout: str) -> tuple[list[dict[str, Any]], list[str]]:
     events: list[dict[str, Any]] = []
     non_json_lines: list[str] = []
     for line in stdout.splitlines():
@@ -488,6 +521,13 @@ def _extract_codex_response_text(events: list[dict[str, Any]]) -> str:
     return ""
 
 
+def _write_trace(trace_dir: Path, item_id: str, condition: str, data: dict[str, Any]) -> Path:
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    path = trace_dir / f"{item_id}_{condition}.json"
+    path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+    return path
+
+
 class CodexAdapter:
     condition = "codex"
 
@@ -557,7 +597,7 @@ class CodexAdapter:
         latency_ms = (time.time() - start) * 1000
         stdout = (proc.stdout or "").strip()
         stderr = (proc.stderr or "").strip()
-        events, non_json_lines = _parse_codex_events(stdout)
+        events, non_json_lines = _parse_jsonl_events(stdout)
         tokens_in, tokens_out, cost_usd = _extract_codex_usage(events, model=model)
         thread_id = _extract_codex_thread_id(events)
 
@@ -570,6 +610,22 @@ class CodexAdapter:
         if not response_text:
             response_text = _extract_codex_response_text(events)
 
+        trace_file: Path | None = None
+        if req.trace_dir is not None:
+            trace_payload = {
+                "item_id": req.item_id,
+                "condition": self.condition,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "model": model,
+                "prompt": req.prompt,
+                "events": events,
+                "non_json_lines": non_json_lines,
+                "stderr": stderr,
+                "exit_code": proc.returncode,
+                "latency_ms": latency_ms,
+            }
+            trace_file = _write_trace(req.trace_dir, req.item_id, self.condition, trace_payload)
+
         metadata = {
             "requested_model": (req.model_spec or self.model_spec or "codex"),
             "resolved_model": model,
@@ -579,6 +635,7 @@ class CodexAdapter:
             "events_tail": events[-20:],
             "non_json_stdout_tail": non_json_lines[-20:],
             "stderr": stderr[:4000],
+            "trace_file": str(trace_file) if trace_file else None,
         }
         metadata = {k: v for k, v in metadata.items() if v}
 

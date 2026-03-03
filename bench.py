@@ -11,6 +11,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, UTC
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +29,10 @@ from src.datasets import (
     ExercismItem,
     ScienceAgentBenchItem,
     SWEBenchItem,
+    evaluate_mathconstruct_response,
     load_exercism,
+    load_mathconstruct,
+    load_project_euler,
     load_scienceagentbench,
     load_swebench_verified,
     load_swebench_lite,
@@ -139,8 +143,7 @@ OMNI_MATH_PREAMBLE = (
     '(quine strategy "Solve the problem using a combination of the following strategies:\\n'
     '- Pure reasoning via think blocks\\n'
     '- Numerical computation using Spell (defn, loop/recur, map/reduce, math/)\\n'
-    '- Context pruning to manage your chain of thoughts (rethink + !extend)\\n'
-    '- Sub-agent delegation for exploring alternative approaches")'
+    '- Context pruning to manage your chain of thoughts (rethink + !extend)")'
 )
 
 
@@ -157,6 +160,14 @@ def _run_id(prefix: str) -> str:
 
 def _default_output(run_id: str) -> Path:
     return Path("results") / "unified" / f"{run_id}.jsonl"
+
+
+def _resolve_trace_dir(run_id: str, trace: bool) -> Path | None:
+    if not trace:
+        return None
+    trace_dir = (Path("traces") / run_id).resolve()
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    return trace_dir
 
 
 def _parse_conditions(value: str, allowed: tuple[str, ...]) -> list[str]:
@@ -229,7 +240,11 @@ def _format_general_prompt(item: BenchmarkItem, condition: str) -> str:
             parts.append(f"  {letter}. {choice}")
         parts.append("")
         parts.append("Reply with ONLY the letter (A, B, C, or D). No explanation.")
-    elif item.dataset in ("gsm8k", "math", "aime", "hmmt", "omni_math"):
+    elif item.dataset == "mathconstruct":
+        parts.append("")
+        parts.append("Follow the formatting instructions exactly.")
+        parts.append("Return your final answer in LaTeX inside \\boxed{...}.")
+    elif item.dataset in ("gsm8k", "math", "aime", "hmmt", "omni_math", "project_euler"):
         parts.append("")
         parts.append("You may use Python via `uv run python3` if helpful.")
         parts.append("Reply with ONLY the final answer. No explanation.")
@@ -249,7 +264,11 @@ def _make_spell_init(prompt: str, preamble: str | None = None) -> str:
 
 
 def _general_preamble(dataset: str) -> str | None:
-    return {"omni_math": OMNI_MATH_PREAMBLE}.get(dataset)
+    return {
+        "omni_math": OMNI_MATH_PREAMBLE,
+        "mathconstruct": OMNI_MATH_PREAMBLE,
+        "project_euler": OMNI_MATH_PREAMBLE,
+    }.get(dataset)
 
 
 def _format_optional_swebench_text(value: Any) -> str:
@@ -311,6 +330,57 @@ def _evaluate_general(item: BenchmarkItem, response_text: str | None) -> tuple[s
         if answer is None:
             return None, False
         return answer, normalize_numeric(answer) == normalize_numeric(item.answer)
+
+    if item.dataset == "project_euler":
+        expected_raw = (item.answer or "").strip()
+        if not expected_raw:
+            # Some upstream Project Euler rows currently have missing gold answers.
+            # Keep these unscored until the source dataset is fixed.
+            return response, None
+
+        def _to_decimal(raw: str) -> Decimal | None:
+            cleaned = raw.strip().replace(",", "").replace("$", "")
+            if cleaned.startswith("+"):
+                cleaned = cleaned[1:]
+            try:
+                dec = Decimal(cleaned)
+            except InvalidOperation:
+                return None
+            return dec if dec.is_finite() else None
+
+        expected_decimal = _to_decimal(expected_raw)
+        if expected_decimal is not None:
+            answer = extract_numeric_answer(response)
+            if answer is None:
+                direct_decimal = _to_decimal(response)
+                if direct_decimal is None:
+                    return None, False
+                return response, direct_decimal == expected_decimal
+
+            got_decimal = _to_decimal(answer)
+            if got_decimal is None:
+                return answer, False
+
+            if got_decimal == got_decimal.to_integral_value():
+                try:
+                    extracted = str(int(got_decimal))
+                except (OverflowError, ValueError):
+                    extracted = answer
+            else:
+                extracted = answer
+            return extracted, got_decimal == expected_decimal
+
+        def _normalize_text(raw: str) -> str:
+            return "".join(ch.lower() for ch in raw if ch.isalnum())
+
+        answer = response.strip()
+        if not answer:
+            return None, False
+        return answer, _normalize_text(answer) == _normalize_text(expected_raw)
+
+    if item.dataset == "mathconstruct":
+        answer, is_correct, _details = evaluate_mathconstruct_response(item, response)
+        return answer, bool(is_correct)
 
     if item.dataset in ("math", "aime", "hmmt", "omni_math"):
         answer = extract_math_answer(response)
@@ -765,7 +835,7 @@ def cli() -> None:
 @click.option("--verbosity", type=click.Choice(["low", "auto"]), default=None)
 @click.option("--responses-api/--no-responses-api", default=False, show_default=True)
 @click.option("--suffix-grammar/--no-suffix-grammar", default=False, show_default=True)
-@click.option("--trace/--no-trace", default=False, show_default=True)
+@click.option("--trace/--no-trace", default=True, show_default=True)
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
 @click.option("--output", default=None, help="JSONL output path")
@@ -803,17 +873,42 @@ def run_general(
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
 
-    if dataset == "all":
+    requested_ids = {x.strip() for x in (items or "").split(",") if x.strip()}
+
+    if dataset == "project_euler":
+        requested_numbers: list[int] | None = None
+        if requested_ids:
+            requested_numbers = []
+            for item_id in sorted(requested_ids):
+                match = re.match(r"project_euler_(\d+)$", item_id)
+                if match:
+                    requested_numbers.append(int(match.group(1)))
+        loaded = load_project_euler(
+            max_items=n if (n and not requested_numbers) else None,
+            problem_numbers=requested_numbers,
+        )
+    elif dataset == "mathconstruct":
+        requested_problem_names: list[str] | None = None
+        if requested_ids:
+            requested_problem_names = []
+            for item_id in sorted(requested_ids):
+                prefix = "mathconstruct_"
+                if item_id.startswith(prefix) and len(item_id) > len(prefix):
+                    requested_problem_names.append(item_id[len(prefix):])
+        loaded = load_mathconstruct(
+            max_items=n if (n and not requested_problem_names) else None,
+            problem_names=requested_problem_names,
+        )
+    elif dataset == "all":
         loaded: list[BenchmarkItem] = []
         for loader in DATASETS.values():
             loaded.extend(loader())
     else:
         loaded = DATASETS[dataset]()
 
-    if items:
-        ids = {x.strip() for x in items.split(",") if x.strip()}
-        loaded = [item for item in loaded if item.id in ids]
-    elif n:
+    if requested_ids:
+        loaded = [item for item in loaded if item.id in requested_ids]
+    if n:
         loaded = loaded[:n]
     item_datasets = {item.dataset for item in loaded}
 
@@ -851,6 +946,10 @@ def run_general(
         if loaded:
             click.echo(f"First item: {loaded[0].id}")
         return
+
+    trace_dir = _resolve_trace_dir(run_id, trace)
+    if trace_dir:
+        click.echo(f"Trace dir: {trace_dir}")
 
     for cond in conditions:
         click.echo(f"\n--- Running {cond} ---")
@@ -893,6 +992,7 @@ def run_general(
                     responses_api=responses_api,
                     suffix_grammar=suffix_grammar,
                     trace=trace,
+                    trace_dir=trace_dir,
                     metadata={"add_dir": CONTEXT_DIR},
                 )
             )
@@ -963,7 +1063,7 @@ def run_general(
 @click.option("--workspace-root", default=None)
 @click.option("--keep-workspaces", is_flag=True, default=False)
 @click.option("--docker", is_flag=True, default=False, help="Run agents inside Docker containers for isolation")
-@click.option("--trace/--no-trace", default=False, show_default=True, help="Record Spell execution traces")
+@click.option("--trace/--no-trace", default=True, show_default=True, help="Record execution traces")
 @click.option("--evaluate/--no-evaluate", default=True, show_default=True, help="Run swebench.harness evaluation after generating predictions")
 @click.option("--eval-predictions-dir", default="results/swebench", show_default=True)
 @click.option("--eval-dataset-name", default=None, help="Override swebench.harness dataset_name")
@@ -1180,6 +1280,10 @@ def run_swebench(
             click.echo(f"First item: {items[0].instance_id}")
         return
 
+    trace_dir = _resolve_trace_dir(run_id, trace)
+    if trace_dir:
+        click.echo(f"Trace dir: {trace_dir}")
+
     cache = RepoCache(root)
 
     for cond in conditions:
@@ -1221,7 +1325,8 @@ def run_swebench(
                     depth=depth,
                     max_tokens=max_tokens,
                     reasoning_effort=reasoning_effort,
-                    trace=trace if cond == "spell" else False,
+                    trace=trace,
+                    trace_dir=trace_dir,
                     workspace=ws_path,
                 )
                 resp = adapter.run(req)
@@ -1561,6 +1666,7 @@ def run_swebench_eval(
 @click.option("--workspace-root", default="/tmp/fb_ws")
 @click.option("--skip-install", is_flag=True, default=False)
 @click.option("--skip-tests", is_flag=True, default=False)
+@click.option("--trace/--no-trace", default=True, show_default=True)
 @click.option("--run-id", default=None)
 @click.option("--output", default=None)
 def run_featurebench(
@@ -1582,6 +1688,7 @@ def run_featurebench(
     workspace_root: str,
     skip_install: bool,
     skip_tests: bool,
+    trace: bool,
     run_id: str | None,
     output: str | None,
 ) -> None:
@@ -1604,6 +1711,9 @@ def run_featurebench(
     click.echo(f"Output: {output_file}")
     click.echo(f"Workspace root: {root}")
     click.echo(f"Loaded {len(tasks)} tasks")
+    trace_dir = _resolve_trace_dir(run_id, trace)
+    if trace_dir:
+        click.echo(f"Trace dir: {trace_dir}")
 
     for cond in conditions:
         click.echo(f"\n--- Running {cond} ---")
@@ -1644,6 +1754,8 @@ def run_featurebench(
                     depth=depth,
                     max_tokens=max_tokens,
                     reasoning_effort=reasoning_effort,
+                    trace=trace,
+                    trace_dir=trace_dir,
                     workspace=wt.path,
                 )
                 resp = adapter.run(req)
@@ -2297,7 +2409,7 @@ def run_exercism(
         click.echo(f"\n--- Running {cond} ---")
         adapter = _build_adapter(cond, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget)
         spell_resolution = None
-        if cond in ("spell", "baseline"):
+        if cond == "spell":
             spell_resolution = _resolve_spell_agent_or_die(
                 bench_kind="exercism",
                 model_spec=model,
