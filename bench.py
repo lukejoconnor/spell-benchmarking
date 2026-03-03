@@ -111,6 +111,22 @@ SPELL_ROOT = _resolve_spell_root()
 CONTEXT_DIR = BENCHMARK_ROOT / "data" / "contexts"
 SCALE_PRO_EVAL_REPO_DEFAULT = "data/swebench_pro_eval/SWE-bench_Pro-os"
 SCALE_PRO_OUTPUT_DIR_DEFAULT = "results/swebench_pro_eval"
+
+
+@dataclass
+class ProEvalConfig:
+    """Groups ScaleAI SWE-bench Pro evaluation options."""
+
+    eval_repo: str = SCALE_PRO_EVAL_REPO_DEFAULT
+    raw_sample_path: str | None = None
+    output_dir: str = SCALE_PRO_OUTPUT_DIR_DEFAULT
+    dockerhub_username: str = "jefzda"
+    strip_trace_artifacts: bool = True
+    use_local_docker: bool = True
+    block_network: bool = False
+    redo: bool = False
+
+
 SWEBENCH_REMINDER_PREAMBLE = '(quine sys-reminder "Recall: you are writing Spell code, not natural language.")'
 SWEBENCH_DOCKER_PREAMBLE = (
     '(quine sys-reminder "Recall: you are writing Spell code, not natural language. '
@@ -513,14 +529,7 @@ def _build_swebench_eval_plan(
     final_cache_level: str,
     final_clean: bool,
     verify_predictions: bool,
-    pro_eval_repo: str,
-    pro_raw_sample_path: str | None,
-    pro_output_dir: str,
-    pro_dockerhub_username: str,
-    pro_strip_trace_artifacts: bool,
-    pro_use_local_docker: bool,
-    pro_block_network: bool,
-    pro_redo: bool,
+    pro: ProEvalConfig,
 ) -> tuple[str, list[str], list[dict[str, Any]]]:
     conditions = _parse_swebench_conditions(condition)
     resolved_dataset_name = dataset_name or _swebench_dataset_name(dataset)
@@ -528,11 +537,11 @@ def _build_swebench_eval_plan(
 
     plan: list[dict[str, Any]] = []
     if dataset == "pro":
-        eval_repo_path = Path(pro_eval_repo)
-        raw_sample = Path(pro_raw_sample_path) if pro_raw_sample_path else _default_swebench_pro_raw_sample_path(
+        eval_repo_path = Path(pro.eval_repo)
+        raw_sample = Path(pro.raw_sample_path) if pro.raw_sample_path else _default_swebench_pro_raw_sample_path(
             resolved_dataset_name, split
         )
-        output_root = Path(pro_output_dir) / run_id
+        output_root = Path(pro.output_dir) / run_id
 
         for cond in conditions:
             pred_path = pred_root / f"{cond}_{dataset}_{run_id}.jsonl"
@@ -546,10 +555,10 @@ def _build_swebench_eval_plan(
                 patch_path=converted_path.resolve(),
                 output_dir=condition_output_dir.resolve(),
                 max_workers=max_workers,
-                dockerhub_username=pro_dockerhub_username,
-                use_local_docker=pro_use_local_docker,
-                block_network=pro_block_network,
-                redo=pro_redo,
+                dockerhub_username=pro.dockerhub_username,
+                use_local_docker=pro.use_local_docker,
+                block_network=pro.block_network,
+                redo=pro.redo,
             )
             plan.append(
                 {
@@ -562,8 +571,8 @@ def _build_swebench_eval_plan(
                     "raw_sample_path": str(raw_sample),
                     "dataset_name": resolved_dataset_name,
                     "split": split,
-                    "dockerhub_username": pro_dockerhub_username,
-                    "strip_trace_artifacts": pro_strip_trace_artifacts,
+                    "dockerhub_username": pro.dockerhub_username,
+                    "strip_trace_artifacts": pro.strip_trace_artifacts,
                     "command": cmd,
                 }
             )
@@ -1352,6 +1361,16 @@ def run_swebench(
 
     if evaluate:
         click.echo("\n=== Running SWE-bench evaluation ===")
+        pro_config = ProEvalConfig(
+            eval_repo=pro_eval_repo,
+            raw_sample_path=pro_raw_sample_path,
+            output_dir=pro_output_dir,
+            dockerhub_username=pro_dockerhub_username,
+            strip_trace_artifacts=pro_strip_trace_artifacts,
+            use_local_docker=pro_use_local_docker,
+            block_network=pro_block_network,
+            redo=pro_redo,
+        )
         resolved_dataset_name, eval_conditions, plan = _build_swebench_eval_plan(
             dataset=dataset,
             condition=condition,
@@ -1367,14 +1386,7 @@ def run_swebench(
             final_cache_level=eval_final_cache_level,
             final_clean=eval_final_clean,
             verify_predictions=True,
-            pro_eval_repo=pro_eval_repo,
-            pro_raw_sample_path=pro_raw_sample_path,
-            pro_output_dir=pro_output_dir,
-            pro_dockerhub_username=pro_dockerhub_username,
-            pro_strip_trace_artifacts=pro_strip_trace_artifacts,
-            pro_use_local_docker=pro_use_local_docker,
-            pro_block_network=pro_block_network,
-            pro_redo=pro_redo,
+            pro=pro_config,
         )
         click.echo(
             json.dumps(
@@ -1483,6 +1495,16 @@ def run_swebench_eval(
     pro_redo: bool,
     dry_run: bool,
 ) -> None:
+    pro_config = ProEvalConfig(
+        eval_repo=pro_eval_repo,
+        raw_sample_path=pro_raw_sample_path,
+        output_dir=pro_output_dir,
+        dockerhub_username=pro_dockerhub_username,
+        strip_trace_artifacts=pro_strip_trace_artifacts,
+        use_local_docker=pro_use_local_docker,
+        block_network=pro_block_network,
+        redo=pro_redo,
+    )
     resolved_dataset_name, conditions, plan = _build_swebench_eval_plan(
         dataset=dataset,
         condition=condition,
@@ -1498,14 +1520,7 @@ def run_swebench_eval(
         final_cache_level=final_cache_level,
         final_clean=final_clean,
         verify_predictions=True,
-        pro_eval_repo=pro_eval_repo,
-        pro_raw_sample_path=pro_raw_sample_path,
-        pro_output_dir=pro_output_dir,
-        pro_dockerhub_username=pro_dockerhub_username,
-        pro_strip_trace_artifacts=pro_strip_trace_artifacts,
-        pro_use_local_docker=pro_use_local_docker,
-        pro_block_network=pro_block_network,
-        pro_redo=pro_redo,
+        pro=pro_config,
     )
 
     click.echo(

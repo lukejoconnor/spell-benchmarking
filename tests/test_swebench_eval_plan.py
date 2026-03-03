@@ -33,6 +33,11 @@ def test_build_swebench_eval_plan_routes_pro_to_scale_pipeline(tmp_path) -> None
     pred_dir = tmp_path / "preds"
     _write_pred(pred_dir / f"spell_pro_{run_id}.jsonl")
 
+    pro = bench.ProEvalConfig(
+        eval_repo="data/swebench_pro_eval/SWE-bench_Pro-os",
+        output_dir="results/swebench_pro_eval",
+        dockerhub_username="jefzda",
+    )
     dataset_name, conditions, plan = bench._build_swebench_eval_plan(
         dataset="pro",
         condition="spell",
@@ -48,14 +53,7 @@ def test_build_swebench_eval_plan_routes_pro_to_scale_pipeline(tmp_path) -> None
         final_cache_level="base",
         final_clean=True,
         verify_predictions=True,
-        pro_eval_repo="data/swebench_pro_eval/SWE-bench_Pro-os",
-        pro_raw_sample_path=None,
-        pro_output_dir="results/swebench_pro_eval",
-        pro_dockerhub_username="jefzda",
-        pro_strip_trace_artifacts=True,
-        pro_use_local_docker=True,
-        pro_block_network=False,
-        pro_redo=False,
+        pro=pro,
     )
 
     assert dataset_name == "ScaleAI/SWE-bench_Pro"
@@ -71,6 +69,7 @@ def test_build_swebench_eval_plan_keeps_standard_pipeline_for_verified(tmp_path)
     pred_dir = tmp_path / "preds"
     _write_pred(pred_dir / f"spell_verified_{run_id}.jsonl")
 
+    pro = bench.ProEvalConfig()
     dataset_name, conditions, plan = bench._build_swebench_eval_plan(
         dataset="verified",
         condition="spell",
@@ -86,14 +85,7 @@ def test_build_swebench_eval_plan_keeps_standard_pipeline_for_verified(tmp_path)
         final_cache_level="base",
         final_clean=True,
         verify_predictions=True,
-        pro_eval_repo="data/swebench_pro_eval/SWE-bench_Pro-os",
-        pro_raw_sample_path=None,
-        pro_output_dir="results/swebench_pro_eval",
-        pro_dockerhub_username="jefzda",
-        pro_strip_trace_artifacts=True,
-        pro_use_local_docker=True,
-        pro_block_network=False,
-        pro_redo=False,
+        pro=pro,
     )
 
     assert dataset_name == "princeton-nlp/SWE-bench_Verified"
