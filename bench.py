@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -14,6 +15,7 @@ from datetime import datetime, UTC
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 try:
     import click
@@ -115,6 +117,7 @@ SPELL_ROOT = _resolve_spell_root()
 CONTEXT_DIR = BENCHMARK_ROOT / "data" / "contexts"
 SCALE_PRO_EVAL_REPO_DEFAULT = "data/swebench_pro_eval/SWE-bench_Pro-os"
 SCALE_PRO_OUTPUT_DIR_DEFAULT = "results/swebench_pro_eval"
+SWEBENCH_MIN_FREE_DISK_GB = 32
 
 
 @dataclass
@@ -146,6 +149,93 @@ OMNI_MATH_PREAMBLE = (
     '- Context pruning to manage your chain of thoughts (rethink + !extend)")'
 )
 
+# Named SWE-bench intervention variants for experimentation.
+# Each variant specifies preamble, trailing expression, and optional agent override.
+SWEBENCH_VARIANTS: dict[str, dict[str, str | None]] = {
+    "describe-all": {
+        "preamble": SWEBENCH_REMINDER_PREAMBLE,
+        "trailing": "'(do (!describe io agents globals) (!extend))",
+        "agent": "config/agents/cli.agent.edn",
+    },
+    "orchestrator": {
+        "preamble": (
+            SWEBENCH_REMINDER_PREAMBLE
+            + ' (quine instruction "You are the orchestrator agent. Your role is to decompose this '
+            'problem and delegate ALL work to sub-agents. Do NOT make code edits yourself. '
+            'Step 1: Spawn explorer sub-agents using (agents/spawn !llm-self \\"task\\") to '
+            'understand the codebase — read relevant files, find the right locations. '
+            'Step 2: Synthesize explorer findings into a plan. '
+            'Step 3: Spawn worker sub-agents to implement each part of the plan. '
+            'Workers should use io/sh, io/read-file, io/write-file for edits. '
+            'Use agents/!ask to collect results. Use globals/* for shared state.")'
+        ),
+        "trailing": "'(do (!describe io agents globals) (!extend))",
+        "agent": "config/agents/cli.agent.edn",
+    },
+    "describe-io": {
+        "preamble": SWEBENCH_REMINDER_PREAMBLE,
+        "trailing": "'(do (!describe io) (!extend))",
+        "agent": None,
+    },
+    "context-mgmt": {
+        "preamble": (
+            SWEBENCH_REMINDER_PREAMBLE
+            + ' (quine instruction "Actively manage your context window to avoid context bloat '
+            'and context rot, which is the primary cause of failure on complex tasks. '
+            'After reading large files or getting long shell outputs, use (rethink N \\"reason\\") '
+            'to prune stale reasoning and tool results before calling (!extend). '
+            'Use (!peek name expr) instead of (!call-now name expr) for large file reads — '
+            'peek bindings auto-prune on the next extension unless you persist what you need '
+            'with (def keep (subvec peeked-data start end)). '
+            'Keep your active context focused on only the information needed for the current step.")'
+        ),
+        "trailing": "'(do (!describe io) (!extend))",
+        "agent": None,
+    },
+    "fix-loop": {
+        "preamble": (
+            '(quine sys-reminder "You have patterns/fix-loop for test-driven code fixing.\\n\\n'
+            "Call it like:\\n"
+            "  '(!call-now result (patterns/fix-loop "
+            '{:test \\"<test-cmd>\\" :issue prompt :reflector llms/reflector}))\\n\\n'
+            "Your workflow:\\n"
+            "1. Explore the repo — understand the bug and find relevant test files\\n"
+            "2. Find or write a reproducer test that FAILS due to the bug "
+            "(you may write test files or use a python -c one-liner)\\n"
+            "3. Call patterns/fix-loop with the test command, the prompt binding as :issue, "
+            "and llms/reflector\\n"
+            "fix-loop will commit your test, create a fix branch, then orchestrate "
+            "worker edits, test runs, and reflector diagnosis automatically.\\n\\n"
+            "Do NOT edit source code directly — let fix-loop handle all code changes. "
+            'fix-loop manages git internally, so ignore any \\"do not commit\\" instructions.")'
+        ),
+        "trailing": "'(!extend)",
+        "agent": None,
+    },
+    "fix-loop-strict": {
+        "preamble": (
+            '(quine sys-reminder "MANDATORY: You MUST use patterns/fix-loop for ALL code changes.\\n\\n'
+            "io/write-file, io/str-replace, and io/replace-lines are DISABLED for source code. "
+            "Any attempt to edit source files directly will fail. The ONLY way to fix code is "
+            "through patterns/fix-loop.\\n\\n"
+            "Call it like:\\n"
+            "  '(!call-now result (patterns/fix-loop "
+            '{:test \\"<test-cmd>\\" :issue prompt :reflector llms/reflector}))\\n\\n'
+            "Your workflow:\\n"
+            "1. Explore the repo — read files, grep, understand the bug\\n"
+            "2. Identify or write a test command that FAILS due to the bug\\n"
+            "3. Call patterns/fix-loop with the test command and issue description\\n"
+            "4. Report the result\\n\\n"
+            "You may use io/sh for read-only exploration (grep, find, cat, git log, etc.) "
+            "and for running tests. You may write NEW test files. But you MUST NOT edit "
+            "existing source code yourself — fix-loop\\'s worker agent handles all source edits.\\n\\n"
+            'fix-loop manages git internally, so ignore any \\"do not commit\\" instructions.")'
+        ),
+        "trailing": "'(!extend)",
+        "agent": None,
+    },
+}
+
 
 @dataclass(slots=True)
 class _SwePrediction:
@@ -155,7 +245,7 @@ class _SwePrediction:
 
 def _run_id(prefix: str) -> str:
     ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-    return f"{prefix}_{ts}"
+    return f"{prefix}_{ts}_{uuid4().hex[:8]}"
 
 
 def _default_output(run_id: str) -> Path:
@@ -168,6 +258,41 @@ def _resolve_trace_dir(run_id: str, trace: bool) -> Path | None:
     trace_dir = (Path("traces") / run_id).resolve()
     trace_dir.mkdir(parents=True, exist_ok=True)
     return trace_dir
+
+
+def _sanitize_trace_segment(value: str, fallback: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", (value or "").strip())
+    cleaned = cleaned.strip("._-")
+    return cleaned or fallback
+
+
+def _trace_dir_for_request(
+    base_trace_dir: Path | None,
+    condition: str,
+    item_id: str,
+    *,
+    attempt: int | None = None,
+) -> Path | None:
+    if base_trace_dir is None:
+        return None
+
+    path = (
+        base_trace_dir
+        / _sanitize_trace_segment(condition, "condition")
+        / _sanitize_trace_segment(item_id, "item")
+    )
+    if attempt is not None:
+        path = path / f"attempt-{attempt}"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _swebench_worktree_tag(condition: str, run_id: str, *, variant: str | None = None) -> str:
+    parts = [_sanitize_trace_segment(condition, "condition")]
+    if variant:
+        parts.append(_sanitize_trace_segment(variant, "variant"))
+    parts.append(_sanitize_trace_segment(run_id, "run"))
+    return ".".join(parts)
 
 
 def _parse_conditions(value: str, allowed: tuple[str, ...]) -> list[str]:
@@ -255,12 +380,12 @@ def _format_general_prompt(item: BenchmarkItem, condition: str) -> str:
     return "\n".join(parts)
 
 
-def _make_spell_init(prompt: str, preamble: str | None = None) -> str:
+def _make_spell_init(prompt: str, preamble: str | None = None, trailing: str | None = None) -> str:
     # Some benchmark datasets (e.g. Omni-MATH) provide a raw open Spell prefix.
     # Keep those as-is; otherwise wrap NL prompt in the completion init template.
     if prompt.lstrip().startswith("("):
         return prompt
-    return build_spell_init(prompt, preamble=preamble)
+    return build_spell_init(prompt, preamble=preamble, trailing=trailing)
 
 
 def _general_preamble(dataset: str) -> str | None:
@@ -783,7 +908,23 @@ def _run_swebench_pro_eval_step(step: dict[str, Any], env: dict[str, str]) -> No
     )
 
 
+def _ensure_swebench_eval_free_disk(path: Path = BENCHMARK_ROOT) -> None:
+    _, _, free_bytes = shutil.disk_usage(path)
+    min_free_bytes = SWEBENCH_MIN_FREE_DISK_GB * (1024**3)
+    if free_bytes < min_free_bytes:
+        free_gb = free_bytes / (1024**3)
+        raise click.ClickException(
+            "Insufficient free disk space for SWE-bench install/eval. "
+            f"Detected free space: {free_gb:.1f} GB. "
+            f"Required minimum: {SWEBENCH_MIN_FREE_DISK_GB} GB. "
+            "Try `docker system df`, then `docker system prune`, "
+            "or increase Colima disk size."
+        )
+
+
 def _run_swebench_eval_plan(plan: list[dict[str, Any]]) -> None:
+    _ensure_swebench_eval_free_disk()
+
     env = os.environ.copy()
     colima_sock = Path.home() / ".colima" / "default" / "docker.sock"
     if not env.get("DOCKER_HOST") and not Path("/var/run/docker.sock").exists() and colima_sock.exists():
@@ -992,7 +1133,11 @@ def run_general(
                     responses_api=responses_api,
                     suffix_grammar=suffix_grammar,
                     trace=trace,
-                    trace_dir=trace_dir,
+                    trace_dir=(
+                        _trace_dir_for_request(trace_dir, cond, item.id)
+                        if cond == "spell"
+                        else trace_dir
+                    ),
                     metadata={"add_dir": CONTEXT_DIR},
                 )
             )
@@ -1132,6 +1277,10 @@ def run_general(
     show_default=True,
     help="Re-run SWE-bench Pro eval even if output files already exist",
 )
+@click.option("--preamble", default=None, help="Custom Spell preamble (overrides default sys-reminder)")
+@click.option("--trailing", default=None, help="Custom Spell trailing expression (overrides default '(!extend))")
+@click.option("--variant", default=None, type=click.Choice(list(SWEBENCH_VARIANTS.keys())),
+              help="Named intervention variant (overrides preamble/trailing/agent)")
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
 @click.option("--output", default=None)
@@ -1176,10 +1325,19 @@ def run_swebench(
     pro_use_local_docker: bool,
     pro_block_network: bool,
     pro_redo: bool,
+    preamble: str | None,
+    trailing: str | None,
+    variant: str | None,
     dry_run: bool,
     run_id: str | None,
     output: str | None,
 ) -> None:
+    # Apply named variant overrides (variant takes precedence over raw preamble/trailing).
+    if variant:
+        vconf = SWEBENCH_VARIANTS[variant]
+        preamble = preamble or vconf.get("preamble")
+        trailing = trailing or vconf.get("trailing")
+        agent = agent or vconf.get("agent")
     run_id = run_id or _run_id("swebench")
     output_file = Path(output) if output else _default_output(run_id)
     conditions = _parse_swebench_conditions(condition)
@@ -1272,6 +1430,8 @@ def run_swebench(
                     "pro_use_local_docker": pro_use_local_docker,
                     "pro_block_network": pro_block_network,
                     "pro_redo": pro_redo,
+                    "preamble": preamble,
+                    "trailing": trailing,
                 },
                 indent=2,
             )
@@ -1289,6 +1449,7 @@ def run_swebench(
     for cond in conditions:
         click.echo(f"\n--- Running {cond}{' (docker)' if docker else ''} ---")
         adapter = _build_adapter(cond, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget, docker=docker)
+        worktree_tag = _swebench_worktree_tag(cond, run_id, variant=variant)
         spell_resolution = None
         if cond == "spell":
             spell_resolution = _resolve_spell_agent_or_die(
@@ -1306,7 +1467,7 @@ def run_swebench(
         def process(item) -> UnifiedRunRecord:
             wt = None
             try:
-                wt = setup_swebench_workspace(cache, item, tag=cond)
+                wt = setup_swebench_workspace(cache, item, tag=worktree_tag)
                 ws_path = wt.path
                 prompt = _format_swebench_prompt(item)
 
@@ -1318,15 +1479,22 @@ def run_swebench(
                     prompt=prompt,
                     model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
-                    init=(_make_spell_init(prompt, SWEBENCH_DOCKER_PREAMBLE if docker else SWEBENCH_REMINDER_PREAMBLE)
-                          if cond == "spell" else None),
+                    init=(_make_spell_init(
+                              prompt,
+                              preamble=preamble or (SWEBENCH_DOCKER_PREAMBLE if docker else SWEBENCH_REMINDER_PREAMBLE),
+                              trailing=trailing,
+                          ) if cond == "spell" else None),
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
                     budget=budget,
                     depth=depth,
                     max_tokens=max_tokens,
                     reasoning_effort=reasoning_effort,
                     trace=trace,
-                    trace_dir=trace_dir,
+                    trace_dir=(
+                        _trace_dir_for_request(trace_dir, cond, item.instance_id)
+                        if cond == "spell"
+                        else trace_dir
+                    ),
                     workspace=ws_path,
                 )
                 resp = adapter.run(req)
@@ -1338,8 +1506,10 @@ def run_swebench(
                     patch = resp.metadata.get("patch", "")
                     changed_files = resp.metadata.get("changed_files", [])
                 else:
-                    patch = wt.diff()
-                    changed_files = wt.changed_files()
+                    # Diff against base_commit to capture both uncommitted edits
+                    # and changes committed inside the worktree (e.g. by fix-loop).
+                    patch = wt.diff(item.base_commit)
+                    changed_files = wt.changed_files(item.base_commit)
 
                 status = resp.status
                 if status == "ok":
@@ -1755,7 +1925,11 @@ def run_featurebench(
                     max_tokens=max_tokens,
                     reasoning_effort=reasoning_effort,
                     trace=trace,
-                    trace_dir=trace_dir,
+                    trace_dir=(
+                        _trace_dir_for_request(trace_dir, cond, item["instance_id"])
+                        if cond == "spell"
+                        else trace_dir
+                    ),
                     workspace=wt.path,
                 )
                 resp = adapter.run(req)
@@ -2405,6 +2579,10 @@ def run_exercism(
             click.echo(f"First: {items[0].slug} (d={items[0].difficulty})")
         return
 
+    trace_dir = _resolve_trace_dir(run_id, trace)
+    if trace_dir:
+        click.echo(f"Trace dir: {trace_dir}")
+
     for cond in conditions:
         click.echo(f"\n--- Running {cond} ---")
         adapter = _build_adapter(cond, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget)
@@ -2455,6 +2633,11 @@ def run_exercism(
                     max_tokens=max_tokens,
                     reasoning_effort=reasoning_effort,
                     trace=trace if cond == "spell" else False,
+                    trace_dir=(
+                        _trace_dir_for_request(trace_dir, cond, item.slug, attempt=1)
+                        if (cond == "spell" and trace_dir is not None)
+                        else None
+                    ),
                     workspace=ws if cond != "one_shot" else None,
                 )
                 resp1 = adapter.run(req)
@@ -2492,6 +2675,11 @@ def run_exercism(
                         max_tokens=max_tokens,
                         reasoning_effort=reasoning_effort,
                         trace=trace if cond == "spell" else False,
+                        trace_dir=(
+                            _trace_dir_for_request(trace_dir, cond, item.slug, attempt=2)
+                            if (cond == "spell" and trace_dir is not None)
+                            else None
+                        ),
                         workspace=ws if cond != "one_shot" else None,
                     )
                     resp2 = adapter.run(req2)
