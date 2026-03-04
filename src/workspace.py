@@ -24,10 +24,21 @@ class RepoCache:
     """
 
     def __init__(self, root: Path):
-        self.root = Path(root)
+        # Canonicalize root so git worktree bookkeeping uses stable absolute paths
+        # (important on macOS where /tmp -> /private/tmp).
+        self.root = Path(root).expanduser().resolve()
         self._repo_dir = self.root / "repos"
         self._locks: dict[str, threading.RLock] = {}
         self._meta_lock = threading.Lock()
+
+    @staticmethod
+    def _prune_worktrees(repo_path: Path) -> None:
+        subprocess.run(
+            ["git", "worktree", "prune", "--expire", "now"],
+            cwd=repo_path,
+            capture_output=True,
+            timeout=60,
+        )
 
     def _lock_for(self, slug: str) -> threading.RLock:
         with self._meta_lock:
@@ -79,7 +90,10 @@ class RepoCache:
         repo_lock = self._lock_for(slug)
         with repo_lock:
             repo_path = self.ensure(repo)
-            dest = self.root / name
+            dest = (self.root / name).resolve()
+
+            # Clear stale entries before reusing/adding a worktree path.
+            self._prune_worktrees(repo_path)
 
             if dest.exists():
                 Worktree(dest, repo_path, repo_lock).remove()
@@ -99,8 +113,8 @@ class Worktree:
     """A git worktree with convenience methods for patch extraction."""
 
     def __init__(self, path: Path, repo_path: Path, mutation_lock: threading.RLock | None = None):
-        self.path = path
-        self.repo_path = repo_path
+        self.path = Path(path).expanduser().resolve()
+        self.repo_path = Path(repo_path).expanduser().resolve()
         self._mutation_lock = mutation_lock
 
     def diff(self) -> str:
@@ -169,3 +183,5 @@ class Worktree:
         # Fallback if worktree remove fails (e.g. repo_path gone)
         if self.path.exists():
             shutil.rmtree(self.path, ignore_errors=True)
+        # Ensure stale registry entries are dropped even if remove failed.
+        RepoCache._prune_worktrees(self.repo_path)

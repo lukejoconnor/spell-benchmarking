@@ -84,6 +84,31 @@ def test_parallel_worktree_adds_same_repo_are_serialized(tmp_path: Path, monkeyp
     assert max_by_repo[str(repo_path)] == 1
 
 
+def test_worktree_add_prunes_before_add(tmp_path: Path, monkeypatch) -> None:
+    cache = RepoCache(tmp_path)
+    repo = "org/repo"
+    slug = repo.replace("/", "__")
+    repo_path = tmp_path / "repos" / slug
+    repo_path.mkdir(parents=True, exist_ok=True)
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, cwd=None, capture_output=True, timeout=None):  # noqa: ANN001
+        calls.append(cmd)
+        if cmd[:3] == ["git", "worktree", "add"]:
+            dest = Path(cmd[-2])
+            dest.mkdir(parents=True, exist_ok=True)
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr("src.workspace.subprocess.run", fake_run)
+    monkeypatch.setattr(RepoCache, "ensure", lambda self, repo_name: repo_path)
+
+    cache.worktree(repo, "commit-a", "wt-a")
+
+    prune_idx = next(i for i, cmd in enumerate(calls) if cmd[:3] == ["git", "worktree", "prune"])
+    add_idx = next(i for i, cmd in enumerate(calls) if cmd[:3] == ["git", "worktree", "add"])
+    assert prune_idx < add_idx
+
+
 def test_parallel_worktree_add_and_remove_same_repo_are_serialized(tmp_path: Path, monkeypatch) -> None:
     cache = RepoCache(tmp_path)
     repo = "org/repo"
@@ -104,6 +129,27 @@ def test_parallel_worktree_add_and_remove_same_repo_are_serialized(tmp_path: Pat
     )
 
     assert max_by_repo[str(repo_path)] == 1
+
+
+def test_worktree_remove_prunes_registry(tmp_path: Path, monkeypatch) -> None:
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir(parents=True, exist_ok=True)
+    wt_path = tmp_path / "repo-wt"
+    wt_path.mkdir(parents=True, exist_ok=True)
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, cwd=None, capture_output=True, timeout=None):  # noqa: ANN001
+        calls.append(cmd)
+        if cmd[:3] == ["git", "worktree", "remove"]:
+            shutil.rmtree(wt_path, ignore_errors=True)
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr("src.workspace.subprocess.run", fake_run)
+
+    Worktree(wt_path, repo_path).remove()
+
+    assert any(cmd[:3] == ["git", "worktree", "remove"] for cmd in calls)
+    assert any(cmd[:3] == ["git", "worktree", "prune"] for cmd in calls)
 
 
 def test_worktree_diff_and_changed_files_include_new_files(tmp_path: Path) -> None:

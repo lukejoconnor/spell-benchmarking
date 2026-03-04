@@ -170,6 +170,14 @@ def _resolve_trace_dir(run_id: str, trace: bool) -> Path | None:
     return trace_dir
 
 
+def _worktree_tag(condition: str, run_id: str) -> str:
+    """Build a stable, path-safe tag for worktree isolation."""
+    safe_run_id = re.sub(r"[^A-Za-z0-9._-]+", "_", run_id).strip("._-")
+    if not safe_run_id:
+        safe_run_id = "run"
+    return f"{condition}_{safe_run_id}"
+
+
 def _parse_conditions(value: str, allowed: tuple[str, ...]) -> list[str]:
     if value == "all":
         return [c for c in allowed if c != "all"]
@@ -1306,7 +1314,7 @@ def run_swebench(
         def process(item) -> UnifiedRunRecord:
             wt = None
             try:
-                wt = setup_swebench_workspace(cache, item, tag=cond)
+                wt = setup_swebench_workspace(cache, item, tag=_worktree_tag(cond, run_id))
                 ws_path = wt.path
                 prompt = _format_swebench_prompt(item)
 
@@ -1733,7 +1741,7 @@ def run_featurebench(
             )
 
         def process(item: dict) -> UnifiedRunRecord:
-            wt = setup_workspace(cache, item, tag=cond)
+            wt = setup_workspace(cache, item, tag=_worktree_tag(cond, run_id))
             try:
                 if not skip_install:
                     install_deps(wt.path, item)
