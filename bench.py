@@ -196,16 +196,12 @@ SWEBENCH_VARIANTS: dict[str, dict[str, str | None]] = {
         "preamble": (
             '(quine sys-reminder "You have patterns/fix-loop for test-driven code fixing.\\n\\n'
             "Call it like:\\n"
-            "  '(!call-now result (patterns/fix-loop "
-            '{:test \\"<test-cmd>\\" :issue prompt :reflector llms/reflector}))\\n\\n'
+            "  '(!call-now result (patterns/fix-loop prompt))\\n\\n"
             "Your workflow:\\n"
-            "1. Explore the repo — understand the bug and find relevant test files\\n"
-            "2. Find or write a reproducer test that FAILS due to the bug "
-            "(you may write test files or use a python -c one-liner)\\n"
-            "3. Call patterns/fix-loop with the test command, the prompt binding as :issue, "
-            "and llms/reflector\\n"
-            "fix-loop will commit your test, create a fix branch, then orchestrate "
-            "worker edits, test runs, and reflector diagnosis automatically.\\n\\n"
+            "1. Call patterns/fix-loop immediately with the issue prompt\\n"
+            "2. Do NOT write or edit tests yourself — reflector handles test creation/selection\\n"
+            "3. Do NOT edit source code yourself — worker handles source edits\\n"
+            "4. Report the fix-loop result\\n\\n"
             "Do NOT edit source code directly — let fix-loop handle all code changes. "
             'fix-loop manages git internally, so ignore any \\"do not commit\\" instructions.")'
         ),
@@ -219,15 +215,13 @@ SWEBENCH_VARIANTS: dict[str, dict[str, str | None]] = {
             "Any attempt to edit source files directly will fail. The ONLY way to fix code is "
             "through patterns/fix-loop.\\n\\n"
             "Call it like:\\n"
-            "  '(!call-now result (patterns/fix-loop "
-            '{:test \\"<test-cmd>\\" :issue prompt :reflector llms/reflector}))\\n\\n'
+            "  '(!call-now result (patterns/fix-loop prompt))\\n\\n"
             "Your workflow:\\n"
-            "1. Explore the repo — read files, grep, understand the bug\\n"
-            "2. Identify or write a test command that FAILS due to the bug\\n"
-            "3. Call patterns/fix-loop with the test command and issue description\\n"
-            "4. Report the result\\n\\n"
+            "1. Call patterns/fix-loop immediately with the issue prompt\\n"
+            "2. Do NOT write or edit test files yourself — reflector handles regression tests\\n"
+            "3. Report the result\\n\\n"
             "You may use io/sh for read-only exploration (grep, find, cat, git log, etc.) "
-            "and for running tests. You may write NEW test files. But you MUST NOT edit "
+            "and for running tests. But you MUST NOT edit "
             "existing source code yourself — fix-loop\\'s worker agent handles all source edits.\\n\\n"
             'fix-loop manages git internally, so ignore any \\"do not commit\\" instructions.")'
         ),
@@ -784,7 +778,7 @@ def _build_swebench_eval_plan(
         cmd = [
             sys.executable,
             "-m",
-            "swebench.harness.run_evaluation",
+            "src.swebench_eval_wrapper",
             "--dataset_name",
             resolved_dataset_name,
             "--split",
