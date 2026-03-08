@@ -1011,6 +1011,11 @@ def run_general(
     requested_ids = {x.strip() for x in (items or "").split(",") if x.strip()}
 
     if dataset == "project_euler":
+        if requested_ids:
+            requested_ids = {
+                f"project_euler_{int(match.group(1)):04d}" if (match := re.match(r"project_euler_(\d+)$", item_id)) else item_id
+                for item_id in requested_ids
+            }
         requested_numbers: list[int] | None = None
         if requested_ids:
             requested_numbers = []

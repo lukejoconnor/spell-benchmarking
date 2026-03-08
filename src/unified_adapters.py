@@ -79,13 +79,17 @@ def _escape_for_spell(s: str) -> str:
     )
 
 
-def build_spell_init(prompt: str, preamble: str | None = None) -> str:
+def build_spell_init(
+    prompt: str,
+    preamble: str | None = None,
+    trailing: str | None = None,
+) -> str:
     escaped_prompt = _escape_for_spell(prompt)
     preamble_part = f"{preamble} " if preamble else ""
+    trailing_part = trailing or "'(!extend)"
     return (
         f'(quine completion (eval (do (quine prompt "{escaped_prompt}") '
-        f"{preamble_part}"
-        "'(!extend))))"
+        f"{preamble_part}{trailing_part})))"
     )
 
 
