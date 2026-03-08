@@ -322,10 +322,17 @@ def _ensure_context_file(item: BenchmarkItem) -> str | None:
     return str(path)
 
 
-def _resolve_web_search_default(dataset: str, requested: bool | None) -> bool:
+GENERAL_WEB_SEARCH_CONDITIONS = frozenset({"claude_code", "codex"})
+
+
+def _resolve_web_search_default(item_datasets: set[str], requested: bool | None) -> bool:
     if requested is not None:
         return requested
-    return dataset == "gaia"
+    return "gaia" in item_datasets
+
+
+def _general_condition_web_search(condition: str, enabled: bool) -> bool:
+    return enabled and condition in GENERAL_WEB_SEARCH_CONDITIONS
 
 
 def _format_general_prompt(item: BenchmarkItem, condition: str, *, web_search: bool = False) -> str:
@@ -1021,7 +1028,6 @@ def run_general(
     run_id = run_id or _run_id("general")
     output_file = Path(output) if output else _default_output(run_id)
     conditions = _parse_conditions(condition, ("one_shot", "spell", "claude_code", "codex", "all"))
-    effective_web_search = _resolve_web_search_default(dataset, web_search)
 
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
@@ -1069,6 +1075,7 @@ def run_general(
     if n:
         loaded = loaded[:n]
     item_datasets = {item.dataset for item in loaded}
+    effective_web_search = _resolve_web_search_default(item_datasets, web_search)
 
     click.echo(f"Loaded {len(loaded)} items")
     if dry_run:
@@ -1093,7 +1100,10 @@ def run_general(
                     "codex_model": codex_model,
                     "parallel": parallel,
                     "budget": budget,
-                    "web_search": effective_web_search,
+                    "web_search_requested": effective_web_search,
+                    "web_search_by_condition": {
+                        cond: _general_condition_web_search(cond, effective_web_search) for cond in conditions
+                    },
                     "agent": spell_resolution.agent_file if spell_resolution else None,
                     "spell_mode": spell_resolution.spell_mode if spell_resolution else None,
                     "agent_source": spell_resolution.source if spell_resolution else None,
@@ -1128,9 +1138,10 @@ def run_general(
                 f"agent={spell_resolution.agent_file} source={spell_resolution.source}"
             )
 
+        condition_web_search = _general_condition_web_search(cond, effective_web_search)
         requests: list[RunRequest] = []
         for item in loaded:
-            prompt = _format_general_prompt(item, cond, web_search=effective_web_search)
+            prompt = _format_general_prompt(item, cond, web_search=condition_web_search)
             requests.append(
                 RunRequest(
                     benchmark="general",
@@ -1150,7 +1161,7 @@ def run_general(
                     verbosity=verbosity,
                     responses_api=responses_api,
                     suffix_grammar=suffix_grammar,
-                    web_search=effective_web_search,
+                    web_search=condition_web_search,
                     trace=trace,
                     trace_dir=(
                         _trace_dir_for_request(trace_dir, cond, item.id)
@@ -1189,7 +1200,7 @@ def run_general(
                 metadata={
                     "question": item.question,
                     "expected_answer": item.answer,
-                    "web_search": effective_web_search,
+                    "web_search": condition_web_search,
                     **(
                         {
                             "spell_mode": spell_resolution.spell_mode,

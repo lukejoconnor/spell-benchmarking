@@ -48,7 +48,10 @@ class WebSearchCliRegressionTest(unittest.TestCase):
             metadata={},
         )
 
-    def test_general_gaia_defaults_web_search_on_for_all_conditions(self):
+    def _web_search_by_condition(self, requests):
+        return {req.condition: req.web_search for req in requests}
+
+    def test_general_gaia_defaults_web_search_on_only_for_supported_conditions(self):
         requests = []
         gaia_item = self.bench.BenchmarkItem(
             id="gaia_1",
@@ -101,7 +104,62 @@ class WebSearchCliRegressionTest(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(len(requests), 4)
-        self.assertTrue(all(req.web_search is True for req in requests))
+        self.assertEqual(
+            self._web_search_by_condition(requests),
+            {
+                "one_shot": False,
+                "spell": False,
+                "claude_code": True,
+                "codex": True,
+            },
+        )
+        prompt_by_condition = {req.condition: req.prompt for req in requests}
+        self.assertIn("Use web search", prompt_by_condition["claude_code"])
+        self.assertIn("Use web search", prompt_by_condition["codex"])
+        self.assertIn("non-web tools", prompt_by_condition["one_shot"])
+        self.assertIn("non-web tools", prompt_by_condition["spell"])
+
+    def test_general_gaia_subset_defaults_web_search_on(self):
+        requests = []
+        gaia_item = self.bench.BenchmarkItem(
+            id="gaia_1",
+            dataset="gaia",
+            context="",
+            question="Who won?",
+            answer="A",
+            metadata={},
+        )
+
+        def fake_run_requests_parallel(reqs, adapter, max_parallel, progress_callback=None):
+            requests.extend(reqs)
+            return [self._ok_response() for _ in reqs]
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.dict(self.bench.DATASETS, {"gaia_l1": lambda: [gaia_item]}, clear=False), \
+             patch.object(self.bench, "_build_adapter", return_value=object()), \
+             patch.object(self.bench, "_print_summary"), \
+             patch.object(self.bench, "append_jsonl"), \
+             patch.object(self.bench, "_evaluate_general", return_value=("A", True)), \
+             patch.object(self.bench, "run_requests_parallel", side_effect=fake_run_requests_parallel):
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "general",
+                    "--dataset",
+                    "gaia_l1",
+                    "--condition",
+                    "claude_code",
+                    "--claude-model",
+                    "sonnet",
+                    "--output",
+                    str(Path(tmp_dir) / "out.jsonl"),
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(len(requests), 1)
+        self.assertIs(requests[0].web_search, True)
+        self.assertIn("Use web search", requests[0].prompt)
 
     def test_general_gaia_no_web_search_turns_off_requests_and_prompt(self):
         requests = []
@@ -157,7 +215,15 @@ class WebSearchCliRegressionTest(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(len(requests), 4)
-        self.assertTrue(all(req.web_search is False for req in requests))
+        self.assertEqual(
+            self._web_search_by_condition(requests),
+            {
+                "one_shot": False,
+                "spell": False,
+                "claude_code": False,
+                "codex": False,
+            },
+        )
         self.assertTrue(all("Use web search" not in req.prompt for req in requests))
         self.assertTrue(all("non-web tools" in req.prompt for req in requests))
 
