@@ -68,6 +68,7 @@ class GeneralLoadingRegressionTest(unittest.TestCase):
                     verbosity=None,
                     responses_api=False,
                     suffix_grammar=False,
+                    web_search=False,
                     trace=False,
                     dry_run=True,
                     run_id="test-general",
