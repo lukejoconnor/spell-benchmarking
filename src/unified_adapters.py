@@ -79,13 +79,45 @@ def _escape_for_spell(s: str) -> str:
     )
 
 
-def build_spell_init(prompt: str, preamble: str | None = None) -> str:
-    escaped_prompt = _escape_for_spell(prompt)
-    preamble_part = f"{preamble} " if preamble else ""
+def _looks_like_spell_expr(text: str) -> bool:
+    stripped = text.lstrip()
+    return (
+        stripped.startswith("(")
+        or stripped.startswith("'(")
+        or stripped.startswith("[")
+        or stripped.startswith("{")
+    )
+
+
+def _append_prompt_text(prompt: str, extra: str | None) -> str:
+    if not extra or not extra.strip():
+        return prompt
+    if not prompt.strip():
+        return extra.strip()
+    return f"{prompt.rstrip()}\n\n{extra.strip()}"
+
+
+def build_spell_init(
+    prompt: str,
+    preamble: str | None = None,
+    trailing: str | None = None,
+    *,
+    preamble_expr: str | None = None,
+    prompt_preamble: str | None = None,
+) -> str:
+    if preamble:
+        if _looks_like_spell_expr(preamble):
+            preamble_expr = preamble_expr or preamble
+        else:
+            prompt_preamble = _append_prompt_text(prompt_preamble or "", preamble)
+
+    escaped_prompt = _escape_for_spell(_append_prompt_text(prompt, prompt_preamble))
+    preamble_part = f"{preamble_expr} " if preamble_expr else ""
+    trailing_expr = trailing or "'(!extend)"
     return (
         f'(quine completion (eval (do (quine prompt "{escaped_prompt}") '
         f"{preamble_part}"
-        "'(!extend))))"
+        f"{trailing_expr})))"
     )
 
 
@@ -180,7 +212,10 @@ class SpellAdapter:
             payload["prompt"] = req.prompt
         payload = {k: v for k, v in payload.items() if v is not None}
 
-        response = self.client.run(payload, timeout=req.timeout, cwd=req.workspace or self.project_root)
+        # Use a temp directory when no workspace is provided so generated
+        # files (solve.py, compiled binaries, etc.) don't pollute the repo root.
+        run_cwd = req.workspace or Path(tempfile.mkdtemp(prefix="spell-bench-"))
+        response = self.client.run(payload, timeout=req.timeout, cwd=run_cwd)
         usage_total = (response.usage or {}).get("total", {})
 
         if response.ok:
@@ -229,7 +264,8 @@ class OneShotAdapter:
         }
         payload = {k: v for k, v in payload.items() if v is not None}
 
-        response = self.client.run(payload, timeout=req.timeout, cwd=req.workspace or self.project_root)
+        run_cwd = req.workspace or Path(tempfile.mkdtemp(prefix="spell-bench-"))
+        response = self.client.run(payload, timeout=req.timeout, cwd=run_cwd)
         usage_total = (response.usage or {}).get("total", {})
 
         if response.ok:
