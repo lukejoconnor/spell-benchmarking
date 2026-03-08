@@ -12,7 +12,15 @@ from src.agent_policy import (
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+def _find_project_root() -> Path:
+    for candidate in Path(__file__).resolve().parents:
+        if (candidate / "config" / "agents").exists():
+            return candidate
+    raise AssertionError("Could not locate spell project root with config/agents")
+
+
+PROJECT_ROOT = _find_project_root()
 
 
 class AgentPolicyTests(unittest.TestCase):
@@ -45,7 +53,27 @@ class AgentPolicyTests(unittest.TestCase):
         self.assertEqual(resolved.family, "general_longcontext")
         self.assertEqual(resolved.source, "default")
         self.assertEqual(resolved.policy_key, "tc:tc")
-        self.assertTrue(resolved.agent_file.endswith("config/agents/io-tc.agent.edn"))
+        self.assertTrue(resolved.agent_file.endswith("config/agents/math-tc.agent.edn"))
+
+    def test_resolve_default_project_euler_tc(self) -> None:
+        resolved = resolve_spell_agent(
+            project_root=PROJECT_ROOT,
+            bench_kind="general",
+            model_spec="codex-tc:gpt-5.3-codex",
+            item_datasets={"project_euler"},
+        )
+        self.assertEqual(resolved.family, "general_math")
+        self.assertTrue(resolved.agent_file.endswith("config/agents/math-tc.agent.edn"))
+
+    def test_resolve_default_mathconstruct_tc(self) -> None:
+        resolved = resolve_spell_agent(
+            project_root=PROJECT_ROOT,
+            bench_kind="general",
+            model_spec="codex-tc:gpt-5.3-codex",
+            item_datasets={"mathconstruct"},
+        )
+        self.assertEqual(resolved.family, "general_math")
+        self.assertTrue(resolved.agent_file.endswith("config/agents/math-tc.agent.edn"))
 
     def test_override_precedence(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".agent.edn", delete=False) as tf:

@@ -1,11 +1,27 @@
 import json
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from src.docker_swebench import run_codex
+stub = types.ModuleType("spell_benchmark_client")
+
+
+class _DummyClient:  # pragma: no cover - import wiring only
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def run(self, *args, **kwargs):
+        raise NotImplementedError
+
+
+stub.SpellBenchmarkClient = _DummyClient
+sys.modules.setdefault("spell_benchmark_client", stub)
+
+from src.docker_swebench import run_claude_code, run_codex
 from src.unified_adapters import (
     CODEX_NO_CUSTOM_SCRIPT,
     PROJECT_ROOT,
@@ -62,10 +78,54 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
 
         self.assertEqual(response.status, "ok")
         cmd = run_mock.call_args.args[0]
-        self.assertEqual(cmd[:3], ["claude", "--setting-sources", ""])
+        self.assertEqual(cmd[0], "claude")
+        self.assertIn("--setting-sources", cmd)
+        self.assertIn("", cmd)
         self.assertIn("stream-json", cmd)
         self.assertEqual(response.metadata.get("num_turns"), 2)
         self.assertEqual(response.metadata.get("session_id"), "sess-1")
+
+    @patch("src.unified_adapters.subprocess.run")
+    def test_claude_adapter_disables_web_tools_when_search_is_off(self, run_mock):
+        run_mock.return_value = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"type": "result", "result": "ok", "usage": {}, "total_cost_usd": 0.0}),
+            stderr="",
+        )
+
+        adapter = ClaudeCodeAdapter(model="sonnet", budget=1.0)
+        response = adapter.run(_request("claude_code", "claude_code:sonnet"))
+
+        self.assertEqual(response.status, "ok")
+        cmd = run_mock.call_args.args[0]
+        self.assertIn("--disallowedTools", cmd)
+        self.assertIn("WebSearch,WebFetch", cmd)
+
+    @patch("src.unified_adapters.subprocess.run")
+    def test_claude_adapter_keeps_web_tools_available_when_search_is_on(self, run_mock):
+        run_mock.return_value = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"type": "result", "result": "ok", "usage": {}, "total_cost_usd": 0.0}),
+            stderr="",
+        )
+
+        adapter = ClaudeCodeAdapter(model="sonnet", budget=1.0)
+        response = adapter.run(
+            RunRequest(
+                benchmark="general",
+                dataset="gaia",
+                item_id="item-1",
+                condition="claude_code",
+                prompt="Return 42.",
+                model_spec="claude_code:sonnet",
+                timeout=5,
+                web_search=True,
+            )
+        )
+
+        self.assertEqual(response.status, "ok")
+        cmd = run_mock.call_args.args[0]
+        self.assertNotIn("--disallowedTools", cmd)
 
     @patch("src.unified_adapters.subprocess.run")
     def test_codex_adapter_uses_no_custom_wrapper(self, run_mock):
@@ -101,6 +161,18 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         self.assertEqual(response.status, "ok")
         cmd = run_mock.call_args.args[0]
         self.assertLess(cmd.index("--search"), cmd.index("exec"))
+
+    @patch("src.unified_adapters.subprocess.run")
+    def test_codex_adapter_disables_search_via_config_when_not_requested(self, run_mock):
+        run_mock.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        adapter = CodexAdapter(project_root=PROJECT_ROOT, model_spec="codex")
+        response = adapter.run(_request("codex", "codex"))
+
+        self.assertEqual(response.status, "ok")
+        cmd = run_mock.call_args.args[0]
+        self.assertIn('web_search="disabled"', cmd)
+        self.assertLess(cmd.index('web_search="disabled"'), cmd.index("exec"))
 
     @patch("src.unified_adapters.subprocess.run")
     def test_claude_adapter_writes_trace_file(self, run_mock):
@@ -260,6 +332,59 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
 
         cmd = container.exec_run.call_args.args[0]
         self.assertIn("codex --search exec", cmd)
+
+    def test_run_codex_disables_search_before_exec_when_not_requested(self):
+        container = MagicMock()
+        env = {"OPENAI_API_KEY": "test"}
+
+        run_codex(
+            container,
+            "Return 42.",
+            model="gpt-5-codex",
+            timeout=30,
+            env=env,
+            web_search=False,
+        )
+
+        cmd = container.exec_run.call_args.args[0]
+        self.assertIn("codex -c 'web_search=\"disabled\"' exec", cmd)
+
+    def test_run_claude_code_omits_web_tools_when_not_requested(self):
+        container = MagicMock()
+        env = {"ANTHROPIC_API_KEY": "test"}
+
+        run_claude_code(
+            container,
+            "Return 42.",
+            model="sonnet",
+            budget=1.0,
+            timeout=30,
+            env=env,
+            web_search=False,
+        )
+
+        cmd = container.exec_run.call_args.args[0]
+        self.assertIn("--allowedTools Bash Edit Write Read Glob Grep NotebookEdit", cmd)
+        self.assertNotIn("WebFetch", cmd)
+        self.assertNotIn("WebSearch", cmd)
+
+    def test_run_claude_code_includes_web_tools_when_requested(self):
+        container = MagicMock()
+        env = {"ANTHROPIC_API_KEY": "test"}
+
+        run_claude_code(
+            container,
+            "Return 42.",
+            model="sonnet",
+            budget=1.0,
+            timeout=30,
+            env=env,
+            web_search=True,
+        )
+
+        cmd = container.exec_run.call_args.args[0]
+        self.assertIn("WebFetch", cmd)
+        self.assertIn("WebSearch", cmd)
 
 
 if __name__ == "__main__":

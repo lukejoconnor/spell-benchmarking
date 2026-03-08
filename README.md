@@ -57,6 +57,7 @@ uv run python benchmarking/bench.py general [OPTIONS]
 | `--verbosity` | — | `low` or `auto` (OpenAI) |
 | `--responses-api / --no-responses-api` | off | Use OpenAI Responses API |
 | `--suffix-grammar / --no-suffix-grammar` | off | Enable prefix-aware grammar constraints |
+| `--web-search / --no-web-search` | auto | Enable web search for supported comparators (defaults on for GAIA, off otherwise) |
 | `--trace / --no-trace` | off | Record execution traces |
 | `--agent` | — | Override Spell agent EDN file |
 | `--agent-msg` | — | Override agent for message-mode transport |
@@ -91,6 +92,7 @@ uv run python benchmarking/bench.py swebench [OPTIONS]
 | `--reasoning-effort` | `high` | `low`, `medium`, or `high` |
 | `--workspace-root` | `/tmp/swe_ws` | Directory for cloned workspaces |
 | `--keep-workspaces` | off | Don't delete workspaces after run |
+| `--web-search / --no-web-search` | off | Enable web search for supported comparators |
 | `--evaluate / --no-evaluate` | on | Run `swebench.harness.run_evaluation` after predictions are written |
 | `--eval-max-workers` | 4 | Max concurrent evaluation workers |
 | `--eval-final-cache-level` | `base` | Cache level used on final condition only |
@@ -156,6 +158,7 @@ uv run python benchmarking/bench.py featurebench [OPTIONS]
 | `--workspace-root` | `/tmp/fb_ws` | Directory for cloned workspaces |
 | `--skip-install` | off | Skip dependency installation |
 | `--skip-tests` | off | Skip test verification |
+| `--web-search / --no-web-search` | on | Enable web search for supported comparators |
 | `--agent` | — | Override Spell agent EDN file |
 | `--agent-msg` | — | Override agent for message-mode |
 | `--agent-tc` | — | Override agent for toolcall-mode |

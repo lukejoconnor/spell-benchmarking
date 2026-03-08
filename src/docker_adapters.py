@@ -77,7 +77,7 @@ class DockerClaudeCodeAdapter:
             result = run_claude_code(
                 container, req.prompt,
                 model=model, budget=budget,
-                timeout=req.timeout, env=env,
+                timeout=req.timeout, env=env, web_search=req.web_search,
             )
 
             # Extract patch from container before it's destroyed

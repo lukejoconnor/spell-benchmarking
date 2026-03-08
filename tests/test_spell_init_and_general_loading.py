@@ -1,4 +1,5 @@
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -7,6 +8,16 @@ import sys
 BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 if str(BENCHMARK_ROOT) not in sys.path:
     sys.path.insert(0, str(BENCHMARK_ROOT))
+
+stub = types.ModuleType("spell_benchmark_client")
+
+
+class _DummyClient:  # pragma: no cover - import wiring only
+    pass
+
+
+stub.SpellBenchmarkClient = _DummyClient
+sys.modules.setdefault("spell_benchmark_client", stub)
 
 import bench
 from src.datasets import BenchmarkItem
@@ -68,6 +79,7 @@ class GeneralLoadingRegressionTest(unittest.TestCase):
                     verbosity=None,
                     responses_api=False,
                     suffix_grammar=False,
+                    web_search=False,
                     trace=False,
                     dry_run=True,
                     run_id="test-general",

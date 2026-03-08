@@ -15,7 +15,7 @@ GeneralFamily = Literal["general_math", "general_longcontext", "general_other"]
 AgentSource = Literal["default", "agent", "agent_msg", "agent_tc"]
 ProviderFamily = Literal["pf", "msg", "tc"]
 
-MATH_DATASETS = {"gsm8k", "math", "aime", "hmmt", "omni_math"}
+MATH_DATASETS = {"gsm8k", "math", "aime", "hmmt", "omni_math", "project_euler", "mathconstruct"}
 
 
 DEFAULT_AGENT_POLICY: dict[tuple[ProviderFamily, SpellMode], str] = {
@@ -24,9 +24,8 @@ DEFAULT_AGENT_POLICY: dict[tuple[ProviderFamily, SpellMode], str] = {
     ("tc", "tc"): "config/agents/io-tc.agent.edn",
 }
 
-# Math benchmarks use agents without web namespace (TODO #152).
-# Web search wastes tokens on competition math problems.
-MATH_AGENT_POLICY: dict[tuple[ProviderFamily, SpellMode], str] = {
+# Closed-book benchmarks use agents without the web namespace.
+NO_WEB_AGENT_POLICY: dict[tuple[ProviderFamily, SpellMode], str] = {
     ("pf", "msg"): "config/agents/math-pf.agent.edn",
     ("msg", "msg"): "config/agents/math-msg.agent.edn",
     ("tc", "tc"): "config/agents/math-tc.agent.edn",
@@ -129,8 +128,8 @@ def resolve_spell_agent(
         source = "agent"
     else:
         key = (provider_family, spell_mode)
-        # Use math-specific agents (no web) for math benchmarks
-        policy = MATH_AGENT_POLICY if family == "general_math" else DEFAULT_AGENT_POLICY
+        # Closed-book general benchmarks should not expose the web namespace.
+        policy = NO_WEB_AGENT_POLICY if family in {"general_math", "general_longcontext"} else DEFAULT_AGENT_POLICY
         try:
             selected = policy[key]
         except KeyError as exc:  # pragma: no cover - defensive

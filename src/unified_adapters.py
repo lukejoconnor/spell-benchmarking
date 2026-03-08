@@ -22,9 +22,9 @@ def _resolve_spell_root() -> Path:
     if env_spell_root:
         return Path(env_spell_root).expanduser().resolve()
 
-    nested_candidate = BENCHMARK_ROOT.parent
-    if (nested_candidate / "config" / "agents").exists():
-        return nested_candidate
+    for candidate in BENCHMARK_ROOT.parents:
+        if (candidate / "config" / "agents").exists() and (candidate / "spell_benchmark_client.py").exists():
+            return candidate
 
     return BENCHMARK_ROOT
 
@@ -289,6 +289,8 @@ class ClaudeCodeAdapter:
             req.prompt,
         ]
 
+        if not req.web_search:
+            cmd[1:1] = ["--disallowedTools", "WebSearch,WebFetch"]
         if add_dir := req.metadata.get("add_dir"):
             cmd[1:1] = ["--add-dir", str(add_dir)]
 
@@ -560,6 +562,8 @@ class CodexAdapter:
         ]
         if req.web_search:
             base_cmd.append("--search")
+        else:
+            base_cmd.extend(["-c", 'web_search="disabled"'])
         if add_dir:
             base_cmd.extend(["--add-dir", str(add_dir)])
 

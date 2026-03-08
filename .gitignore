@@ -19,6 +19,10 @@ heurigym/
 notebook/
 .python-version
 1:timeout60
+.tmp-docker-repro/
+worktrees/
+benchmarking/worktrees/
+src/*.egg-info/
 .codex-clean-home/*
 !.codex-clean-home/.gitkeep
 

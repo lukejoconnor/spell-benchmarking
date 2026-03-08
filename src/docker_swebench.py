@@ -264,9 +264,9 @@ def iter_dicts(v):
 # ── Claude Code (runs inside container) ──────────────────────────
 
 CC_ALLOWED_TOOLS = [
-    "Bash", "Edit", "Write", "Read", "Glob", "Grep",
-    "WebFetch", "NotebookEdit",
+    "Bash", "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit",
 ]
+CC_WEB_TOOLS = ["WebSearch", "WebFetch"]
 
 
 def install_claude_code(container: DockerContainer, env: dict[str, str]) -> bool:
@@ -292,9 +292,11 @@ def run_claude_code(
     budget: float,
     timeout: int,
     env: dict[str, str],
+    web_search: bool = False,
 ) -> ExecResult:
     """Run Claude Code inside the container."""
     escaped = shlex.quote(prompt)
+    allowed_tools = CC_ALLOWED_TOOLS + (CC_WEB_TOOLS if web_search else [])
     cmd = (
         f'[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"; '
         f"claude "
@@ -303,7 +305,7 @@ def run_claude_code(
         f"--output-format stream-json "
         f"--max-budget-usd {budget} "
         f"--model {shlex.quote(model)} "
-        f"--allowedTools {' '.join(CC_ALLOWED_TOOLS)} "
+        f"--allowedTools {' '.join(allowed_tools)} "
         f"-p {escaped}"
     )
     return container.exec_run(cmd, timeout=timeout, env=env)
@@ -376,7 +378,7 @@ def run_codex(
 ) -> ExecResult:
     """Run Codex inside the container."""
     escaped = shlex.quote(prompt)
-    search_flag = "--search " if web_search else ""
+    search_flag = "--search " if web_search else '-c \'web_search="disabled"\' '
     cmd = (
         f'[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"; '
         f"codex {search_flag}exec --json --ephemeral --skip-git-repo-check "
