@@ -22,6 +22,11 @@ notebook/
 .codex-clean-home/*
 !.codex-clean-home/.gitkeep
 
+# Temp dirs
+.tmp-docker-repro/
+worktrees/
+src/benchmarking.egg-info/
+
 # Editor
 .idea/
 .vscode/

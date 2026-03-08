@@ -1,5 +1,6 @@
 """Evaluation and scoring for benchmark results."""
 
+from decimal import Decimal, InvalidOperation
 import re
 import string
 from dataclasses import asdict
@@ -79,44 +80,52 @@ def extract_freeform_answer(response: str) -> str:
 def extract_numeric_answer(response: str) -> str | None:
     """Extract numeric answer (for GSM8K math problems).
 
-    Handles: 42, -42, 1,200, $42, 3.14, etc.
+    Handles: 42, -42, 1,200, $42, 3.14, 6.3202e25093, etc.
     Returns normalized string (no commas, no $).
     """
     response = response.strip()
+    number = r'-?\$?\d+(?:,\d{3})*(?:\.\d+)?(?:[eE][+-]?\d+)?'
+
+    def _normalize_numeric_token(token: str) -> str | None:
+        cleaned = token.strip().replace('$', '').replace(',', '')
+        try:
+            Decimal(cleaned)
+        except InvalidOperation:
+            return None
+        return cleaned
 
     # Look for "#### N" pattern (GSM8K format in chain-of-thought)
-    match = re.search(r'####\s*(-?[\d,]+\.?\d*)', response)
+    match = re.search(rf'####\s*({number})', response)
     if match:
-        return match.group(1).replace(',', '')
+        return _normalize_numeric_token(match.group(1))
 
     # Check if response ends with just a number on its own line (common pattern)
     lines = response.split('\n')
     last_line = lines[-1].strip() if lines else ''
-    if re.match(r'^-?\$?[\d,]+\.?\d*$', last_line):
-        return last_line.replace('$', '').replace(',', '')
+    # Strip markdown bold/italic markers
+    last_line = re.sub(r'^\*{1,3}|\*{1,3}$', '', last_line).strip()
+    if re.match(rf'^{number}$', last_line):
+        return _normalize_numeric_token(last_line)
 
     # Look for "answer is N" or "= N" patterns
     patterns = [
-        r'(?:answer|result|total|sum|value)\s*(?:is|=|:)\s*\$?(-?[\d,]+\.?\d*)',
-        r'=\s*\$?(-?[\d,]+\.?\d*)\s*$',  # Ending with = N
+        rf'(?:answer|result|total|sum|value)\s*(?:is|=|:)\s*({number})',
+        rf'=\s*({number})\s*$',  # Ending with = N
     ]
 
     for pattern in patterns:
         match = re.search(pattern, response, re.I | re.MULTILINE)
         if match:
-            num = match.group(1).replace(',', '')
-            try:
-                float(num)
-                return num
-            except ValueError:
-                continue
+            normalized = _normalize_numeric_token(match.group(1))
+            if normalized is not None:
+                return normalized
 
     # Fallback: find any number in the response (last one is often the answer)
-    numbers = re.findall(r'-?[\d,]+\.?\d*', response)
+    numbers = re.findall(number, response)
     # Filter out empty matches and very short numbers that are likely not answers
-    numbers = [n for n in numbers if n and len(n.replace(',', '').replace('.', '')) > 0]
+    numbers = [n for n in numbers if n and len(n.replace(',', '').replace('.', '').replace('$', '')) > 0]
     if numbers:
-        return numbers[-1].replace(',', '')
+        return _normalize_numeric_token(numbers[-1])
 
     return None
 

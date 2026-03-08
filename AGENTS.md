@@ -115,6 +115,17 @@ Condition semantics:
   - In the harness adapter, `codex` resolves to `gpt-5-codex` for stable Codex CLI compatibility.
 - `spell` (including SWE-bench workspaces): adapter injects local `-Sdeps` so `spell.benchmark-api` resolves even when `cwd` is a cloned repo workspace.
 
+Spell `--model` specs (provider prefix + model name from `.provider.edn`):
+
+| Provider | Model spec | Default model |
+|----------|-----------|---------------|
+| Anthropic (toolcall) | `anthropic-tc:claude-opus-4-6` | `claude-opus-4-6` |
+| Anthropic (prefill) | `anthropic-pf:claude-opus-4-6` | `claude-opus-4-6` |
+| Codex (toolcall) | `codex-tc:gpt-5.3-codex` | `gpt-5.3-codex` |
+| Codex (message) | `codex-msg:gpt-5.3-codex` | `gpt-5.3-codex` |
+
+Model names must match the provider's API exactly. The provider `.edn` files in `config/providers/` define defaults.
+
 ### Common flags (Exercism)
 
 ```bash

@@ -25,6 +25,7 @@ class AgentPolicyTests(unittest.TestCase):
 
     def test_classify_general_family(self) -> None:
         self.assertEqual(classify_general_family({"aime", "hmmt"}), "general_math")
+        self.assertEqual(classify_general_family({"project_euler"}), "general_math")
         self.assertEqual(classify_general_family({"longbench_short", "babilong_32k"}), "general_longcontext")
         self.assertEqual(classify_general_family({"longbench_short", "aime"}), "general_other")
         self.assertEqual(classify_general_family(set()), "general_other")

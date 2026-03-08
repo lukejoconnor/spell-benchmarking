@@ -4,15 +4,13 @@ version = "0.1.0"
 description = "Benchmarking harness for Spell vs baselines"
 requires-python = ">=3.13"
 dependencies = [
+    "antlr4-python3-runtime==4.11",
     "anthropic>=0.77.1",
     "click>=8.1.8",
     "datasets>=4.5.0",
+    "loguru>=0.7.3",
     "openai>=2.17.0",
     "scipy>=1.17.0",
-    "sympy>=1.14.0",
-]
-
-[project.optional-dependencies]
-swebench = [
     "swebench>=2.0.0",
+    "sympy>=1.14.0",
 ]

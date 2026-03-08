@@ -103,8 +103,14 @@ class Worktree:
         self.repo_path = repo_path
         self._mutation_lock = mutation_lock
 
-    def diff(self) -> str:
-        """Return git diff HEAD as a string, including newly created files."""
+    def diff(self, base: str = "HEAD") -> str:
+        """Return git diff as a string, including newly created files.
+
+        Args:
+            base: Commit to diff against (default HEAD). Use the original
+                  checkout commit to capture changes that were committed
+                  inside the worktree (e.g. by fix-loop).
+        """
         if not self.path.exists():
             return ""
         add_result = subprocess.run(
@@ -115,7 +121,7 @@ class Worktree:
             return ""
         try:
             result = subprocess.run(
-                ["git", "diff", "--cached", "HEAD"],
+                ["git", "diff", "--cached", base],
                 cwd=self.path, capture_output=True, timeout=60,
             )
         finally:
@@ -127,8 +133,12 @@ class Worktree:
             return ""
         return result.stdout.decode("utf-8", errors="replace")
 
-    def changed_files(self) -> list[str]:
-        """Return list of modified file paths, including newly created files."""
+    def changed_files(self, base: str = "HEAD") -> list[str]:
+        """Return list of modified file paths, including newly created files.
+
+        Args:
+            base: Commit to diff against (default HEAD).
+        """
         if not self.path.exists():
             return []
         add_result = subprocess.run(
@@ -139,7 +149,7 @@ class Worktree:
             return []
         try:
             result = subprocess.run(
-                ["git", "diff", "--name-only", "--cached", "HEAD"],
+                ["git", "diff", "--name-only", "--cached", base],
                 cwd=self.path, capture_output=True, timeout=60,
             )
         finally:

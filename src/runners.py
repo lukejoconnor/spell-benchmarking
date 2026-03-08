@@ -1060,6 +1060,8 @@ class SpellSWERunner:
             "io/replace-lines takes (path start-line end-line new-content), 1-indexed, inclusive.",
             "To add new code at end of file, use replace-lines on the last line.",
             "To insert between lines N and N+1, replace line N with itself plus new content.",
+            "",
+            "Do not install packages or modify project dependencies.",
         ])
 
         return "\n".join(parts)

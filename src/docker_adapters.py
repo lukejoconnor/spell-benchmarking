@@ -240,6 +240,8 @@ class DockerSpellAdapter:
             payload["init"] = req.init
         else:
             payload["prompt"] = req.prompt
+        if req.trace_dir is not None:
+            payload["trace_dir"] = str(req.trace_dir)
         payload = {k: v for k, v in payload.items() if v is not None}
 
         start = time.time()

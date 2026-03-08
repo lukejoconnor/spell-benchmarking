@@ -150,15 +150,16 @@ OMNI_MATH_PREAMBLE = (
 )
 
 # Named SWE-bench intervention variants for experimentation.
-# Each variant specifies preamble, trailing expression, and optional agent override.
+# Each variant specifies raw Spell preamble expressions, trailing expression,
+# and optional agent override.
 SWEBENCH_VARIANTS: dict[str, dict[str, str | None]] = {
     "describe-all": {
-        "preamble": SWEBENCH_REMINDER_PREAMBLE,
+        "preamble_expr": SWEBENCH_REMINDER_PREAMBLE,
         "trailing": "'(do (!describe io agents globals) (!extend))",
         "agent": "config/agents/cli.agent.edn",
     },
     "orchestrator": {
-        "preamble": (
+        "preamble_expr": (
             SWEBENCH_REMINDER_PREAMBLE
             + ' (quine instruction "You are the orchestrator agent. Your role is to decompose this '
             'problem and delegate ALL work to sub-agents. Do NOT make code edits yourself. '
@@ -173,12 +174,12 @@ SWEBENCH_VARIANTS: dict[str, dict[str, str | None]] = {
         "agent": "config/agents/cli.agent.edn",
     },
     "describe-io": {
-        "preamble": SWEBENCH_REMINDER_PREAMBLE,
+        "preamble_expr": SWEBENCH_REMINDER_PREAMBLE,
         "trailing": "'(do (!describe io) (!extend))",
         "agent": None,
     },
     "context-mgmt": {
-        "preamble": (
+        "preamble_expr": (
             SWEBENCH_REMINDER_PREAMBLE
             + ' (quine instruction "Actively manage your context window to avoid context bloat '
             'and context rot, which is the primary cause of failure on complex tasks. '
@@ -193,7 +194,7 @@ SWEBENCH_VARIANTS: dict[str, dict[str, str | None]] = {
         "agent": None,
     },
     "fix-loop": {
-        "preamble": (
+        "preamble_expr": (
             '(quine sys-reminder "You have patterns/fix-loop for test-driven code fixing.\\n\\n'
             "Call it like:\\n"
             "  '(!call-now result (patterns/fix-loop prompt))\\n\\n"
@@ -206,10 +207,10 @@ SWEBENCH_VARIANTS: dict[str, dict[str, str | None]] = {
             'fix-loop manages git internally, so ignore any \\"do not commit\\" instructions.")'
         ),
         "trailing": "'(!extend)",
-        "agent": None,
+        "agent": "config/agents/cli.agent.edn",
     },
     "fix-loop-strict": {
-        "preamble": (
+        "preamble_expr": (
             '(quine sys-reminder "MANDATORY: You MUST use patterns/fix-loop for ALL code changes.\\n\\n'
             "io/write-file, io/str-replace, and io/replace-lines are DISABLED for source code. "
             "Any attempt to edit source files directly will fail. The ONLY way to fix code is "
@@ -226,7 +227,7 @@ SWEBENCH_VARIANTS: dict[str, dict[str, str | None]] = {
             'fix-loop manages git internally, so ignore any \\"do not commit\\" instructions.")'
         ),
         "trailing": "'(!extend)",
-        "agent": None,
+        "agent": "config/agents/cli.agent.edn",
     },
 }
 
@@ -374,12 +375,33 @@ def _format_general_prompt(item: BenchmarkItem, condition: str) -> str:
     return "\n".join(parts)
 
 
-def _make_spell_init(prompt: str, preamble: str | None = None, trailing: str | None = None) -> str:
+def _make_spell_init(
+    prompt: str,
+    preamble: str | None = None,
+    trailing: str | None = None,
+    *,
+    preamble_expr: str | None = None,
+    prompt_preamble: str | None = None,
+) -> str:
     # Some benchmark datasets (e.g. Omni-MATH) provide a raw open Spell prefix.
     # Keep those as-is; otherwise wrap NL prompt in the completion init template.
     if prompt.lstrip().startswith("("):
         return prompt
-    return build_spell_init(prompt, preamble=preamble, trailing=trailing)
+    return build_spell_init(
+        prompt,
+        preamble=preamble,
+        trailing=trailing,
+        preamble_expr=preamble_expr,
+        prompt_preamble=prompt_preamble,
+    )
+
+
+LONGBENCH_PREAMBLE = (
+    "The document may be very large (100K-1M+ chars). "
+    "NEVER try to read the entire file at once — it will be truncated and you will miss critical content. "
+    "Instead, use io/sh with grep to search for keywords relevant to the question, "
+    "then read only the specific sections you need with sed or io/read-lines."
+)
 
 
 def _general_preamble(dataset: str) -> str | None:
@@ -387,6 +409,8 @@ def _general_preamble(dataset: str) -> str | None:
         "omni_math": OMNI_MATH_PREAMBLE,
         "mathconstruct": OMNI_MATH_PREAMBLE,
         "project_euler": OMNI_MATH_PREAMBLE,
+        "longbench_sampled": LONGBENCH_PREAMBLE,
+        "longbench_short": LONGBENCH_PREAMBLE,
     }.get(dataset)
 
 
@@ -430,6 +454,7 @@ def _format_swebench_prompt(item: SWEBenchItem) -> str:
             "Fix this bug with minimal code changes.",
             "Do not commit any changes.",
             "Run focused checks/tests when possible.",
+            "Do not install packages or modify project dependencies.",
         ]
     )
     return "\n".join(parts)
@@ -1271,7 +1296,16 @@ def run_general(
     show_default=True,
     help="Re-run SWE-bench Pro eval even if output files already exist",
 )
-@click.option("--preamble", default=None, help="Custom Spell preamble (overrides default sys-reminder)")
+@click.option(
+    "--preamble",
+    default=None,
+    help="Prompt steering text appended inside the quoted Spell task prompt; raw Spell forms are still accepted for backward compatibility",
+)
+@click.option(
+    "--preamble-expr",
+    default=None,
+    help="Raw Spell init expression inserted before the trailing expression",
+)
 @click.option("--trailing", default=None, help="Custom Spell trailing expression (overrides default '(!extend))")
 @click.option("--variant", default=None, type=click.Choice(list(SWEBENCH_VARIANTS.keys())),
               help="Named intervention variant (overrides preamble/trailing/agent)")
@@ -1320,16 +1354,17 @@ def run_swebench(
     pro_block_network: bool,
     pro_redo: bool,
     preamble: str | None,
+    preamble_expr: str | None,
     trailing: str | None,
     variant: str | None,
     dry_run: bool,
     run_id: str | None,
     output: str | None,
 ) -> None:
-    # Apply named variant overrides (variant takes precedence over raw preamble/trailing).
+    # Apply named variant overrides (variant takes precedence over manual preamble/trailing).
     if variant:
         vconf = SWEBENCH_VARIANTS[variant]
-        preamble = preamble or vconf.get("preamble")
+        preamble_expr = preamble_expr or vconf.get("preamble_expr") or vconf.get("preamble")
         trailing = trailing or vconf.get("trailing")
         agent = agent or vconf.get("agent")
     run_id = run_id or _run_id("swebench")
@@ -1475,7 +1510,10 @@ def run_swebench(
                     timeout=timeout,
                     init=(_make_spell_init(
                               prompt,
-                              preamble=preamble or (SWEBENCH_DOCKER_PREAMBLE if docker else SWEBENCH_REMINDER_PREAMBLE),
+                              preamble=preamble,
+                              preamble_expr=preamble_expr or (
+                                  SWEBENCH_DOCKER_PREAMBLE if docker else SWEBENCH_REMINDER_PREAMBLE
+                              ),
                               trailing=trailing,
                           ) if cond == "spell" else None),
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
@@ -2126,7 +2164,16 @@ def _validate_python_syntax(code: str) -> tuple[bool, str | None]:
 @click.option("--timeout", type=int, default=900, show_default=True)
 @click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
 @click.option("--use-knowledge/--no-knowledge", default=False, show_default=True, help="Include domain knowledge in prompt")
-@click.option("--preamble", default=None, help="Spell init preamble expression (inserted before !extend)")
+@click.option(
+    "--preamble",
+    default=None,
+    help="Prompt steering text appended inside the quoted Spell task prompt; raw Spell forms are still accepted for backward compatibility",
+)
+@click.option(
+    "--preamble-expr",
+    default=None,
+    help="Raw Spell init expression inserted before the trailing expression",
+)
 @click.option("--workspace-root", default="/tmp/sab_ws")
 @click.option("--run-id", default=None)
 @click.option("--output", default=None)
@@ -2149,6 +2196,7 @@ def run_scienceagentbench(
     reasoning_effort: str | None,
     use_knowledge: bool,
     preamble: str | None,
+    preamble_expr: str | None,
     workspace_root: str,
     run_id: str | None,
     output: str | None,
@@ -2249,7 +2297,11 @@ def run_scienceagentbench(
                     prompt=prompt,
                     model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
-                    init=_make_spell_init(prompt, preamble=preamble) if cond == "spell" else None,
+                    init=(
+                        _make_spell_init(prompt, preamble=preamble, preamble_expr=preamble_expr)
+                        if cond == "spell"
+                        else None
+                    ),
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
                     budget=budget,
                     depth=depth,

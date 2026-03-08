@@ -15,7 +15,15 @@ GeneralFamily = Literal["general_math", "general_longcontext", "general_other"]
 AgentSource = Literal["default", "agent", "agent_msg", "agent_tc"]
 ProviderFamily = Literal["pf", "msg", "tc"]
 
-MATH_DATASETS = {"gsm8k", "math", "aime", "hmmt", "omni_math"}
+MATH_DATASETS = {
+    "gsm8k",
+    "math",
+    "aime",
+    "hmmt",
+    "omni_math",
+    "mathconstruct",
+    "project_euler",
+}
 
 
 DEFAULT_AGENT_POLICY: dict[tuple[ProviderFamily, SpellMode], str] = {
