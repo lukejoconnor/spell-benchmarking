@@ -323,23 +323,43 @@ def _ensure_context_file(item: BenchmarkItem) -> str | None:
     return str(path)
 
 
-def _format_general_prompt(item: BenchmarkItem, condition: str) -> str:
+GENERAL_WEB_SEARCH_CONDITIONS = frozenset({"claude_code", "codex"})
+
+
+def _resolve_web_search_default(item_datasets: set[str], requested: bool | None) -> bool:
+    if requested is not None:
+        return requested
+    return "gaia" in item_datasets
+
+
+def _general_condition_web_search(condition: str, enabled: bool) -> bool:
+    return enabled and condition in GENERAL_WEB_SEARCH_CONDITIONS
+
+
+def _format_general_prompt(item: BenchmarkItem, condition: str, *, web_search: bool = False) -> str:
     context_file = _ensure_context_file(item)
+    if item.dataset == "gaia":
+        parts: list[str] = [item.question.strip()]
+        file_path = (item.metadata or {}).get("file_path", "")
+        if file_path:
+            parts.extend(["", f"Attached file: {file_path}"])
+        parts.append("")
+        if web_search:
+            parts.append("Use web search, Python, and any tools needed to answer this question.")
+        else:
+            parts.append("Use Python and any available non-web tools needed to answer this question.")
+        parts.append(
+            "Reply with ONLY the final answer — a number, a short string, or a comma-separated list. No explanation."
+        )
+        return "\n".join(parts)
+
     if condition == "one_shot":
         return format_prompt_one_shot(item)
     if condition == "spell":
         return format_prompt_spell(item, context_file=context_file)
 
     parts: list[str] = []
-    if item.dataset == "gaia":
-        parts.append(item.question.strip())
-        file_path = (item.metadata or {}).get('file_path', '')
-        if file_path:
-            parts.extend(["", f"Attached file: {file_path}"])
-        parts.append("")
-        parts.append("Use web search, Python, and any tools needed to answer this question.")
-        parts.append("Reply with ONLY the final answer — a number, a short string, or a comma-separated list. No explanation.")
-    elif item.context and context_file:
+    if item.context and context_file:
         parts.extend(
             [
                 f"Read the document at {context_file} ({len(item.context):,} chars) and answer this question:",
@@ -350,9 +370,7 @@ def _format_general_prompt(item: BenchmarkItem, condition: str) -> str:
     else:
         parts.extend(["Solve this problem:", "", item.question.strip()])
 
-    if item.dataset == "gaia":
-        pass  # Already formatted above
-    elif item.choices:
+    if item.choices:
         parts.append("")
         parts.append("Choices:")
         for i, choice in enumerate(item.choices):
@@ -995,7 +1013,11 @@ def cli() -> None:
 @click.option("--verbosity", type=click.Choice(["low", "auto"]), default=None)
 @click.option("--responses-api/--no-responses-api", default=False, show_default=True)
 @click.option("--suffix-grammar/--no-suffix-grammar", default=False, show_default=True)
-@click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
+@click.option(
+    "--web-search/--no-web-search",
+    default=None,
+    help="Enable live web search (defaults to on for GAIA, off otherwise)",
+)
 @click.option("--trace/--no-trace", default=True, show_default=True)
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
@@ -1022,7 +1044,7 @@ def run_general(
     verbosity: str | None,
     responses_api: bool,
     suffix_grammar: bool,
-    web_search: bool,
+    web_search: bool | None,
     trace: bool,
     dry_run: bool,
     run_id: str | None,
@@ -1038,6 +1060,11 @@ def run_general(
     requested_ids = {x.strip() for x in (items or "").split(",") if x.strip()}
 
     if dataset == "project_euler":
+        if requested_ids:
+            requested_ids = {
+                f"project_euler_{int(match.group(1)):04d}" if (match := re.match(r"project_euler_(\d+)$", item_id)) else item_id
+                for item_id in requested_ids
+            }
         requested_numbers: list[int] | None = None
         if requested_ids:
             requested_numbers = []
@@ -1073,6 +1100,7 @@ def run_general(
     if n:
         loaded = loaded[:n]
     item_datasets = {item.dataset for item in loaded}
+    effective_web_search = _resolve_web_search_default(item_datasets, web_search)
 
     click.echo(f"Loaded {len(loaded)} items")
     if dry_run:
@@ -1097,6 +1125,10 @@ def run_general(
                     "codex_model": codex_model,
                     "parallel": parallel,
                     "budget": budget,
+                    "web_search_requested": effective_web_search,
+                    "web_search_by_condition": {
+                        cond: _general_condition_web_search(cond, effective_web_search) for cond in conditions
+                    },
                     "agent": spell_resolution.agent_file if spell_resolution else None,
                     "spell_mode": spell_resolution.spell_mode if spell_resolution else None,
                     "agent_source": spell_resolution.source if spell_resolution else None,
@@ -1131,9 +1163,10 @@ def run_general(
                 f"agent={spell_resolution.agent_file} source={spell_resolution.source}"
             )
 
+        condition_web_search = _general_condition_web_search(cond, effective_web_search)
         requests: list[RunRequest] = []
         for item in loaded:
-            prompt = _format_general_prompt(item, cond)
+            prompt = _format_general_prompt(item, cond, web_search=condition_web_search)
             requests.append(
                 RunRequest(
                     benchmark="general",
@@ -1153,7 +1186,7 @@ def run_general(
                     verbosity=verbosity,
                     responses_api=responses_api,
                     suffix_grammar=suffix_grammar,
-                    web_search=web_search if cond == "codex" else False,
+                    web_search=condition_web_search,
                     trace=trace,
                     trace_dir=(
                         _trace_dir_for_request(trace_dir, cond, item.id)
@@ -1192,6 +1225,7 @@ def run_general(
                 metadata={
                     "question": item.question,
                     "expected_answer": item.answer,
+                    "web_search": condition_web_search,
                     **(
                         {
                             "spell_mode": spell_resolution.spell_mode,
@@ -1439,6 +1473,7 @@ def run_swebench(
                     "items": sorted(requested_ids) if requested_ids else None,
                     "budget": budget,
                     "depth": depth,
+                    "web_search": web_search,
                     "trace": trace,
                     "agent": spell_resolution.agent_file if spell_resolution else None,
                     "spell_mode": spell_resolution.spell_mode if spell_resolution else None,
@@ -1581,6 +1616,7 @@ def run_swebench(
                     metadata={
                         "repo": item.repo,
                         "base_commit": item.base_commit,
+                        "web_search": web_search,
                         **(
                             {
                                 "spell_mode": spell_resolution.spell_mode,
@@ -2629,6 +2665,7 @@ def run_exercism(
                     "budget": budget,
                     "depth": depth,
                     "no_retry": no_retry,
+                    "web_search": web_search,
                     "trace": trace,
                     "agent": spell_resolution.agent_file if spell_resolution else None,
                 },

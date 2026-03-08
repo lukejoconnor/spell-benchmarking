@@ -304,7 +304,6 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         self.assertEqual(response.status, "ok")
         self.assertEqual(client_run_mock.call_args.kwargs["cwd"], Path("/tmp/spell-bench-test"))
         tempdir_cm.__exit__.assert_called_once()
-
     def test_run_codex_includes_search_flag_before_exec_when_requested(self):
         container = MagicMock()
         env = {"OPENAI_API_KEY": "test"}
