@@ -372,12 +372,14 @@ def run_codex(
     model: str,
     timeout: int,
     env: dict[str, str],
+    web_search: bool = False,
 ) -> ExecResult:
     """Run Codex inside the container."""
     escaped = shlex.quote(prompt)
+    search_flag = "--search " if web_search else ""
     cmd = (
         f'[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"; '
-        f"codex exec --json --ephemeral --skip-git-repo-check "
+        f"codex {search_flag}exec --json --ephemeral --skip-git-repo-check "
         f"--sandbox danger-full-access "
         f"-m {shlex.quote(model)} "
         f"{escaped}"

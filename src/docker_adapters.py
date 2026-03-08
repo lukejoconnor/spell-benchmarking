@@ -160,7 +160,7 @@ class DockerCodexAdapter:
 
             result = run_codex(
                 container, req.prompt,
-                model=model, timeout=req.timeout, env=env,
+                model=model, timeout=req.timeout, env=env, web_search=req.web_search,
             )
 
             patch = container.diff()

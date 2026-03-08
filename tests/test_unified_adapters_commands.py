@@ -3,8 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+from src.docker_swebench import run_codex
 from src.unified_adapters import (
     CODEX_NO_CUSTOM_SCRIPT,
     PROJECT_ROOT,
@@ -78,6 +79,28 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         self.assertEqual(cmd[0], str(CODEX_NO_CUSTOM_SCRIPT))
         self.assertIn("exec", cmd)
         self.assertTrue(response.metadata.get("no_custom_config"))
+
+    @patch("src.unified_adapters.subprocess.run")
+    def test_codex_adapter_passes_search_flag_before_exec_when_requested(self, run_mock):
+        run_mock.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        adapter = CodexAdapter(project_root=PROJECT_ROOT, model_spec="codex")
+        response = adapter.run(
+            RunRequest(
+                benchmark="general",
+                dataset="gsm8k",
+                item_id="item-1",
+                condition="codex",
+                prompt="Return 42.",
+                model_spec="codex",
+                timeout=5,
+                web_search=True,
+            )
+        )
+
+        self.assertEqual(response.status, "ok")
+        cmd = run_mock.call_args.args[0]
+        self.assertLess(cmd.index("--search"), cmd.index("exec"))
 
     @patch("src.unified_adapters.subprocess.run")
     def test_claude_adapter_writes_trace_file(self, run_mock):
@@ -221,6 +244,22 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         self.assertEqual(response.status, "ok")
         payload = client_run_mock.call_args.args[0]
         self.assertEqual(payload.get("format"), {"required": [":final_answer"]})
+
+    def test_run_codex_includes_search_flag_before_exec_when_requested(self):
+        container = MagicMock()
+        env = {"OPENAI_API_KEY": "test"}
+
+        run_codex(
+            container,
+            "Return 42.",
+            model="gpt-5-codex",
+            timeout=30,
+            env=env,
+            web_search=True,
+        )
+
+        cmd = container.exec_run.call_args.args[0]
+        self.assertIn("codex --search exec", cmd)
 
 
 if __name__ == "__main__":
