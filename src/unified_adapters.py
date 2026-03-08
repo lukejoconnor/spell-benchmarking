@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -75,6 +76,16 @@ def _benchmark_api_clj_cmd(project_root: Path) -> list[str]:
     # by injecting this repo as a local dep.
     sdeps = '{:deps {local/spell {:local/root "%s"}}}' % project_root
     return ["clj", "-Sdeps", sdeps, "-M", "-m", "spell.benchmark-api"]
+
+
+@contextmanager
+def _benchmark_run_cwd(workspace: Path | None):
+    if workspace is not None:
+        yield workspace
+        return
+
+    with tempfile.TemporaryDirectory(prefix="spell-bench-") as tmp_dir:
+        yield Path(tmp_dir)
 
 
 def _escape_for_spell(s: str) -> str:
@@ -218,8 +229,8 @@ class SpellAdapter:
 
         # Use a temp directory when no workspace is provided so generated
         # files (solve.py, compiled binaries, etc.) don't pollute the repo root.
-        run_cwd = req.workspace or Path(tempfile.mkdtemp(prefix="spell-bench-"))
-        response = self.client.run(payload, timeout=req.timeout, cwd=run_cwd)
+        with _benchmark_run_cwd(req.workspace) as run_cwd:
+            response = self.client.run(payload, timeout=req.timeout, cwd=run_cwd)
         usage_total = (response.usage or {}).get("total", {})
 
         if response.ok:
@@ -269,8 +280,8 @@ class OneShotAdapter:
         }
         payload = {k: v for k, v in payload.items() if v is not None}
 
-        run_cwd = req.workspace or Path(tempfile.mkdtemp(prefix="spell-bench-"))
-        response = self.client.run(payload, timeout=req.timeout, cwd=run_cwd)
+        with _benchmark_run_cwd(req.workspace) as run_cwd:
+            response = self.client.run(payload, timeout=req.timeout, cwd=run_cwd)
         usage_total = (response.usage or {}).get("total", {})
 
         if response.ok:

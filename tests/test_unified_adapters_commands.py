@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from src.unified_adapters import (
     CODEX_NO_CUSTOM_SCRIPT,
@@ -229,6 +229,58 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         self.assertEqual(adapter.client.clj_cmd[0:4], ["clj", "-Sdeps", adapter.client.clj_cmd[2], "-M"])
         self.assertIn(str(PROJECT_ROOT), adapter.client.clj_cmd[2])
         self.assertEqual(adapter.client.clj_cmd[-2:], ["-m", "spell.benchmark-api"])
+
+    @patch("src.unified_adapters.tempfile.TemporaryDirectory")
+    @patch("src.unified_adapters.SpellBenchmarkClient.run")
+    def test_spell_adapter_cleans_up_temp_cwd_when_workspace_missing(
+        self, client_run_mock, tempdir_mock
+    ):
+        client_run_mock.return_value = SimpleNamespace(
+            ok=True,
+            result="42",
+            usage={"total": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+            latency_ms=1.0,
+            trace_dir=None,
+            raw={},
+            error=None,
+            error_type=None,
+        )
+        tempdir_cm = MagicMock()
+        tempdir_cm.__enter__.return_value = "/tmp/spell-bench-test"
+        tempdir_mock.return_value = tempdir_cm
+        adapter = SpellAdapter(project_root=PROJECT_ROOT, model_spec="anthropic-tc:opus46")
+
+        response = adapter.run(_request("spell", "anthropic-tc:opus46"))
+
+        self.assertEqual(response.status, "ok")
+        self.assertEqual(client_run_mock.call_args.kwargs["cwd"], Path("/tmp/spell-bench-test"))
+        tempdir_cm.__exit__.assert_called_once()
+
+    @patch("src.unified_adapters.tempfile.TemporaryDirectory")
+    @patch("src.unified_adapters.SpellBenchmarkClient.run")
+    def test_one_shot_adapter_cleans_up_temp_cwd_when_workspace_missing(
+        self, client_run_mock, tempdir_mock
+    ):
+        client_run_mock.return_value = SimpleNamespace(
+            ok=True,
+            result="42",
+            usage={"total": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+            latency_ms=1.0,
+            trace_dir=None,
+            raw={},
+            error=None,
+            error_type=None,
+        )
+        tempdir_cm = MagicMock()
+        tempdir_cm.__enter__.return_value = "/tmp/spell-bench-test"
+        tempdir_mock.return_value = tempdir_cm
+        adapter = OneShotAdapter(project_root=PROJECT_ROOT, model_spec="anthropic-tc:opus46")
+
+        response = adapter.run(_request("one_shot", "anthropic-tc:opus46"))
+
+        self.assertEqual(response.status, "ok")
+        self.assertEqual(client_run_mock.call_args.kwargs["cwd"], Path("/tmp/spell-bench-test"))
+        tempdir_cm.__exit__.assert_called_once()
 
 
 if __name__ == "__main__":
