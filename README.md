@@ -1,6 +1,6 @@
 # Spell Benchmarking
 
-Benchmark infrastructure for evaluating Spell against baseline LLM calls, Claude Code, and Codex CLI across math, long-context, and coding tasks.
+Benchmark infrastructure for evaluating Spell against one-shot LLM calls, Claude Code, and Codex CLI across math, long-context, and coding tasks.
 
 All commands run from the repository root using `uv run`.
 
@@ -40,8 +40,8 @@ uv run python benchmarking/bench.py general [OPTIONS]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--dataset` | `longbench_short` | Dataset to run (see [Datasets](#datasets)) |
-| `--condition` | `baseline` | `baseline`, `spell`, `claude_code`, `codex`, or `all` |
-| `--model` | *(none, required)* | `provider:model` spec for baseline/spell (see [Model Specs](#model-specs)) |
+| `--condition` | `one_shot` | `one_shot`, `spell`, `claude_code`, `codex`, or `all` |
+| `--model` | *(none, required)* | `provider:model` spec for one_shot/spell (see [Model Specs](#model-specs)) |
 | `--claude-model` | *(none, required)* | Model name for Claude Code condition |
 | `--codex-model` | `codex` | Model name for Codex CLI condition |
 | `--n` | all | Limit to first N items |
@@ -181,6 +181,8 @@ Optional filters: `--run-id`, `--condition`.
 | `math_medium` | MATH Level 3 | ~400 | Competition math (medium) |
 | `math_hard` | MATH Level 5 | ~500 | Competition math (hardest) |
 | `math_algebra` | MATH algebra | ~600 | Algebra subset |
+| `project_euler` | Project Euler | 913 | Integer-answer programming/math problems |
+| `project_euler_200` | Project Euler (first 200) | 200 | PE-Bench-compatible subset |
 | `aime_2024` | AIME 2024 | 30 | AMC/AIME competition |
 | `aime_2025` | AIME 2025 | 30 | AMC/AIME competition |
 | `aime_2026` | AIME 2026 | 30 | AMC/AIME competition |
@@ -218,7 +220,7 @@ Selected via `--split` and `--task-ids`. Tasks are loaded from the FeatureBench 
 
 | Condition | What it does | Required flags |
 |-----------|-------------|----------------|
-| `baseline` | Single LLM call (no orchestration) | `--model` |
+| `one_shot` | Single LLM call (no orchestration) | `--model` |
 | `spell` | Spell agent with self-orchestration | `--model` |
 | `claude_code` | Claude Code CLI (`claude -p`) | `--claude-model` |
 | `codex` | Codex CLI (`codex exec`) | `--codex-model` (default: `codex`) |
@@ -263,7 +265,7 @@ bench.py (Python CLI)
     ├── SpellAdapter ──→ spell_benchmark_client.py ──→ clj -m spell.benchmark-api
     │                         (subprocess, JSON stdin/stdout)
     │
-    ├── BaselineAdapter ──→ (same Clojure API, mode=baseline)
+    ├── OneShotAdapter ──→ (same Clojure API, mode=one_shot)
     │
     ├── ClaudeCodeAdapter ──→ claude CLI (subprocess)
     │
@@ -390,7 +392,7 @@ benchmarking/
 ├── bench.py                  # Unified CLI (general / swebench / featurebench / summarize)
 ├── src/
 │   ├── datasets.py           # Dataset loading (HuggingFace, local)
-│   ├── unified_adapters.py   # Spell / Baseline / ClaudeCode / Codex adapters
+│   ├── unified_adapters.py   # Spell / OneShot / ClaudeCode / Codex adapters
 │   ├── unified_results.py    # JSONL schema, summarization
 │   ├── evaluation.py         # Scoring (exact match, math equivalence, regex extraction)
 │   ├── agent_policy.py       # Agent selection from model/provider transport

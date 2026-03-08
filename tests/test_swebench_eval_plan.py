@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import pytest
 import sys
 import types
 
@@ -92,4 +93,37 @@ def test_build_swebench_eval_plan_keeps_standard_pipeline_for_verified(tmp_path)
     assert conditions == ["spell"]
     assert len(plan) == 1
     assert plan[0]["mode"] == "standard"
-    assert "swebench.harness.run_evaluation" in " ".join(plan[0]["command"])
+    assert "src.swebench_eval_wrapper" in " ".join(plan[0]["command"])
+
+
+def test_run_swebench_eval_plan_passes_at_threshold(monkeypatch) -> None:
+    bench = _import_bench_with_stubbed_client()
+    free_bytes = bench.SWEBENCH_MIN_FREE_DISK_GB * (1024**3)
+    monkeypatch.setattr(bench.shutil, "disk_usage", lambda _path: (free_bytes * 2, free_bytes, free_bytes))
+
+    bench._run_swebench_eval_plan([])
+
+
+def test_run_swebench_eval_plan_fails_below_threshold(monkeypatch) -> None:
+    bench = _import_bench_with_stubbed_client()
+    free_bytes = (bench.SWEBENCH_MIN_FREE_DISK_GB - 1) * (1024**3)
+    monkeypatch.setattr(bench.shutil, "disk_usage", lambda _path: (free_bytes * 2, free_bytes, free_bytes))
+
+    with pytest.raises(bench.click.ClickException):
+        bench._run_swebench_eval_plan([])
+
+
+def test_run_swebench_eval_plan_low_disk_message_has_key_numbers(monkeypatch) -> None:
+    bench = _import_bench_with_stubbed_client()
+    free_bytes = 31 * (1024**3)
+    monkeypatch.setattr(bench.shutil, "disk_usage", lambda _path: (100 * (1024**3), 69 * (1024**3), free_bytes))
+
+    with pytest.raises(bench.click.ClickException) as excinfo:
+        bench._run_swebench_eval_plan([])
+
+    message = str(excinfo.value)
+    assert "Detected free space: 31.0 GB" in message
+    assert f"Required minimum: {bench.SWEBENCH_MIN_FREE_DISK_GB} GB" in message
+    assert "docker system df" in message
+    assert "docker system prune" in message
+    assert "Colima disk" in message

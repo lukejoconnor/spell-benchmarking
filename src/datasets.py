@@ -1,14 +1,21 @@
 """Dataset loading and formatting for benchmark tasks."""
 
+import html as _html
 import json as _json
 import os
 import random
+import re as _re
 import subprocess
+import sys
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from datasets import load_dataset
 from huggingface_hub import snapshot_download
+
+_BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass
@@ -332,6 +339,223 @@ def load_omni_math(min_difficulty: float = None, max_difficulty: float = None, m
     return items
 
 
+PROJECT_EULER_REPO_URL = "https://github.com/Orbiter/project-euler-llm-benchmark.git"
+PROJECT_EULER_BASE_URL = "https://projecteuler.net/minimal={problem_number}"
+PROJECT_EULER_DIR = _BENCHMARK_ROOT / "data" / "project-euler-llm-benchmark"
+MATHCONSTRUCT_REPO_URL = "https://github.com/eth-sri/mathconstruct.git"
+MATHCONSTRUCT_DIR = _BENCHMARK_ROOT / "data" / "mathconstruct"
+_MATHCONSTRUCT_CLASS_CACHE: dict[str, type] | None = None
+
+
+def _ensure_project_euler_repo() -> Path:
+    """Clone Orbiter's Project Euler benchmark repo if not already present."""
+    if not PROJECT_EULER_DIR.is_dir():
+        PROJECT_EULER_DIR.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "clone", "--depth", "1", PROJECT_EULER_REPO_URL, str(PROJECT_EULER_DIR)],
+            check=True,
+        )
+    return PROJECT_EULER_DIR
+
+
+def _project_euler_problem_path(repo_dir: Path, problem_number: int) -> Path:
+    return repo_dir / "problems" / f"{problem_number:04d}.txt"
+
+
+def _download_project_euler_problem_text(problem_number: int, timeout_s: int = 30) -> str:
+    """Fetch Project Euler problem statement from the minimal endpoint."""
+    url = PROJECT_EULER_BASE_URL.format(problem_number=problem_number)
+    req = urllib.request.Request(url, headers={"User-Agent": "spell-benchmark/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        raw = resp.read().decode("utf-8", errors="replace")
+
+    # minimal=<id> returns compact HTML fragments. Keep paragraph boundaries.
+    text = raw.replace("<p>", "").replace("</p>", "\n")
+    text = _re.sub(r"<[^>]+>", " ", text)
+    text = _html.unescape(text)
+    text = _re.sub(r"[ \t]+\n", "\n", text)
+    text = _re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _load_project_euler_problem(repo_dir: Path, problem_number: int) -> str:
+    """Load cached problem statement or fetch it from Project Euler."""
+    path = _project_euler_problem_path(repo_dir, problem_number)
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        text = _download_project_euler_problem_text(problem_number)
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise RuntimeError(
+            f"Failed to download Project Euler problem {problem_number} ({exc})."
+        ) from exc
+
+    if not text:
+        raise RuntimeError(f"Downloaded empty statement for Project Euler problem {problem_number}.")
+
+    path.write_text(text + "\n", encoding="utf-8")
+    return text
+
+
+def load_project_euler(
+    max_items: int | None = None,
+    start_problem: int = 1,
+    end_problem: int | None = None,
+    problem_numbers: list[int] | None = None,
+) -> list[BenchmarkItem]:
+    """Load Project Euler benchmark problems and canonical numeric answers."""
+    repo_dir = _ensure_project_euler_repo()
+    solutions_path = repo_dir / "solutions.json"
+    solutions = _json.loads(solutions_path.read_text(encoding="utf-8"))
+
+    if problem_numbers is not None:
+        requested = sorted({int(n) for n in problem_numbers})
+        problem_keys = [f"{n:04d}" for n in requested if f"{n:04d}" in solutions]
+    else:
+        problem_keys = sorted(solutions.keys(), key=lambda k: int(k))
+    items: list[BenchmarkItem] = []
+
+    for key in problem_keys:
+        problem_number = int(key)
+        if problem_number < start_problem:
+            continue
+        if end_problem is not None and problem_number > end_problem:
+            continue
+        if max_items is not None and len(items) >= max_items:
+            break
+
+        row = solutions[key]
+        statement = _load_project_euler_problem(repo_dir, problem_number)
+        title = str(row.get("title", "")).strip()
+        question = f"Project Euler Problem {problem_number}: {title}\n\n{statement}" if title else statement
+        answer = str(row.get("solution", "")).strip()
+
+        items.append(BenchmarkItem(
+            id=f"project_euler_{problem_number:04d}",
+            dataset="project_euler",
+            context="",
+            question=question,
+            answer=answer,
+            choices=None,
+            metadata={
+                "problem_number": problem_number,
+                "title": title,
+                "points": row.get("points"),
+                "percentage_solved": row.get("percentage_solved"),
+                "project_euler_url": f"https://projecteuler.net/problem={problem_number}",
+            },
+        ))
+
+    return items
+
+
+def _ensure_mathconstruct_repo() -> Path:
+    """Clone eth-sri/mathconstruct if not already present."""
+    if not MATHCONSTRUCT_DIR.is_dir():
+        MATHCONSTRUCT_DIR.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "clone", "--depth", "1", MATHCONSTRUCT_REPO_URL, str(MATHCONSTRUCT_DIR)],
+            check=True,
+        )
+    return MATHCONSTRUCT_DIR
+
+
+def _load_mathconstruct_problem_classes() -> dict[str, type]:
+    """Load MathConstruct problem classes keyed by benchmark problem name."""
+    global _MATHCONSTRUCT_CLASS_CACHE
+    if _MATHCONSTRUCT_CLASS_CACHE is not None:
+        return _MATHCONSTRUCT_CLASS_CACHE
+
+    repo_dir = _ensure_mathconstruct_repo()
+    src_dir = repo_dir / "src"
+    src_str = str(src_dir.resolve())
+    if src_str not in sys.path:
+        sys.path.insert(0, src_str)
+
+    from math_construct.problems import get_all_problem_classes  # type: ignore[import-not-found]
+
+    classes: dict[str, type] = {}
+    for cls in get_all_problem_classes():
+        classes[cls.config.name] = cls
+    _MATHCONSTRUCT_CLASS_CACHE = classes
+    return classes
+
+
+def load_mathconstruct(
+    max_items: int | None = None,
+    problem_names: list[str] | None = None,
+) -> list[BenchmarkItem]:
+    """Load MathConstruct problems from a local clone.
+
+    Uses one deterministic instance per problem (the original parameters).
+    """
+    classes = _load_mathconstruct_problem_classes()
+    selected_names = sorted(problem_names) if problem_names else sorted(classes.keys())
+
+    items: list[BenchmarkItem] = []
+    for problem_name in selected_names:
+        if max_items is not None and len(items) >= max_items:
+            break
+        cls = classes.get(problem_name)
+        if cls is None:
+            continue
+
+        instance = cls.generate_multiple(1)[0]
+        statement = instance.get_problem().strip()
+        formatting = (instance.get_formatting() or "").strip()
+        question = statement
+        if formatting:
+            question = f"{statement}\n\nFormatting instructions:\n{formatting}"
+
+        items.append(BenchmarkItem(
+            id=f"mathconstruct_{problem_name}",
+            dataset="mathconstruct",
+            context="",
+            question=question,
+            answer=str(instance.get_solution()),
+            choices=None,
+            metadata={
+                "mathconstruct_problem_name": problem_name,
+                "mathconstruct_problem_json": instance.to_json(),
+                "formatting_instructions": formatting,
+                "source": instance.config.source,
+                "problem_url": instance.config.problem_url,
+            },
+        ))
+
+    return items
+
+
+def evaluate_mathconstruct_response(item: BenchmarkItem, response_text: str | None) -> tuple[str | None, bool | None, str]:
+    """Score a MathConstruct response via the benchmark's native parser/checker."""
+    if not response_text:
+        return None, False, "Empty response"
+
+    metadata: dict[str, Any] = item.metadata or {}
+    problem_name = metadata.get("mathconstruct_problem_name")
+    problem_json = metadata.get("mathconstruct_problem_json")
+    if not problem_name or not isinstance(problem_json, dict):
+        return None, False, "Missing MathConstruct metadata"
+
+    classes = _load_mathconstruct_problem_classes()
+    cls = classes.get(str(problem_name))
+    if cls is None:
+        return None, False, f"Unknown MathConstruct problem: {problem_name}"
+
+    try:
+        instance = cls.from_json(problem_json)
+        parsed_answer, is_correct, details = instance.parse_and_check(
+            [{"role": "assistant", "content": response_text}]
+        )
+    except Exception as exc:
+        return None, False, f"MathConstruct evaluation error: {exc}"
+
+    extracted = None if parsed_answer is None else str(parsed_answer)
+    return extracted, bool(is_correct), details
+
+
 def load_babilong(context_size: str = '32k', tasks: list[str] = None) -> list[BenchmarkItem]:
     """Load BABILong at specified context size.
 
@@ -365,8 +589,8 @@ def load_babilong(context_size: str = '32k', tasks: list[str] = None) -> list[Be
     return items
 
 
-def format_prompt_baseline(item: BenchmarkItem) -> str:
-    """Format item as a single prompt for baseline condition."""
+def format_prompt_one_shot(item: BenchmarkItem) -> str:
+    """Format item as a single prompt for one-shot condition."""
     parts = [
         "Context:",
         item.context,
@@ -443,8 +667,15 @@ def format_prompt_spell(item: BenchmarkItem, context_file: str = None) -> str:
     elif item.dataset in ('gsm8k', 'math'):
         parts.append('')
         parts.append('Solve step by step. Return just the final answer (e.g., 42 or 3/4 or 2\\sqrt{3}).')
+    elif item.dataset == 'mathconstruct':
+        parts.append('')
+        parts.append('Follow the formatting instructions exactly and put the final answer in \\boxed{...}.')
+    elif item.dataset == 'project_euler':
+        parts.append('')
+        parts.append('Solve efficiently. Return just the final integer answer, no explanation.')
     elif item.dataset == 'omni_math':
-        pass  # strategy guidance injected via init preamble in bench.py
+        parts.append('')
+        parts.append('Return ONLY the final answer on a single line (e.g., 42, 3/4, 2\\sqrt{3}, or \\boxed{2\\sqrt{3}}). No explanation.')
     elif item.dataset == 'aime':
         parts.append('')
         parts.append('Solve step by step. Return just the final integer answer (AIME answers are always integers 0-999).')
@@ -515,7 +746,6 @@ def load_gaia(level: int = None, max_items: int = None) -> list[BenchmarkItem]:
 # =============================================================================
 
 EXERCISM_REPO_URL = "https://github.com/exercism/python.git"
-_BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 EXERCISM_DIR = _BENCHMARK_ROOT / "data" / "exercism-python"
 
 
@@ -629,6 +859,9 @@ DATASETS = {
     'math_medium': lambda: load_math('test', level=3),  # Level 3
     'math_hard': lambda: load_math('test', level=5),  # Level 5 (hardest)
     'math_algebra': lambda: load_math('test', subject='algebra'),
+    'mathconstruct': lambda: load_mathconstruct(),  # MathConstruct constructive-proof benchmark
+    'project_euler': lambda: load_project_euler(),  # Full Project Euler set with canonical answers
+    'project_euler_200': lambda: load_project_euler(max_items=200),  # First 200 problems
     'aime_2026': lambda: load_aime(2026),  # AIME 2026 (30 problems)
     'aime_2025': lambda: load_aime(2025),  # AIME 2025 (30 problems)
     'aime_2024': lambda: load_aime(2024),  # AIME 2024 (30 problems)
