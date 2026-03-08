@@ -12,6 +12,8 @@ from src.unified_adapters import (
     CodexAdapter,
     RunRequest,
     SpellAdapter,
+    _estimate_cost,
+    _extract_codex_usage,
 )
 
 
@@ -221,6 +223,59 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         self.assertEqual(response.status, "ok")
         payload = client_run_mock.call_args.args[0]
         self.assertEqual(payload.get("format"), {"required": [":final_answer"]})
+
+    @patch("src.unified_adapters.SpellBenchmarkClient.run")
+    def test_spell_adapter_counts_cached_input_in_tokens_in(self, client_run_mock):
+        client_run_mock.return_value = SimpleNamespace(
+            ok=True,
+            result="42",
+            usage={
+                "total": {
+                    "input_tokens": 10,
+                    "cache_creation_input_tokens": 4,
+                    "cache_read_input_tokens": 6,
+                    "output_tokens": 3,
+                    "cost": 0.01,
+                }
+            },
+            latency_ms=1.0,
+            trace_dir=None,
+            raw={},
+            error=None,
+            error_type=None,
+        )
+        adapter = SpellAdapter(project_root=PROJECT_ROOT, model_spec="anthropic-tc:opus46")
+
+        response = adapter.run(_request("spell", "anthropic-tc:opus46"))
+
+        self.assertEqual(response.status, "ok")
+        self.assertEqual(response.tokens_in, 20)
+        self.assertEqual(response.tokens_out, 3)
+        self.assertEqual(response.cost_usd, 0.01)
+
+    def test_extract_codex_usage_handles_cached_input_tokens(self):
+        events = [
+            {
+                "type": "agent_turn",
+                "usage": {
+                    "input_tokens": 100,
+                    "cached_input_tokens": 25,
+                    "output_tokens": 10,
+                },
+            }
+        ]
+
+        tokens_in, tokens_out, cost_usd = _extract_codex_usage(events, model="gpt-5-codex")
+
+        self.assertEqual(tokens_in, 100)
+        self.assertEqual(tokens_out, 10)
+        self.assertAlmostEqual(cost_usd, 0.000196875)
+
+    def test_estimate_cost_prices_cached_input_separately(self):
+        self.assertAlmostEqual(
+            _estimate_cost("gpt-5-codex", 75, 10, cached_input_tokens=25),
+            0.000196875,
+        )
 
 
 if __name__ == "__main__":

@@ -42,32 +42,76 @@ DEFAULT_REASONING_EFFORT = "high"
 SOFTWARE_BENCHMARKS = {"swebench", "featurebench", "scienceagentbench", "exercism"}
 NONSOFTWARE_DEFAULT_FORMAT: dict[str, list[str]] = {"required": ["result"]}
 
-# Per-MTok pricing [input, output] for cost estimation when the CLI
-# doesn't report cost directly (e.g. Codex subscription mode).
-_MODEL_PRICING: dict[str, tuple[float, float]] = {
-    "gpt-5-codex": (1.25, 10.00),
-    "gpt-5.1-codex": (1.25, 10.00),
-    "gpt-5.2-codex": (1.75, 14.00),
-    "gpt-5.3-codex": (1.75, 14.00),
-    "gpt-5-mini": (0.25, 2.00),
-    "gpt-5": (1.25, 10.00),
-    "gpt-5.1": (1.25, 10.00),
-    "gpt-5.2": (1.75, 14.00),
-    "gpt-5.3": (1.75, 14.00),
-    "claude-opus-4-6": (5.00, 25.00),
-    "claude-sonnet-4-6": (1.00, 5.00),
-    "claude-haiku-4-5-20251001": (0.25, 1.25),
+# Per-MTok pricing for fallback estimation when the CLI doesn't report cost
+# directly (for example Codex subscription mode).
+_MODEL_PRICING: dict[str, dict[str, float]] = {
+    "gpt-5-codex": {"input": 1.25, "output": 10.00, "cached_input": 0.125},
+    "gpt-5.1-codex": {"input": 1.25, "output": 10.00, "cached_input": 0.125},
+    "gpt-5.2-codex": {"input": 1.75, "output": 14.00, "cached_input": 0.175},
+    "gpt-5.3-codex": {"input": 1.75, "output": 14.00, "cached_input": 0.175},
+    "gpt-5-mini": {"input": 0.25, "output": 2.00, "cached_input": 0.025},
+    "gpt-5": {"input": 1.25, "output": 10.00, "cached_input": 0.125},
+    "gpt-5.1": {"input": 1.25, "output": 10.00, "cached_input": 0.125},
+    "gpt-5.2": {"input": 1.75, "output": 14.00, "cached_input": 0.175},
+    "gpt-5.3": {"input": 1.75, "output": 14.00, "cached_input": 0.175},
+    "claude-opus-4-6": {"input": 5.00, "output": 25.00, "cache_write_multiplier": 1.25, "cache_read_multiplier": 0.10},
+    "claude-sonnet-4-6": {"input": 1.00, "output": 5.00, "cache_write_multiplier": 1.25, "cache_read_multiplier": 0.10},
+    "claude-haiku-4-5-20251001": {
+        "input": 0.25,
+        "output": 1.25,
+        "cache_write_multiplier": 1.25,
+        "cache_read_multiplier": 0.10,
+    },
 }
 
 
-def _estimate_cost(model: str, tokens_in: int | None, tokens_out: int | None) -> float | None:
+def _estimate_cost(
+    model: str,
+    tokens_in: int | None,
+    tokens_out: int | None,
+    cached_input_tokens: int | None = 0,
+    cache_creation_input_tokens: int | None = 0,
+) -> float | None:
     """Estimate cost from token counts using prefix-matched pricing."""
     if tokens_in is None or tokens_out is None:
         return None
-    for prefix, (in_rate, out_rate) in _MODEL_PRICING.items():
+    for prefix, pricing in _MODEL_PRICING.items():
         if model.startswith(prefix):
-            return tokens_in * in_rate / 1_000_000 + tokens_out * out_rate / 1_000_000
+            input_rate = pricing["input"]
+            output_rate = pricing["output"]
+            cached_input_rate = pricing.get("cached_input")
+            cache_write_multiplier = pricing.get("cache_write_multiplier")
+            cache_read_multiplier = pricing.get("cache_read_multiplier")
+            cache_write_cost = 0.0
+            if cache_creation_input_tokens:
+                if cache_write_multiplier is not None:
+                    cache_write_cost = cache_creation_input_tokens * input_rate * cache_write_multiplier / 1_000_000
+                elif cached_input_rate is not None:
+                    cache_write_cost = cache_creation_input_tokens * cached_input_rate / 1_000_000
+            cache_read_cost = 0.0
+            if cached_input_tokens:
+                if cached_input_rate is not None:
+                    cache_read_cost = cached_input_tokens * cached_input_rate / 1_000_000
+                elif cache_read_multiplier is not None:
+                    cache_read_cost = cached_input_tokens * input_rate * cache_read_multiplier / 1_000_000
+            return (
+                tokens_in * input_rate / 1_000_000
+                + tokens_out * output_rate / 1_000_000
+                + cache_write_cost
+                + cache_read_cost
+            )
     return None
+
+
+def _usage_input_total(usage_total: dict[str, Any]) -> int | None:
+    input_tokens = usage_total.get("input_tokens")
+    if not isinstance(input_tokens, (int, float)):
+        return None
+    return (
+        int(input_tokens)
+        + int(usage_total.get("cache_creation_input_tokens", 0) or 0)
+        + int(usage_total.get("cache_read_input_tokens", 0) or 0)
+    )
 
 
 def _escape_for_spell(s: str) -> str:
@@ -187,7 +231,7 @@ class SpellAdapter:
             return RunResponse(
                 status="ok",
                 response_text=response.result,
-                tokens_in=usage_total.get("input_tokens"),
+                tokens_in=_usage_input_total(usage_total),
                 tokens_out=usage_total.get("output_tokens"),
                 cost_usd=usage_total.get("cost"),
                 latency_ms=response.latency_ms,
@@ -197,7 +241,7 @@ class SpellAdapter:
         return RunResponse(
             status="timeout" if response.error_type == "timeout" else "error",
             response_text=response.result,
-            tokens_in=usage_total.get("input_tokens"),
+            tokens_in=_usage_input_total(usage_total),
             tokens_out=usage_total.get("output_tokens"),
             cost_usd=usage_total.get("cost"),
             latency_ms=response.latency_ms,
@@ -236,7 +280,7 @@ class OneShotAdapter:
             return RunResponse(
                 status="ok",
                 response_text=response.result,
-                tokens_in=usage_total.get("input_tokens"),
+                tokens_in=_usage_input_total(usage_total),
                 tokens_out=usage_total.get("output_tokens"),
                 cost_usd=usage_total.get("cost"),
                 latency_ms=response.latency_ms,
@@ -246,7 +290,7 @@ class OneShotAdapter:
         return RunResponse(
             status="timeout" if response.error_type == "timeout" else "error",
             response_text=response.result,
-            tokens_in=usage_total.get("input_tokens"),
+            tokens_in=_usage_input_total(usage_total),
             tokens_out=usage_total.get("output_tokens"),
             cost_usd=usage_total.get("cost"),
             latency_ms=response.latency_ms,
@@ -443,9 +487,13 @@ def _extract_codex_usage(events: list[dict[str, Any]], model: str = "") -> tuple
     base_input = usage_candidate.get("input_tokens")
     cache_creation = usage_candidate.get("cache_creation_input_tokens", 0)
     cache_read = usage_candidate.get("cache_read_input_tokens", 0)
+    cached_input = usage_candidate.get("cached_input_tokens", 0)
+    cache_read = max(as_int(cache_read), as_int(cached_input))
     tokens_in = None
     if isinstance(base_input, (int, float)):
-        tokens_in = as_int(base_input) + as_int(cache_creation) + as_int(cache_read)
+        total_input = as_int(base_input)
+        uncached_input = max(0, total_input - as_int(cache_read))
+        tokens_in = uncached_input + as_int(cache_creation) + as_int(cache_read)
 
     output = usage_candidate.get("output_tokens")
     tokens_out = int(output) if isinstance(output, (int, float)) else None
@@ -459,7 +507,13 @@ def _extract_codex_usage(events: list[dict[str, Any]], model: str = "") -> tuple
 
     # Fall back to token-based estimation when CLI doesn't report cost
     if cost_usd is None and model:
-        cost_usd = _estimate_cost(model, tokens_in, tokens_out)
+        cost_usd = _estimate_cost(
+            model,
+            max(0, as_int(base_input) - as_int(cache_read)) if isinstance(base_input, (int, float)) else None,
+            tokens_out,
+            cached_input_tokens=as_int(cache_read),
+            cache_creation_input_tokens=as_int(cache_creation),
+        )
 
     return tokens_in, tokens_out, cost_usd
 

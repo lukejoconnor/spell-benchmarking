@@ -121,26 +121,50 @@ def parse_model_spec(model_spec: str) -> tuple[str, str]:
     return provider, model
 
 
-# Per-million-token pricing: {model_prefix: (input_cost, output_cost)}
+# Per-million-token pricing. Entries may optionally include cached-input
+# pricing so estimated costs stay closer to provider-reported totals.
 MODEL_COSTS = {
-    'claude-opus-4-5': (15.0, 75.0),
-    'claude-opus-4-6': (5.0, 25.0),
-    'claude-sonnet-4-5': (3.0, 15.0),
-    'claude-sonnet-5': (3.0, 15.0),
-    'claude-haiku-4-5': (1.0, 5.0),
-    'o3': (2.0, 8.0),
-    'o4-mini': (1.1, 4.4),
-    'gpt-4o': (2.5, 10.0),
-    'gpt-5': (1.25, 10.0),
-    'gpt-5.2': (1.75, 14.0),
+    'claude-opus-4-5': {'input': 5.0, 'output': 25.0, 'cache_write_multiplier': 1.25, 'cache_read_multiplier': 0.10},
+    'claude-opus-4-6': {'input': 5.0, 'output': 25.0, 'cache_write_multiplier': 1.25, 'cache_read_multiplier': 0.10},
+    'claude-sonnet-4-5': {'input': 3.0, 'output': 15.0, 'cache_write_multiplier': 1.25, 'cache_read_multiplier': 0.10},
+    'claude-sonnet-5': {'input': 3.0, 'output': 15.0, 'cache_write_multiplier': 1.25, 'cache_read_multiplier': 0.10},
+    'claude-haiku-4-5': {'input': 1.0, 'output': 5.0, 'cache_write_multiplier': 1.25, 'cache_read_multiplier': 0.10},
+    'o3': {'input': 2.0, 'output': 8.0, 'cached_input': 0.5},
+    'o4-mini': {'input': 1.1, 'output': 4.4, 'cached_input': 0.275},
+    'gpt-4o': {'input': 2.5, 'output': 10.0, 'cached_input': 1.25},
+    'gpt-5': {'input': 1.25, 'output': 10.0, 'cached_input': 0.125},
+    'gpt-5.2': {'input': 1.75, 'output': 14.0, 'cached_input': 0.175},
 }
 
 
-def estimate_cost(model: str, tokens_in: int, tokens_out: int) -> float:
+def estimate_cost(
+    model: str,
+    tokens_in: int,
+    tokens_out: int,
+    cached_input_tokens: int = 0,
+    cache_creation_input_tokens: int = 0,
+) -> float:
     """Estimate cost using prefix-matched model pricing."""
-    for prefix, (in_cost, out_cost) in MODEL_COSTS.items():
+    for prefix, pricing in MODEL_COSTS.items():
         if model.startswith(prefix):
-            return (tokens_in * in_cost + tokens_out * out_cost) / 1_000_000
+            input_cost = pricing['input']
+            output_cost = pricing['output']
+            cached_input_cost = pricing.get('cached_input')
+            cache_write_multiplier = pricing.get('cache_write_multiplier')
+            cache_read_multiplier = pricing.get('cache_read_multiplier')
+            cache_write_cost = 0.0
+            if cache_creation_input_tokens:
+                if cache_write_multiplier is not None:
+                    cache_write_cost = cache_creation_input_tokens * input_cost * cache_write_multiplier
+                elif cached_input_cost is not None:
+                    cache_write_cost = cache_creation_input_tokens * cached_input_cost
+            cache_read_cost = 0.0
+            if cached_input_tokens:
+                if cached_input_cost is not None:
+                    cache_read_cost = cached_input_tokens * cached_input_cost
+                elif cache_read_multiplier is not None:
+                    cache_read_cost = cached_input_tokens * input_cost * cache_read_multiplier
+            return (tokens_in * input_cost + tokens_out * output_cost + cache_write_cost + cache_read_cost) / 1_000_000
     # Fallback: use rough middle-ground pricing
     return (tokens_in * 3.0 + tokens_out * 15.0) / 1_000_000
 
