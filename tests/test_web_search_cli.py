@@ -51,6 +51,13 @@ class WebSearchCliRegressionTest(unittest.TestCase):
     def _web_search_by_condition(self, requests):
         return {req.condition: req.web_search for req in requests}
 
+    def test_resolve_web_search_default_treats_gaia_subsets_as_gaia(self):
+        self.assertTrue(self.bench._resolve_web_search_default({"gaia_l1"}, None))
+        self.assertTrue(self.bench._resolve_web_search_default({"gaia_l2"}, None))
+        self.assertTrue(self.bench._resolve_web_search_default({"gaia_l3"}, None))
+        self.assertTrue(self.bench._resolve_web_search_default({"gaia", "math"}, None))
+        self.assertFalse(self.bench._resolve_web_search_default({"math"}, None))
+
     def test_general_gaia_defaults_web_search_on_only_for_supported_conditions(self):
         requests = []
         gaia_item = self.bench.BenchmarkItem(

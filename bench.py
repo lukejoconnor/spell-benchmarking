@@ -324,12 +324,13 @@ def _ensure_context_file(item: BenchmarkItem) -> str | None:
 
 
 GENERAL_WEB_SEARCH_CONDITIONS = frozenset({"claude_code", "codex"})
+GAIA_DATASET_PREFIX = "gaia"
 
 
 def _resolve_web_search_default(item_datasets: set[str], requested: bool | None) -> bool:
     if requested is not None:
         return requested
-    return "gaia" in item_datasets
+    return any(dataset == GAIA_DATASET_PREFIX or dataset.startswith(f"{GAIA_DATASET_PREFIX}_") for dataset in item_datasets)
 
 
 def _general_condition_web_search(condition: str, enabled: bool) -> bool:
