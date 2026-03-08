@@ -41,6 +41,7 @@ from spell_benchmark_client import SpellBenchmarkClient
 DEFAULT_REASONING_EFFORT = "high"
 SOFTWARE_BENCHMARKS = {"swebench", "featurebench", "scienceagentbench", "exercism"}
 NONSOFTWARE_DEFAULT_FORMAT: dict[str, list[str]] = {"required": ["result"]}
+CLAUDE_WEB_SEARCH_TOOLS = ("WebSearch", "WebFetch")
 
 # Per-MTok pricing [input, output] for cost estimation when the CLI
 # doesn't report cost directly (e.g. Codex subscription mode).
@@ -112,6 +113,7 @@ class RunRequest:
     thinking_budget: int | None = None
     reasoning_effort: str | None = None
     verbosity: str | None = None
+    web_search: bool = False
     responses_api: bool = False
     suffix_grammar: bool = False
     grammar_max_chars: int | None = None
@@ -281,8 +283,10 @@ class ClaudeCodeAdapter:
             model,
             "--max-budget-usd",
             str(req.budget if req.budget is not None else self.budget),
-            req.prompt,
         ]
+        if not req.web_search:
+            cmd.extend(["--disallowedTools", ",".join(CLAUDE_WEB_SEARCH_TOOLS)])
+        cmd.append(req.prompt)
 
         if add_dir := req.metadata.get("add_dir"):
             cmd[1:1] = ["--add-dir", str(add_dir)]
@@ -553,6 +557,8 @@ class CodexAdapter:
             "-c",
             f'model_reasoning_effort="{reasoning_effort}"',
         ]
+        if not req.web_search:
+            base_cmd.extend(["-c", 'web_search="disabled"'])
         if add_dir:
             base_cmd.extend(["--add-dir", str(add_dir)])
 

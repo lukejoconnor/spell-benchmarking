@@ -1,9 +1,25 @@
 import json
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+stub = types.ModuleType("spell_benchmark_client")
+
+
+class _DummyClient:  # pragma: no cover - import wiring only
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def run(self, *args, **kwargs):
+        raise NotImplementedError
+
+
+stub.SpellBenchmarkClient = _DummyClient
+sys.modules.setdefault("spell_benchmark_client", stub)
 
 from src.unified_adapters import (
     CODEX_NO_CUSTOM_SCRIPT,
@@ -15,7 +31,13 @@ from src.unified_adapters import (
 )
 
 
-def _request(condition: str, model_spec: str | None = None, trace_dir: Path | None = None) -> RunRequest:
+def _request(
+    condition: str,
+    model_spec: str | None = None,
+    trace_dir: Path | None = None,
+    *,
+    web_search: bool = False,
+) -> RunRequest:
     return RunRequest(
         benchmark="general",
         dataset="gsm8k",
@@ -25,6 +47,7 @@ def _request(condition: str, model_spec: str | None = None, trace_dir: Path | No
         model_spec=model_spec,
         timeout=5,
         trace_dir=trace_dir,
+        web_search=web_search,
     )
 
 
@@ -62,9 +85,40 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         self.assertEqual(response.status, "ok")
         cmd = run_mock.call_args.args[0]
         self.assertEqual(cmd[:3], ["claude", "--setting-sources", ""])
+        self.assertIn("--disallowedTools", cmd)
+        self.assertIn("WebSearch,WebFetch", cmd)
         self.assertIn("stream-json", cmd)
         self.assertEqual(response.metadata.get("num_turns"), 2)
         self.assertEqual(response.metadata.get("session_id"), "sess-1")
+
+    @patch("src.unified_adapters.subprocess.run")
+    def test_claude_adapter_allows_web_tools_when_enabled(self, run_mock):
+        run_mock.return_value = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "type": "result",
+                    "result": "ok",
+                    "usage": {
+                        "input_tokens": 10,
+                        "cache_creation_input_tokens": 0,
+                        "cache_read_input_tokens": 0,
+                        "output_tokens": 4,
+                    },
+                    "total_cost_usd": 0.01,
+                    "num_turns": 1,
+                    "session_id": "sess-allow",
+                }
+            ),
+            stderr="",
+        )
+
+        adapter = ClaudeCodeAdapter(model="sonnet", budget=1.0)
+        response = adapter.run(_request("claude_code", "claude_code:sonnet", web_search=True))
+
+        self.assertEqual(response.status, "ok")
+        cmd = run_mock.call_args.args[0]
+        self.assertNotIn("--disallowedTools", cmd)
 
     @patch("src.unified_adapters.subprocess.run")
     def test_codex_adapter_uses_no_custom_wrapper(self, run_mock):
@@ -76,8 +130,20 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         self.assertEqual(response.status, "ok")
         cmd = run_mock.call_args.args[0]
         self.assertEqual(cmd[0], str(CODEX_NO_CUSTOM_SCRIPT))
+        self.assertIn('web_search="disabled"', cmd)
         self.assertIn("exec", cmd)
         self.assertTrue(response.metadata.get("no_custom_config"))
+
+    @patch("src.unified_adapters.subprocess.run")
+    def test_codex_adapter_skips_web_search_override_when_enabled(self, run_mock):
+        run_mock.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        adapter = CodexAdapter(project_root=PROJECT_ROOT, model_spec="codex")
+        response = adapter.run(_request("codex", "codex", web_search=True))
+
+        self.assertEqual(response.status, "ok")
+        cmd = run_mock.call_args.args[0]
+        self.assertNotIn('web_search="disabled"', cmd)
 
     @patch("src.unified_adapters.subprocess.run")
     def test_claude_adapter_writes_trace_file(self, run_mock):

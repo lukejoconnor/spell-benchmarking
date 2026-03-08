@@ -2,6 +2,17 @@ import tempfile
 import unittest
 from pathlib import Path
 import sys
+import types
+
+stub = types.ModuleType("spell_benchmark_client")
+
+
+class _DummyClient:  # pragma: no cover - import wiring only
+    pass
+
+
+stub.SpellBenchmarkClient = _DummyClient
+sys.modules.setdefault("spell_benchmark_client", stub)
 
 BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 if str(BENCHMARK_ROOT) not in sys.path:

@@ -263,10 +263,17 @@ def iter_dicts(v):
 
 # ── Claude Code (runs inside container) ──────────────────────────
 
-CC_ALLOWED_TOOLS = [
-    "Bash", "Edit", "Write", "Read", "Glob", "Grep",
-    "WebFetch", "NotebookEdit",
+CC_BASE_ALLOWED_TOOLS = [
+    "Bash", "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit",
 ]
+CC_WEB_SEARCH_TOOLS = ["WebSearch", "WebFetch"]
+
+
+def claude_allowed_tools(*, web_search: bool) -> list[str]:
+    tools = list(CC_BASE_ALLOWED_TOOLS)
+    if web_search:
+        tools.extend(CC_WEB_SEARCH_TOOLS)
+    return tools
 
 
 def install_claude_code(container: DockerContainer, env: dict[str, str]) -> bool:
@@ -290,11 +297,13 @@ def run_claude_code(
     *,
     model: str,
     budget: float,
+    web_search: bool,
     timeout: int,
     env: dict[str, str],
 ) -> ExecResult:
     """Run Claude Code inside the container."""
     escaped = shlex.quote(prompt)
+    allowed_tools = shlex.quote(",".join(claude_allowed_tools(web_search=web_search)))
     cmd = (
         f'[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"; '
         f"claude "
@@ -303,7 +312,7 @@ def run_claude_code(
         f"--output-format stream-json "
         f"--max-budget-usd {budget} "
         f"--model {shlex.quote(model)} "
-        f"--allowedTools {' '.join(CC_ALLOWED_TOOLS)} "
+        f"--allowedTools {allowed_tools} "
         f"-p {escaped}"
     )
     return container.exec_run(cmd, timeout=timeout, env=env)
@@ -370,14 +379,18 @@ def run_codex(
     prompt: str,
     *,
     model: str,
+    web_search: bool,
     timeout: int,
     env: dict[str, str],
 ) -> ExecResult:
     """Run Codex inside the container."""
     escaped = shlex.quote(prompt)
+    web_search_config = ""
+    if not web_search:
+        web_search_config = f"-c {shlex.quote('web_search=\"disabled\"')} "
     cmd = (
         f'[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"; '
-        f"codex exec --json --ephemeral --skip-git-repo-check "
+        f"codex {web_search_config}exec --json --ephemeral --skip-git-repo-check "
         f"--sandbox danger-full-access "
         f"-m {shlex.quote(model)} "
         f"{escaped}"

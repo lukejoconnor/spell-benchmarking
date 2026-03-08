@@ -77,6 +77,7 @@ class DockerClaudeCodeAdapter:
             result = run_claude_code(
                 container, req.prompt,
                 model=model, budget=budget,
+                web_search=req.web_search,
                 timeout=req.timeout, env=env,
             )
 
@@ -160,7 +161,7 @@ class DockerCodexAdapter:
 
             result = run_codex(
                 container, req.prompt,
-                model=model, timeout=req.timeout, env=env,
+                model=model, web_search=req.web_search, timeout=req.timeout, env=env,
             )
 
             patch = container.diff()

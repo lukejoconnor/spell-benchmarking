@@ -322,7 +322,7 @@ def _ensure_context_file(item: BenchmarkItem) -> str | None:
     return str(path)
 
 
-def _format_general_prompt(item: BenchmarkItem, condition: str) -> str:
+def _format_general_prompt(item: BenchmarkItem, condition: str, *, web_search: bool = False) -> str:
     context_file = _ensure_context_file(item)
     if condition == "one_shot":
         return format_prompt_one_shot(item)
@@ -336,7 +336,10 @@ def _format_general_prompt(item: BenchmarkItem, condition: str) -> str:
         if file_path:
             parts.extend(["", f"Attached file: {file_path}"])
         parts.append("")
-        parts.append("Use web search, Python, and any tools needed to answer this question.")
+        if web_search:
+            parts.append("Use web search, Python, and any tools needed to answer this question.")
+        else:
+            parts.append("Use Python and any available non-web tools needed to answer this question.")
         parts.append("Reply with ONLY the final answer — a number, a short string, or a comma-separated list. No explanation.")
     elif item.context and context_file:
         parts.extend(
@@ -970,6 +973,7 @@ def cli() -> None:
 @click.option("--verbosity", type=click.Choice(["low", "auto"]), default=None)
 @click.option("--responses-api/--no-responses-api", default=False, show_default=True)
 @click.option("--suffix-grammar/--no-suffix-grammar", default=False, show_default=True)
+@click.option("--web-search/--no-web-search", default=False, show_default=True)
 @click.option("--trace/--no-trace", default=True, show_default=True)
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
@@ -996,6 +1000,7 @@ def run_general(
     verbosity: str | None,
     responses_api: bool,
     suffix_grammar: bool,
+    web_search: bool,
     trace: bool,
     dry_run: bool,
     run_id: str | None,
@@ -1070,6 +1075,7 @@ def run_general(
                     "codex_model": codex_model,
                     "parallel": parallel,
                     "budget": budget,
+                    "web_search": web_search,
                     "agent": spell_resolution.agent_file if spell_resolution else None,
                     "spell_mode": spell_resolution.spell_mode if spell_resolution else None,
                     "agent_source": spell_resolution.source if spell_resolution else None,
@@ -1106,7 +1112,7 @@ def run_general(
 
         requests: list[RunRequest] = []
         for item in loaded:
-            prompt = _format_general_prompt(item, cond)
+            prompt = _format_general_prompt(item, cond, web_search=web_search)
             requests.append(
                 RunRequest(
                     benchmark="general",
@@ -1124,6 +1130,7 @@ def run_general(
                     thinking_budget=thinking_budget if thinking else None,
                     reasoning_effort=reasoning_effort,
                     verbosity=verbosity,
+                    web_search=web_search,
                     responses_api=responses_api,
                     suffix_grammar=suffix_grammar,
                     trace=trace,
@@ -1164,6 +1171,7 @@ def run_general(
                 metadata={
                     "question": item.question,
                     "expected_answer": item.answer,
+                    "web_search": web_search,
                     **(
                         {
                             "spell_mode": spell_resolution.spell_mode,
@@ -1199,6 +1207,7 @@ def run_general(
 @click.option("--max-tokens", type=int, default=None)
 @click.option("--timeout", type=int, default=1800, show_default=True)
 @click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
+@click.option("--web-search/--no-web-search", default=False, show_default=True)
 @click.option("--workspace-root", default=None)
 @click.option("--keep-workspaces", is_flag=True, default=False)
 @click.option("--docker", is_flag=True, default=False, help="Run agents inside Docker containers for isolation")
@@ -1296,6 +1305,7 @@ def run_swebench(
     max_tokens: int,
     timeout: int,
     reasoning_effort: str | None,
+    web_search: bool,
     workspace_root: str | None,
     keep_workspaces: bool,
     docker: bool,
@@ -1399,6 +1409,7 @@ def run_swebench(
                     "items": sorted(requested_ids) if requested_ids else None,
                     "budget": budget,
                     "depth": depth,
+                    "web_search": web_search,
                     "trace": trace,
                     "agent": spell_resolution.agent_file if spell_resolution else None,
                     "spell_mode": spell_resolution.spell_mode if spell_resolution else None,
@@ -1483,6 +1494,7 @@ def run_swebench(
                     depth=depth,
                     max_tokens=max_tokens,
                     reasoning_effort=reasoning_effort,
+                    web_search=web_search,
                     trace=trace,
                     trace_dir=(
                         _trace_dir_for_request(trace_dir, cond, item.instance_id)
@@ -1537,6 +1549,7 @@ def run_swebench(
                     metadata={
                         "repo": item.repo,
                         "base_commit": item.base_commit,
+                        "web_search": web_search,
                         **(
                             {
                                 "spell_mode": spell_resolution.spell_mode,
