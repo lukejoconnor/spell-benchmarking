@@ -70,6 +70,13 @@ def _estimate_cost(model: str, tokens_in: int | None, tokens_out: int | None) ->
     return None
 
 
+def _benchmark_api_clj_cmd(project_root: Path) -> list[str]:
+    # Allow spell.benchmark-api invocations from external workspace CWDs
+    # by injecting this repo as a local dep.
+    sdeps = '{:deps {local/spell {:local/root "%s"}}}' % project_root
+    return ["clj", "-Sdeps", sdeps, "-M", "-m", "spell.benchmark-api"]
+
+
 def _escape_for_spell(s: str) -> str:
     return (
         s.replace("\\", "\\\\")
@@ -181,10 +188,7 @@ class SpellAdapter:
         self.project_root = project_root
         self.model_spec = model_spec
         self.client = SpellBenchmarkClient(project_root=project_root)
-        # Allow spell.benchmark-api invocations from external workspace CWDs
-        # (e.g., SWE-bench cloned repos) by injecting this repo as a local dep.
-        sdeps = '{:deps {local/spell {:local/root "%s"}}}' % project_root
-        self.client.clj_cmd = ["clj", "-Sdeps", sdeps, "-M", "-m", "spell.benchmark-api"]
+        self.client.clj_cmd = _benchmark_api_clj_cmd(project_root)
 
     def run(self, req: RunRequest) -> RunResponse:
         format_spec = req.format_spec or _default_format_for_spell(req)
@@ -249,6 +253,7 @@ class OneShotAdapter:
         self.project_root = project_root
         self.model_spec = model_spec
         self.client = SpellBenchmarkClient(project_root=project_root)
+        self.client.clj_cmd = _benchmark_api_clj_cmd(project_root)
 
     def run(self, req: RunRequest) -> RunResponse:
         payload = {

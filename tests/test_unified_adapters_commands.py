@@ -10,6 +10,7 @@ from src.unified_adapters import (
     PROJECT_ROOT,
     ClaudeCodeAdapter,
     CodexAdapter,
+    OneShotAdapter,
     RunRequest,
     SpellAdapter,
 )
@@ -221,6 +222,13 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         self.assertEqual(response.status, "ok")
         payload = client_run_mock.call_args.args[0]
         self.assertEqual(payload.get("format"), {"required": [":final_answer"]})
+
+    def test_one_shot_adapter_injects_spell_repo_for_benchmark_api(self):
+        adapter = OneShotAdapter(project_root=PROJECT_ROOT, model_spec="anthropic-tc:opus46")
+
+        self.assertEqual(adapter.client.clj_cmd[0:4], ["clj", "-Sdeps", adapter.client.clj_cmd[2], "-M"])
+        self.assertIn(str(PROJECT_ROOT), adapter.client.clj_cmd[2])
+        self.assertEqual(adapter.client.clj_cmd[-2:], ["-m", "spell.benchmark-api"])
 
 
 if __name__ == "__main__":
