@@ -995,6 +995,7 @@ def cli() -> None:
 @click.option("--verbosity", type=click.Choice(["low", "auto"]), default=None)
 @click.option("--responses-api/--no-responses-api", default=False, show_default=True)
 @click.option("--suffix-grammar/--no-suffix-grammar", default=False, show_default=True)
+@click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--trace/--no-trace", default=True, show_default=True)
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
@@ -1021,6 +1022,7 @@ def run_general(
     verbosity: str | None,
     responses_api: bool,
     suffix_grammar: bool,
+    web_search: bool,
     trace: bool,
     dry_run: bool,
     run_id: str | None,
@@ -1151,6 +1153,7 @@ def run_general(
                     verbosity=verbosity,
                     responses_api=responses_api,
                     suffix_grammar=suffix_grammar,
+                    web_search=web_search if cond == "codex" else False,
                     trace=trace,
                     trace_dir=(
                         _trace_dir_for_request(trace_dir, cond, item.id)
@@ -1227,6 +1230,7 @@ def run_general(
 @click.option("--workspace-root", default=None)
 @click.option("--keep-workspaces", is_flag=True, default=False)
 @click.option("--docker", is_flag=True, default=False, help="Run agents inside Docker containers for isolation")
+@click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--trace/--no-trace", default=True, show_default=True, help="Record execution traces")
 @click.option("--evaluate/--no-evaluate", default=True, show_default=True, help="Run swebench.harness evaluation after generating predictions")
 @click.option("--eval-predictions-dir", default="results/swebench", show_default=True)
@@ -1333,6 +1337,7 @@ def run_swebench(
     workspace_root: str | None,
     keep_workspaces: bool,
     docker: bool,
+    web_search: bool,
     trace: bool,
     evaluate: bool,
     eval_predictions_dir: str,
@@ -1521,6 +1526,7 @@ def run_swebench(
                     depth=depth,
                     max_tokens=max_tokens,
                     reasoning_effort=reasoning_effort,
+                    web_search=web_search if cond == "codex" else False,
                     trace=trace,
                     trace_dir=(
                         _trace_dir_for_request(trace_dir, cond, item.instance_id)
@@ -1868,6 +1874,7 @@ def run_swebench_eval(
 @click.option("--workspace-root", default="/tmp/fb_ws")
 @click.option("--skip-install", is_flag=True, default=False)
 @click.option("--skip-tests", is_flag=True, default=False)
+@click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--trace/--no-trace", default=True, show_default=True)
 @click.option("--run-id", default=None)
 @click.option("--output", default=None)
@@ -1890,6 +1897,7 @@ def run_featurebench(
     workspace_root: str,
     skip_install: bool,
     skip_tests: bool,
+    web_search: bool,
     trace: bool,
     run_id: str | None,
     output: str | None,
@@ -1956,6 +1964,7 @@ def run_featurebench(
                     depth=depth,
                     max_tokens=max_tokens,
                     reasoning_effort=reasoning_effort,
+                    web_search=web_search if cond == "codex" else False,
                     trace=trace,
                     trace_dir=(
                         _trace_dir_for_request(trace_dir, cond, item["instance_id"])
@@ -2163,6 +2172,7 @@ def _validate_python_syntax(code: str) -> tuple[bool, str | None]:
 @click.option("--max-tokens", type=int, default=None)
 @click.option("--timeout", type=int, default=900, show_default=True)
 @click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
+@click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--use-knowledge/--no-knowledge", default=False, show_default=True, help="Include domain knowledge in prompt")
 @click.option(
     "--preamble",
@@ -2194,6 +2204,7 @@ def run_scienceagentbench(
     max_tokens: int,
     timeout: int,
     reasoning_effort: str | None,
+    web_search: bool,
     use_knowledge: bool,
     preamble: str | None,
     preamble_expr: str | None,
@@ -2307,6 +2318,7 @@ def run_scienceagentbench(
                     depth=depth,
                     max_tokens=max_tokens,
                     reasoning_effort=reasoning_effort,
+                    web_search=web_search if cond == "codex" else False,
                     workspace=ws,
                 )
                 resp = adapter.run(req)
@@ -2540,6 +2552,7 @@ def _run_exercism_pytest(test_path: Path, timeout: int = EXERCISM_PYTEST_TIMEOUT
 @click.option("--timeout", type=int, default=300, show_default=True)
 @click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
 @click.option("--no-retry", is_flag=True, default=False, help="Skip retry on test failure")
+@click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--trace/--no-trace", default=False, show_default=True)
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
@@ -2562,6 +2575,7 @@ def run_exercism(
     timeout: int,
     reasoning_effort: str | None,
     no_retry: bool,
+    web_search: bool,
     trace: bool,
     dry_run: bool,
     run_id: str | None,
@@ -2678,6 +2692,7 @@ def run_exercism(
                     depth=depth,
                     max_tokens=max_tokens,
                     reasoning_effort=reasoning_effort,
+                    web_search=web_search if cond == "codex" else False,
                     trace=trace if cond == "spell" else False,
                     trace_dir=(
                         _trace_dir_for_request(trace_dir, cond, item.slug, attempt=1)
@@ -2720,6 +2735,7 @@ def run_exercism(
                         depth=depth,
                         max_tokens=max_tokens,
                         reasoning_effort=reasoning_effort,
+                        web_search=web_search if cond == "codex" else False,
                         trace=trace if cond == "spell" else False,
                         trace_dir=(
                             _trace_dir_for_request(trace_dir, cond, item.slug, attempt=2)

@@ -169,6 +169,7 @@ class RunRequest:
     trace: bool = False
     trace_dir: Path | None = None
     workspace: Path | None = None
+    web_search: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -605,6 +606,8 @@ class CodexAdapter:
             "-c",
             f'model_reasoning_effort="{reasoning_effort}"',
         ]
+        if req.web_search:
+            base_cmd.append("--search")
         if add_dir:
             base_cmd.extend(["--add-dir", str(add_dir)])
 
