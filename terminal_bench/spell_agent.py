@@ -173,6 +173,7 @@ class SpellAgent(DockerExecAgent):
         agent_timeout: int = 600,
         agent_file: str | None = None,
         spell_root: str | None = None,
+        reasoning_effort: str = "high",
         **kwargs,
     ):
         super().__init__(model_name=_resolve_spell_model(model_name), agent_timeout=agent_timeout, **kwargs)
@@ -182,6 +183,7 @@ class SpellAgent(DockerExecAgent):
         self._agent_file = agent_file or SPELL_AGENT_IN_CONTAINER
         self._spell_root = _discover_spell_root(spell_root)
         self._spell_bundle: bytes | None = None
+        self._reasoning_effort = reasoning_effort
 
     @staticmethod
     def name() -> str:
@@ -296,6 +298,8 @@ class SpellAgent(DockerExecAgent):
         }
         if self._depth is not None:
             payload["depth"] = self._depth
+        if self._reasoning_effort:
+            payload["reasoning_effort"] = self._reasoning_effort
         return payload
 
     def _run_command(self, instruction: str, workdir: str) -> str:
@@ -355,6 +359,50 @@ class SpellAgent(DockerExecAgent):
             output_tokens=output_tokens,
             cost_usd=cost_usd,
         )
+
+    def _extract_traces(self, container, stdout: str, logging_dir: Path) -> None:
+        """Copy Spell trace files out of the container before it's torn down."""
+        parsed = self._extract_response_json(stdout)
+        if not parsed:
+            return
+        trace_dir = parsed.get("trace_dir")
+        if not trace_dir:
+            return
+
+        dest = logging_dir / "spell-trace"
+        dest.mkdir(parents=True, exist_ok=True)
+
+        # Try to tar-stream the trace directory out of the container.
+        try:
+            # trace_dir is relative to workdir (usually /app)
+            for prefix in ["/app/", "/"]:
+                full_path = f"{prefix}{trace_dir}" if not trace_dir.startswith("/") else trace_dir
+                try:
+                    bits, _ = container.get_archive(full_path)
+                    tar_buf = io.BytesIO()
+                    for chunk in bits:
+                        tar_buf.write(chunk)
+                    tar_buf.seek(0)
+                    with tarfile.open(fileobj=tar_buf, mode="r") as tar:
+                        tar.extractall(path=str(dest))
+                    logger.info(f"Extracted Spell traces from {full_path} to {dest}")
+                    return
+                except Exception:
+                    continue
+            logger.warning(f"Could not find trace dir '{trace_dir}' in container")
+        except Exception as exc:
+            logger.warning(f"Failed to extract Spell traces: {exc}")
+
+    def perform_task(self, instruction, session, logging_dir=None):
+        """Override to extract traces before the container is torn down."""
+        container = session.container
+        result = super().perform_task(instruction, session, logging_dir)
+        if logging_dir:
+            # Re-read stdout from saved logs to get trace_dir
+            stdout_file = logging_dir / "stdout.txt"
+            stdout = stdout_file.read_text() if stdout_file.exists() else ""
+            self._extract_traces(container, stdout, logging_dir)
+        return result
 
     def _determine_failure_mode(self, result: ExecOutput, usage: ParsedUsage | None) -> FailureMode:
         del usage
