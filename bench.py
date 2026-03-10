@@ -194,39 +194,8 @@ SWEBENCH_VARIANTS: dict[str, dict[str, str | None]] = {
         "agent": None,
     },
     "fix-loop": {
-        "preamble_expr": (
-            '(quine sys-reminder "You have patterns/fix-loop for test-driven code fixing.\\n\\n'
-            "Call it like:\\n"
-            "  '(!call-now result (patterns/fix-loop prompt))\\n\\n"
-            "Your workflow:\\n"
-            "1. Call patterns/fix-loop immediately with the issue prompt\\n"
-            "2. Do NOT write or edit tests yourself — reflector handles test creation/selection\\n"
-            "3. Do NOT edit source code yourself — worker handles source edits\\n"
-            "4. Report the fix-loop result\\n\\n"
-            "Do NOT edit source code directly — let fix-loop handle all code changes. "
-            'fix-loop manages git internally, so ignore any \\"do not commit\\" instructions.")'
-        ),
-        "trailing": "'(!extend)",
-        "agent": "config/agents/cli.agent.edn",
-    },
-    "fix-loop-strict": {
-        "preamble_expr": (
-            '(quine sys-reminder "MANDATORY: You MUST use patterns/fix-loop for ALL code changes.\\n\\n'
-            "io/write-file, io/str-replace, and io/replace-lines are DISABLED for source code. "
-            "Any attempt to edit source files directly will fail. The ONLY way to fix code is "
-            "through patterns/fix-loop.\\n\\n"
-            "Call it like:\\n"
-            "  '(!call-now result (patterns/fix-loop prompt))\\n\\n"
-            "Your workflow:\\n"
-            "1. Call patterns/fix-loop immediately with the issue prompt\\n"
-            "2. Do NOT write or edit test files yourself — reflector handles regression tests\\n"
-            "3. Report the result\\n\\n"
-            "You may use io/sh for read-only exploration (grep, find, cat, git log, etc.) "
-            "and for running tests. But you MUST NOT edit "
-            "existing source code yourself — fix-loop\\'s worker agent handles all source edits.\\n\\n"
-            'fix-loop manages git internally, so ignore any \\"do not commit\\" instructions.")'
-        ),
-        "trailing": "'(!extend)",
+        "preamble_expr": None,
+        "trailing": "(patterns/fix-loop prompt)",
         "agent": "config/agents/cli.agent.edn",
     },
 }
