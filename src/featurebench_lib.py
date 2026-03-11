@@ -198,4 +198,4 @@ def format_prompt(item: dict, workspace: Path) -> str:
     text = item["problem_statement"]
     text = text.replace("/testbed/", f"{workspace}/")
     text = text.replace("/testbed", str(workspace))
-    return text
+    return f"## Environment\n\nPlatform: Linux (Debian-based).\n\n{text}"

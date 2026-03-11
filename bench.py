@@ -379,39 +379,52 @@ def _format_optional_swebench_text(value: Any) -> str:
         return str(value).strip()
 
 
-def _format_swebench_prompt(item: SWEBenchItem) -> str:
-    parts = [
-        f"Repository: {item.repo}",
-        "",
-        "## Issue to Fix",
-        "",
-        item.problem_statement.strip(),
-        "",
-    ]
+def _format_swebench_prompt(item: SWEBenchItem, workspace: str | Path | None = None) -> str:
+    location = str(workspace) if workspace else "/testbed"
 
+    # Build PR description from item fields.
+    pr_parts = [item.problem_statement.strip()]
     hints_text = (item.hints_text or "").strip()
     if hints_text:
-        parts.extend(["## Hints", "", hints_text, ""])
-
+        pr_parts.extend(["", "## Hints", "", hints_text])
     requirements = _format_optional_swebench_text((item.metadata or {}).get("requirements"))
     if requirements:
-        parts.extend(["## Requirements", "", requirements, ""])
-
+        pr_parts.extend(["", "## Requirements", "", requirements])
     interface = _format_optional_swebench_text((item.metadata or {}).get("interface"))
     if interface:
-        parts.extend(["## Interface Contract", "", interface, ""])
+        pr_parts.extend(["", "## Interface Contract", "", interface])
+    pr_description = "\n".join(pr_parts)
 
-    parts.extend(
-        [
-            "## Instructions",
-            "",
-            "Fix this bug with minimal code changes.",
-            "Do not commit any changes.",
-            "Run focused checks/tests when possible.",
-            "Do not install packages or modify project dependencies.",
-        ]
-    )
-    return "\n".join(parts)
+    return f"""\
+<uploaded_files>
+{location}
+</uploaded_files>
+I've uploaded a python code repository in the directory {location} (not in /tmp/inputs). Consider the following PR description:
+
+<pr_description>
+{pr_description}
+</pr_description>
+
+Can you help me implement the necessary changes to the repository so that the requirements specified in the <pr_description> are met?
+I've already taken care of all changes to any of the test files described in the <pr_description>. This means you DON'T have to modify the testing logic or any of the tests in any way!
+
+Your task is to make the minimal changes to non-tests files in the {location} directory to ensure the <pr_description> is satisfied.
+
+Follow these steps to resolve the issue:
+1. As a first step, it would be a good idea to explore the repo to familiarize yourself with its structure.
+2. Create a script to reproduce the error and execute it with `python <filename.py>` using the BashTool, to confirm the error
+3. Edit the sourcecode of the repo to resolve the issue
+4. Rerun your reproduce script and confirm that the error is fixed!
+5. Think about edgecases and make sure your fix handles them as well
+6. Run select tests from the repo to make sure that your fix doesn't break anything else.
+
+Platform: Linux (Debian-based).
+
+TIPS:
+- You must make changes in the {location} directory in order to ensure the requirements specified in the <pr_description> are met. Leaving the directory unchanged is not a valid solution.
+- When you need to find information about the codebase, use "grep" and "find" to search for relevant files and code with the bash tool
+- Use your bash tool to set up any necessary environment variables, such as those needed to run tests.
+"""
 
 
 def _evaluate_general(item: BenchmarkItem, response_text: str | None) -> tuple[str | None, bool | None]:
@@ -1486,7 +1499,7 @@ def run_swebench(
             try:
                 wt = setup_swebench_workspace(cache, item, tag=worktree_tag)
                 ws_path = wt.path
-                prompt = _format_swebench_prompt(item)
+                prompt = _format_swebench_prompt(item, workspace=ws_path)
 
                 req = RunRequest(
                     benchmark="swebench",
@@ -2108,6 +2121,10 @@ def _format_sab_prompt(item: ScienceAgentBenchItem, workspace: Path, use_knowled
         "You are an expert Python programming assistant that helps scientist users "
         "to write high-quality code to solve their tasks.",
         "",
+        "## Environment",
+        "",
+        "Platform: Linux (Debian-based).",
+        "",
         "Write a complete, self-contained Python program and save it as `solution.py` "
         f"in the current directory ({workspace}).",
         "Do not use interactive commands like `!pip install`.",
@@ -2500,6 +2517,8 @@ def _format_exercism_prompt(item: ExercismItem, ws: Path) -> str:
     test_path = ws / item.test_file
     return (
         "You are solving a Python programming exercise.\n\n"
+        "## Environment\n\n"
+        "Platform: Linux (Debian-based).\n\n"
         "## Instructions\n\n"
         f"{item.instructions}\n\n"
         "## Task\n\n"
