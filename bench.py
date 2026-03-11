@@ -310,13 +310,9 @@ def _context_ref(item: BenchmarkItem, condition: str, context_file: str | None) 
     return f"Read the document at {context_file} ({n_chars:,} chars)"
 
 
-def _format_general_prompt(item: BenchmarkItem, condition: str, *, web_search: bool = False) -> str:
+def _format_general_prompt(item: BenchmarkItem, condition: str) -> str:
     context_file = _ensure_context_file(item)
-    return format_benchmark_prompt(
-        item,
-        context_ref=_context_ref(item, condition, context_file),
-        web_search=web_search,
-    )
+    return format_benchmark_prompt(item, context_ref=_context_ref(item, condition, context_file))
 
 
 def _make_spell_init(
@@ -1074,7 +1070,7 @@ def run_general(
         condition_web_search = _general_condition_web_search(cond, effective_web_search)
         requests: list[RunRequest] = []
         for item in loaded:
-            prompt = _format_general_prompt(item, cond, web_search=condition_web_search)
+            prompt = _format_general_prompt(item, cond)
             requests.append(
                 RunRequest(
                     benchmark="general",
