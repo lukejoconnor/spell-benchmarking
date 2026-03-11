@@ -642,7 +642,7 @@ def format_benchmark_prompt(item: BenchmarkItem, context_file: str | None = None
         parts.append('Return just the letter (A, B, C, or D).')
     elif item.dataset in ('gsm8k', 'math'):
         parts.append('')
-        parts.append('Solve step by step. Return just the final answer (e.g., 42 or 3/4 or 2\\sqrt{3}).')
+        parts.append('Return the answer with no explanation (e.g., 42 or 3/4 or 2\\sqrt{3}).')
     elif item.dataset == 'mathconstruct':
         parts.append('')
         parts.append('Follow the formatting instructions exactly and put the final answer in \\boxed{...}.')
@@ -651,13 +651,13 @@ def format_benchmark_prompt(item: BenchmarkItem, context_file: str | None = None
         parts.append('Solve efficiently. Return just the final integer answer, no explanation.')
     elif item.dataset == 'omni_math':
         parts.append('')
-        parts.append('Return ONLY the final answer on a single line (e.g., 42, 3/4, 2\\sqrt{3}, or \\boxed{2\\sqrt{3}}). No explanation.')
+        parts.append('Return the answer with no explanation (e.g., 42 or 3/4 or 2\\sqrt{3}).')
     elif item.dataset == 'aime':
         parts.append('')
-        parts.append('Solve step by step. Return just the final integer answer (AIME answers are always integers 0-999).')
+        parts.append('Return the answer with no explanation (AIME answers are always integers 0-999).')
     elif item.dataset == 'hmmt':
         parts.append('')
-        parts.append('Solve step by step. Return just the final answer (e.g., 42 or 3/4 or 2\\sqrt{3}).')
+        parts.append('Return the answer with no explanation (e.g., 42 or 3/4 or 2\\sqrt{3}).')
     elif item.dataset == 'gaia':
         parts.append('')
         parts.append('Use web search, Python, and any tools needed to answer this question.')

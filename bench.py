@@ -140,14 +140,7 @@ class ProEvalConfig:
     redo: bool = False
 
 
-OMNI_MATH_TRAILING = (
-    "'(do "
-    '(quine strategy "Solve the problem using a combination of the following strategies:\\n'
-    '- Pure reasoning via think blocks\\n'
-    '- Numerical computation using Spell (defn, loop/recur, map/reduce, math/)\\n'
-    '- Context pruning to manage your chain of thoughts (rethink + !extend)") '
-    "(!extend))"
-)
+MATH_TRAILING = "'(!describe math)"
 
 @dataclass(slots=True)
 class _SwePrediction:
@@ -311,12 +304,15 @@ def _make_spell_init(prompt: str, trailing: str | None = None) -> str:
     return build_spell_init(prompt, trailing)
 
 
+_MATH_DATASETS = frozenset({
+    "gsm8k", "math", "aime", "hmmt", "omni_math", "mathconstruct", "project_euler",
+})
+
+
 def _general_spell_trailing(dataset: str) -> str | None:
-    return {
-        "omni_math": OMNI_MATH_TRAILING,
-        "mathconstruct": OMNI_MATH_TRAILING,
-        "project_euler": OMNI_MATH_TRAILING,
-    }.get(dataset)
+    if dataset in _MATH_DATASETS:
+        return MATH_TRAILING
+    return None
 
 
 def _condition_label(condition: str, name: str | None = None) -> str:

@@ -58,8 +58,8 @@ def teardown_module(_module) -> None:
 
 
 class GeneralPromptFormattingTest(unittest.TestCase):
-    def test_omni_math_trailing_excludes_subagent_guidance(self) -> None:
-        self.assertNotIn("Sub-agent delegation", bench.OMNI_MATH_TRAILING)
+    def test_math_trailing_is_describe_math(self) -> None:
+        self.assertEqual(bench.MATH_TRAILING, "'(!describe math)")
 
     def test_math_prompt_is_shared_between_general_conditions(self) -> None:
         item = BenchmarkItem(
@@ -77,7 +77,7 @@ class GeneralPromptFormattingTest(unittest.TestCase):
         self.assertNotIn("uv run python3", prompt)
         self.assertIn("Problem:", prompt)
 
-    def test_omni_math_prompt_requires_final_answer_format(self) -> None:
+    def test_omni_math_prompt_matches_standard_math_format(self) -> None:
         item = BenchmarkItem(
             id="omni_math_1",
             dataset="omni_math",
@@ -88,8 +88,7 @@ class GeneralPromptFormattingTest(unittest.TestCase):
 
         prompt = format_benchmark_prompt(item)
 
-        self.assertIn("Return ONLY the final answer on a single line", prompt)
-        self.assertIn("\\boxed{2\\sqrt{3}}", prompt)
+        self.assertIn("Return the answer with no explanation", prompt)
 
     def test_longbench_prompt_includes_search_guidance_for_context_files(self) -> None:
         item = BenchmarkItem(
@@ -105,10 +104,10 @@ class GeneralPromptFormattingTest(unittest.TestCase):
         self.assertIn("Document path: /tmp/context.txt", prompt)
         self.assertIn(LONGBENCH_SEARCH_GUIDANCE, prompt)
 
-    def test_general_spell_trailing_applies_to_omni_math_and_project_euler(self) -> None:
-        self.assertEqual(bench._general_spell_trailing("omni_math"), bench.OMNI_MATH_TRAILING)
-        self.assertEqual(bench._general_spell_trailing("project_euler"), bench.OMNI_MATH_TRAILING)
-        self.assertIsNone(bench._general_spell_trailing("math"))
+    def test_general_spell_trailing_applies_to_all_math_datasets(self) -> None:
+        for ds in ("gsm8k", "math", "aime", "hmmt", "omni_math", "project_euler", "mathconstruct"):
+            self.assertEqual(bench._general_spell_trailing(ds), bench.MATH_TRAILING, ds)
+        self.assertIsNone(bench._general_spell_trailing("longbench_short"))
 
     def test_build_spell_init_accepts_setup_via_trailing(self) -> None:
         init = build_spell_init(
