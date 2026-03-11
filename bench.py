@@ -216,6 +216,23 @@ def _default_output(run_id: str) -> Path:
     return Path("results") / "unified" / f"{run_id}.jsonl"
 
 
+def _relocate_swebench_eval_reports(run_id: str) -> list[Path]:
+    report_root = BENCHMARK_ROOT / "results" / "swebench_eval_reports"
+    report_root.mkdir(parents=True, exist_ok=True)
+
+    moved: list[Path] = []
+    for src in sorted(BENCHMARK_ROOT.glob(f"*.{run_id}.json")):
+        if not src.is_file():
+            continue
+        dest = report_root / src.name
+        if dest.exists():
+            dest.unlink()
+        shutil.move(str(src), str(dest))
+        moved.append(dest)
+
+    return moved
+
+
 def _resolve_trace_dir(run_id: str, trace: bool) -> Path | None:
     if not trace:
         return None
@@ -970,6 +987,9 @@ def _run_swebench_eval_plan(plan: list[dict[str, Any]]) -> None:
             raise click.ClickException(
                 f"swebench evaluation failed for condition '{cond}' with exit code {exc.returncode}"
             ) from exc
+        moved_reports = _relocate_swebench_eval_reports(step["command"][step["command"].index("--run_id") + 1])
+        for report_path in moved_reports:
+            click.echo(f"Moved SWE-bench eval report: {report_path}")
 
 
 @click.group()
