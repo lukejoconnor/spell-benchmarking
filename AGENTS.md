@@ -214,6 +214,11 @@ benchmarking/
 
 Use `uv run` instead of `python3` directly.
 
+Prompt layering rules for the Python harness:
+- Put benchmark-specific prompt text in `src/datasets.py`, shared across conditions whenever the transport permits it.
+- Do not add method-specific capability text such as Python or web-search hints to benchmark prompts.
+- Put Spell-only orchestration behavior in `bench.py` as a trailing policy that feeds `build_spell_init(prompt, trailing)`.
+
 ### Terminal-Bench harness (`terminal_bench/`)
 
 ```

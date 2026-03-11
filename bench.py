@@ -40,8 +40,7 @@ from src.datasets import (
     load_swebench_lite,
     load_swebench_pro,
     load_swebench_verified_mini,
-    format_prompt_one_shot,
-    format_prompt_spell,
+    format_benchmark_prompt,
 )
 from src.evaluation import (
     extract_freeform_answer,
@@ -142,11 +141,13 @@ SWEBENCH_DOCKER_PREAMBLE = (
     'io/write-file, io/ls, io/exists?, io/mkdir — they operate on the host, not the '
     'container. Use shell equivalents via io/sh instead.")'
 )
-OMNI_MATH_PREAMBLE = (
+OMNI_MATH_TRAILING = (
+    "'(do "
     '(quine strategy "Solve the problem using a combination of the following strategies:\\n'
     '- Pure reasoning via think blocks\\n'
     '- Numerical computation using Spell (defn, loop/recur, map/reduce, math/)\\n'
-    '- Context pruning to manage your chain of thoughts (rethink + !extend)")'
+    '- Context pruning to manage your chain of thoughts (rethink + !extend)") '
+    "(!extend))"
 )
 
 # Named SWE-bench intervention variants for experimentation.
@@ -323,82 +324,45 @@ def _general_condition_web_search(condition: str, enabled: bool) -> bool:
     return enabled and condition in GENERAL_WEB_SEARCH_CONDITIONS
 
 
-def _format_general_prompt(item: BenchmarkItem, condition: str, *, web_search: bool = False) -> str:
-    context_file = _ensure_context_file(item)
-    if item.dataset == "gaia":
-        parts: list[str] = [item.question.strip()]
-        file_path = (item.metadata or {}).get("file_path", "")
-        if file_path:
-            parts.extend(["", f"Attached file: {file_path}"])
-        parts.append("")
-        if web_search:
-            parts.append("Use web search, Python, and any tools needed to answer this question.")
-        else:
-            parts.append("Use Python and any available non-web tools needed to answer this question.")
-        parts.append(
-            "Reply with ONLY the final answer — a number, a short string, or a comma-separated list. No explanation."
-        )
-        return "\n".join(parts)
-
+def _general_context_file(condition: str, item: BenchmarkItem) -> str | None:
     if condition == "one_shot":
-        return format_prompt_one_shot(item)
-    if condition == "spell":
-        return format_prompt_spell(item, context_file=context_file)
-
-    parts: list[str] = []
-    if item.context and context_file:
-        parts.extend(
-            [
-                f"Read the document at {context_file} ({len(item.context):,} chars) and answer this question:",
-                "",
-                item.question.strip(),
-            ]
-        )
-    else:
-        parts.extend(["Solve this problem:", "", item.question.strip()])
-
-    if item.choices:
-        parts.append("")
-        parts.append("Choices:")
-        for i, choice in enumerate(item.choices):
-            letter = chr(ord("A") + i)
-            parts.append(f"  {letter}. {choice}")
-        parts.append("")
-        parts.append("Reply with ONLY the letter (A, B, C, or D). No explanation.")
-    elif item.dataset == "mathconstruct":
-        parts.append("")
-        parts.append("Follow the formatting instructions exactly.")
-        parts.append("Return your final answer in LaTeX inside \\boxed{...}.")
-    elif item.dataset in ("gsm8k", "math", "aime", "hmmt", "omni_math", "project_euler"):
-        parts.append("")
-        parts.append("You may use Python via `uv run python3` if helpful.")
-        parts.append("Reply with ONLY the final answer. No explanation.")
-    else:
-        parts.append("")
-        parts.append("Reply with ONLY the answer. No explanation.")
-
-    return "\n".join(parts)
+        return None
+    return _ensure_context_file(item)
 
 
-def _make_spell_init(
-    prompt: str,
-    preamble: str | None = None,
-    trailing: str | None = None,
-    *,
-    preamble_expr: str | None = None,
-    prompt_preamble: str | None = None,
-) -> str:
-    # Some benchmark datasets (e.g. Omni-MATH) provide a raw open Spell prefix.
-    # Keep those as-is; otherwise wrap NL prompt in the completion init template.
+def _format_general_prompt(item: BenchmarkItem, condition: str) -> str:
+    return format_benchmark_prompt(item, context_file=_general_context_file(condition, item))
+
+
+def _unquote_spell_expr(expr: str) -> str:
+    stripped = expr.strip()
+    return stripped[1:].strip() if stripped.startswith("'") else stripped
+
+
+def _compose_spell_trailing(setup_exprs: list[str], trailing: str | None) -> str | None:
+    rendered_setup = [expr.strip() for expr in setup_exprs if expr and expr.strip()]
+    if not rendered_setup:
+        return trailing
+    action = _unquote_spell_expr(trailing or "'(!extend)")
+    body = " ".join([*rendered_setup, action])
+    return f"'(do {body})"
+
+
+def _make_spell_init(prompt: str, trailing: str | None = None) -> str:
+    # Some benchmark datasets provide a raw open Spell prefix. Keep those as-is.
     if prompt.lstrip().startswith("("):
         return prompt
-    return build_spell_init(
-        prompt,
-        preamble=preamble,
-        trailing=trailing,
-        preamble_expr=preamble_expr,
-        prompt_preamble=prompt_preamble,
-    )
+    return build_spell_init(prompt, trailing)
+
+
+def _make_bespoke_spell_init(
+    prompt: str,
+    *,
+    preamble_expr: str | None = None,
+    trailing: str | None = None,
+) -> str:
+    combined_trailing = _compose_spell_trailing([preamble_expr] if preamble_expr else [], trailing)
+    return _make_spell_init(prompt, combined_trailing)
 
 
 def _spell_string_literal(value: str) -> str:
@@ -417,22 +381,36 @@ def _render_swebench_trailing_expr(prompt: str, trailing: str | None) -> str | N
     return trailing.replace("__PROMPT__", _spell_string_literal(prompt))
 
 
-LONGBENCH_PREAMBLE = (
-    "The document may be very large (100K-1M+ chars). "
-    "NEVER try to read the entire file at once — it will be truncated and you will miss critical content. "
-    "Instead, use io/sh with grep to search for keywords relevant to the question, "
-    "then read only the specific sections you need with sed or io/read-lines."
-)
-
-
-def _general_preamble(dataset: str) -> str | None:
+def _general_spell_trailing(dataset: str) -> str | None:
     return {
-        "omni_math": OMNI_MATH_PREAMBLE,
-        "mathconstruct": OMNI_MATH_PREAMBLE,
-        "project_euler": OMNI_MATH_PREAMBLE,
-        "longbench_sampled": LONGBENCH_PREAMBLE,
-        "longbench_short": LONGBENCH_PREAMBLE,
+        "omni_math": OMNI_MATH_TRAILING,
+        "mathconstruct": OMNI_MATH_TRAILING,
+        "project_euler": OMNI_MATH_TRAILING,
     }.get(dataset)
+
+
+def _validate_general_configuration(
+    dataset: str,
+    conditions: list[str],
+    item_datasets: set[str],
+    *,
+    web_search_enabled: bool,
+) -> None:
+    uses_gaia = dataset == GAIA_DATASET_PREFIX or any(
+        item_dataset == GAIA_DATASET_PREFIX or item_dataset.startswith(f"{GAIA_DATASET_PREFIX}_")
+        for item_dataset in item_datasets
+    )
+    if not uses_gaia:
+        return
+    if not web_search_enabled:
+        raise click.ClickException("GAIA requires web search. Re-run without `--no-web-search`.")
+    unsupported = [cond for cond in conditions if cond not in GENERAL_WEB_SEARCH_CONDITIONS]
+    if unsupported:
+        unsupported_list = ", ".join(unsupported)
+        raise click.ClickException(
+            "GAIA currently supports only web-enabled conditions "
+            f"({', '.join(sorted(GENERAL_WEB_SEARCH_CONDITIONS))}); got unsupported condition(s): {unsupported_list}."
+        )
 
 
 def _format_optional_swebench_text(value: Any) -> str:
@@ -1107,6 +1085,12 @@ def run_general(
         loaded = loaded[:n]
     item_datasets = {item.dataset for item in loaded}
     effective_web_search = _resolve_web_search_default(item_datasets, web_search)
+    _validate_general_configuration(
+        dataset,
+        conditions,
+        item_datasets,
+        web_search_enabled=effective_web_search,
+    )
 
     click.echo(f"Loaded {len(loaded)} items")
     if dry_run:
@@ -1172,7 +1156,7 @@ def run_general(
         condition_web_search = _general_condition_web_search(cond, effective_web_search)
         requests: list[RunRequest] = []
         for item in loaded:
-            prompt = _format_general_prompt(item, cond, web_search=condition_web_search)
+            prompt = _format_general_prompt(item, cond)
             requests.append(
                 RunRequest(
                     benchmark="general",
@@ -1182,7 +1166,7 @@ def run_general(
                     prompt=prompt,
                     model_spec={"spell": model, "one_shot": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
-                    init=_make_spell_init(prompt, preamble=_general_preamble(item.dataset)) if cond == "spell" else None,
+                    init=_make_spell_init(prompt, _general_spell_trailing(item.dataset)) if cond == "spell" else None,
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
                     budget=budget,
                     depth=depth,
@@ -1341,18 +1325,13 @@ def run_general(
     help="Re-run SWE-bench Pro eval even if output files already exist",
 )
 @click.option(
-    "--preamble",
-    default=None,
-    help="Prompt steering text appended inside the quoted Spell task prompt; raw Spell forms are still accepted for backward compatibility",
-)
-@click.option(
     "--preamble-expr",
     default=None,
     help="Raw Spell init expression inserted before the trailing expression",
 )
 @click.option("--trailing", default=None, help="Custom Spell trailing expression (overrides default '(!extend))")
 @click.option("--variant", default=None, type=click.Choice(list(SWEBENCH_VARIANTS.keys())),
-              help="Named intervention variant (overrides preamble/trailing/agent)")
+              help="Named intervention variant (overrides preamble-expr/trailing/agent)")
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
 @click.option("--output", default=None)
@@ -1398,7 +1377,6 @@ def run_swebench(
     pro_use_local_docker: bool,
     pro_block_network: bool,
     pro_redo: bool,
-    preamble: str | None,
     preamble_expr: str | None,
     trailing: str | None,
     variant: str | None,
@@ -1406,10 +1384,10 @@ def run_swebench(
     run_id: str | None,
     output: str | None,
 ) -> None:
-    # Apply named variant overrides (variant takes precedence over manual preamble/trailing).
+    # Apply named variant overrides (variant takes precedence over manual preamble-expr/trailing).
     if variant:
         vconf = SWEBENCH_VARIANTS[variant]
-        preamble_expr = preamble_expr or vconf.get("preamble_expr") or vconf.get("preamble")
+        preamble_expr = preamble_expr or vconf.get("preamble_expr")
         trailing = trailing or vconf.get("trailing")
         agent = agent or vconf.get("agent")
     run_id = run_id or _run_id("swebench")
@@ -1505,7 +1483,6 @@ def run_swebench(
                     "pro_use_local_docker": pro_use_local_docker,
                     "pro_block_network": pro_block_network,
                     "pro_redo": pro_redo,
-                    "preamble": preamble,
                     "trailing": trailing,
                 },
                 indent=2,
@@ -1554,9 +1531,8 @@ def run_swebench(
                     prompt=prompt,
                     model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
-                    init=(_make_spell_init(
+                    init=(_make_bespoke_spell_init(
                               prompt,
-                              preamble=preamble,
                               preamble_expr=preamble_expr or (
                                   SWEBENCH_DOCKER_PREAMBLE if docker else SWEBENCH_REMINDER_PREAMBLE
                               ),
@@ -2217,11 +2193,6 @@ def _validate_python_syntax(code: str) -> tuple[bool, str | None]:
 @click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--use-knowledge/--no-knowledge", default=False, show_default=True, help="Include domain knowledge in prompt")
 @click.option(
-    "--preamble",
-    default=None,
-    help="Prompt steering text appended inside the quoted Spell task prompt; raw Spell forms are still accepted for backward compatibility",
-)
-@click.option(
     "--preamble-expr",
     default=None,
     help="Raw Spell init expression inserted before the trailing expression",
@@ -2248,7 +2219,6 @@ def run_scienceagentbench(
     reasoning_effort: str | None,
     web_search: bool,
     use_knowledge: bool,
-    preamble: str | None,
     preamble_expr: str | None,
     workspace_root: str,
     run_id: str | None,
@@ -2351,7 +2321,7 @@ def run_scienceagentbench(
                     model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
                     init=(
-                        _make_spell_init(prompt, preamble=preamble, preamble_expr=preamble_expr)
+                        _make_bespoke_spell_init(prompt, preamble_expr=preamble_expr)
                         if cond == "spell"
                         else None
                     ),

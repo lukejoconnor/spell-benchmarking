@@ -1,16 +1,49 @@
+import importlib
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 import sys
+import types
 
 BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 if str(BENCHMARK_ROOT) not in sys.path:
     sys.path.insert(0, str(BENCHMARK_ROOT))
 
-import bench
+
+def _import_bench_with_stubbed_client():
+    existing = sys.modules.get("bench")
+    if existing is not None:
+        return existing
+
+    stub = types.ModuleType("spell_benchmark_client")
+
+    class _DummyClient:  # pragma: no cover - import wiring only
+        pass
+
+    stub.SpellBenchmarkClient = _DummyClient
+    prior_client = sys.modules.get("spell_benchmark_client")
+    sys.modules["spell_benchmark_client"] = stub
+    try:
+        return importlib.import_module("bench")
+    finally:
+        if prior_client is None:
+            sys.modules.pop("spell_benchmark_client", None)
+        else:
+            sys.modules["spell_benchmark_client"] = prior_client
+
+
+bench = _import_bench_with_stubbed_client()
 from src.datasets import BenchmarkItem
 from src.unified_adapters import build_spell_init
+
+
+def teardown_module(_module) -> None:
+    sys.modules.pop("bench", None)
+    sys.modules.pop("src.unified_adapters", None)
+    stubbed_client = sys.modules.get("spell_benchmark_client")
+    if stubbed_client is not None and getattr(stubbed_client, "__file__", None) is None:
+        sys.modules.pop("spell_benchmark_client", None)
 
 
 class SpellInitRegressionTest(unittest.TestCase):
@@ -23,12 +56,11 @@ class SpellInitRegressionTest(unittest.TestCase):
     def test_build_spell_init_accepts_custom_trailing(self):
         init = build_spell_init(
             "Solve it",
-            preamble='(quine sys-reminder "Use tools")',
-            trailing="'(do (!describe io) (!extend))",
+            trailing='\'(do (quine sys-reminder "Use tools") (!describe io) (!extend))',
         )
 
         self.assertIn('(quine sys-reminder "Use tools")', init)
-        self.assertIn("'(do (!describe io) (!extend))", init)
+        self.assertIn("'(do (quine sys-reminder \"Use tools\") (!describe io) (!extend))", init)
         self.assertNotIn("'(!extend))))", init)
 
     def test_fix_loop_variant_renders_prompt_text_into_trailing_expr(self):
@@ -57,8 +89,8 @@ class GeneralLoadingRegressionTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             output_path = Path(tmp_dir) / "out.jsonl"
-            with patch("bench.load_project_euler", return_value=[loaded_item]) as load_mock, \
-                 patch("bench.click.echo") as echo_mock:
+            with patch.object(bench, "load_project_euler", return_value=[loaded_item]) as load_mock, \
+                 patch.object(bench.click, "echo") as echo_mock:
                 bench.run_general.callback(
                     dataset="project_euler",
                     condition="one_shot",

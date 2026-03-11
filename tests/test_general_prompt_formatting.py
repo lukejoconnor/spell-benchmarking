@@ -1,51 +1,133 @@
 from __future__ import annotations
 
-from bench import OMNI_MATH_PREAMBLE, _general_preamble
+import importlib
+import sys
+import types
+import unittest
+from pathlib import Path
+
+BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
+if str(BENCHMARK_ROOT) not in sys.path:
+    sys.path.insert(0, str(BENCHMARK_ROOT))
+
+
+def _import_bench_with_stubbed_client():
+    existing = sys.modules.get("bench")
+    if existing is not None:
+        return existing
+
+    stub = types.ModuleType("spell_benchmark_client")
+
+    class _DummyClient:  # pragma: no cover - import wiring only
+        pass
+
+    stub.SpellBenchmarkClient = _DummyClient
+    prior_client = sys.modules.get("spell_benchmark_client")
+    sys.modules["spell_benchmark_client"] = stub
+    try:
+        return importlib.import_module("bench")
+    finally:
+        if prior_client is None:
+            sys.modules.pop("spell_benchmark_client", None)
+        else:
+            sys.modules["spell_benchmark_client"] = prior_client
+
+
+bench = _import_bench_with_stubbed_client()
 from src.unified_adapters import build_spell_init
-from src.datasets import BenchmarkItem, format_prompt_spell
+from src.datasets import (
+    BenchmarkItem,
+    LONGBENCH_SEARCH_GUIDANCE,
+    format_benchmark_prompt,
+    format_prompt_one_shot,
+    format_prompt_spell,
+)
 
 
-def test_omni_math_preamble_excludes_subagent_guidance() -> None:
-    assert "Sub-agent delegation" not in OMNI_MATH_PREAMBLE
+def teardown_module(_module) -> None:
+    sys.modules.pop("bench", None)
+    sys.modules.pop("src.unified_adapters", None)
+    stubbed_client = sys.modules.get("spell_benchmark_client")
+    if stubbed_client is not None and getattr(stubbed_client, "__file__", None) is None:
+        sys.modules.pop("spell_benchmark_client", None)
 
 
-def test_omni_math_spell_prompt_requires_final_answer_format() -> None:
-    item = BenchmarkItem(
-        id="omni_math_1",
-        dataset="omni_math",
-        context="",
-        question="Compute 2+2.",
-        answer="4",
-    )
+class GeneralPromptFormattingTest(unittest.TestCase):
+    def test_omni_math_trailing_excludes_subagent_guidance(self) -> None:
+        self.assertNotIn("Sub-agent delegation", bench.OMNI_MATH_TRAILING)
 
-    prompt = format_prompt_spell(item)
+    def test_math_prompt_is_shared_between_general_conditions(self) -> None:
+        item = BenchmarkItem(
+            id="math_1",
+            dataset="math",
+            context="",
+            question="Compute 2+2.",
+            answer="4",
+        )
 
-    assert "Return ONLY the final answer on a single line" in prompt
-    assert "\\boxed{2\\sqrt{3}}" in prompt
+        prompt = format_benchmark_prompt(item)
+
+        self.assertEqual(prompt, format_prompt_one_shot(item))
+        self.assertEqual(prompt, format_prompt_spell(item))
+        self.assertNotIn("uv run python3", prompt)
+        self.assertIn("Problem:", prompt)
+
+    def test_omni_math_prompt_requires_final_answer_format(self) -> None:
+        item = BenchmarkItem(
+            id="omni_math_1",
+            dataset="omni_math",
+            context="",
+            question="Compute 2+2.",
+            answer="4",
+        )
+
+        prompt = format_benchmark_prompt(item)
+
+        self.assertIn("Return ONLY the final answer on a single line", prompt)
+        self.assertIn("\\boxed{2\\sqrt{3}}", prompt)
+
+    def test_longbench_prompt_includes_search_guidance_for_context_files(self) -> None:
+        item = BenchmarkItem(
+            id="lb_1",
+            dataset="longbench_short",
+            context="Large document body",
+            question="Find the answer.",
+            answer="A",
+        )
+
+        prompt = format_benchmark_prompt(item, context_file="/tmp/context.txt")
+
+        self.assertIn("Document path: /tmp/context.txt", prompt)
+        self.assertIn(LONGBENCH_SEARCH_GUIDANCE, prompt)
+
+    def test_general_spell_trailing_applies_to_omni_math_and_project_euler(self) -> None:
+        self.assertEqual(bench._general_spell_trailing("omni_math"), bench.OMNI_MATH_TRAILING)
+        self.assertEqual(bench._general_spell_trailing("project_euler"), bench.OMNI_MATH_TRAILING)
+        self.assertIsNone(bench._general_spell_trailing("math"))
+
+    def test_build_spell_init_accepts_setup_via_trailing(self) -> None:
+        init = build_spell_init(
+            "Repository: demo/repo",
+            trailing="'(do (quine sys-reminder \"Recall: you are writing Spell code.\") (!extend))",
+        )
+
+        self.assertIn('(quine prompt "Repository: demo/repo")', init)
+        self.assertIn('(quine sys-reminder "Recall: you are writing Spell code.")', init)
+        self.assertIn("'(do (quine sys-reminder", init)
+
+    def test_gaia_prompt_mentions_web_search(self) -> None:
+        item = BenchmarkItem(
+            id="gaia_1",
+            dataset="gaia",
+            context="",
+            question="Who won?",
+            answer="A",
+        )
+
+        prompt = format_benchmark_prompt(item)
+
+        self.assertIn("Use web search, Python, and any tools needed", prompt)
 
 
-def test_general_preamble_applies_to_omni_math_and_project_euler() -> None:
-    assert _general_preamble("omni_math") == OMNI_MATH_PREAMBLE
-    assert _general_preamble("project_euler") == OMNI_MATH_PREAMBLE
-    assert _general_preamble("math") is None
-
-
-def test_build_spell_init_treats_prose_preamble_as_prompt_text() -> None:
-    init = build_spell_init(
-        "Repository: demo/repo",
-        preamble="Use the team pattern immediately and decompose into 2-3 subtasks.",
-    )
-
-    assert '(quine prompt "Repository: demo/repo\\n\\nUse the team pattern immediately and decompose into 2-3 subtasks.")' in init
-    assert init.count("Use the team pattern immediately") == 1
-    assert "'(!extend)" in init
-
-
-def test_build_spell_init_keeps_raw_spell_preamble_as_code() -> None:
-    init = build_spell_init(
-        "Repository: demo/repo",
-        preamble='(quine sys-reminder "Recall: you are writing Spell code.")',
-    )
-
-    assert '(quine prompt "Repository: demo/repo")' in init
-    assert '(quine sys-reminder "Recall: you are writing Spell code.")' in init
+if __name__ == "__main__":
+    unittest.main()
