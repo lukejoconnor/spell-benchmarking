@@ -609,8 +609,6 @@ def _append_choices(parts: list[str], choices: list[str]) -> None:
 def format_benchmark_prompt(
     item: BenchmarkItem,
     context_ref: str | None = None,
-    *,
-    web_search: bool = False,
 ) -> str:
     """Format a shared, condition-neutral prompt for general benchmarks."""
     question = item.question.strip()
@@ -622,14 +620,11 @@ def format_benchmark_prompt(
         file_path = (item.metadata or {}).get('file_path', '')
         if file_path:
             parts.extend(['', f'Attached file: {file_path}'])
-        parts.append('')
-        if web_search:
-            parts.append('Use web search, Python, and any tools needed to answer this question.')
-        else:
-            parts.append('Use Python and any available non-web tools needed to answer this question.')
-        parts.append(
-            'Reply with ONLY the final answer — a number, a short string, or a comma-separated list. No explanation.'
-        )
+        parts.extend([
+            '',
+            'Use any available tools to answer this question.',
+            'Reply with ONLY the final answer — a number, a short string, or a comma-separated list. No explanation.',
+        ])
         return "\n".join(parts)
 
     if context_ref:
