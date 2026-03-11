@@ -91,6 +91,8 @@ uv run python benchmarking/bench.py swebench [OPTIONS]
 | `--reasoning-effort` | `high` | `low`, `medium`, or `high` |
 | `--workspace-root` | `/tmp/swe_ws` | Directory for cloned workspaces |
 | `--keep-workspaces` | off | Don't delete workspaces after run |
+| `--docker` | off | Run agents inside copied Docker workspaces |
+| `--unified` | off | Use the shared software-benchmark container infra |
 | `--evaluate / --no-evaluate` | on | Run `swebench.harness.run_evaluation` after predictions are written |
 | `--eval-max-workers` | 4 | Max concurrent evaluation workers |
 | `--eval-final-cache-level` | `base` | Cache level used on final condition only |
@@ -105,6 +107,8 @@ uv run python benchmarking/bench.py swebench [OPTIONS]
 Evaluation cleanup sequence for multi-condition runs:
 - Non-final conditions: `cache_level=env`, `clean=false` (reuse env images)
 - Final condition: `cache_level=<eval-final-cache-level>`, `clean=<eval-final-clean>`
+
+`--unified` currently supports `mini`, `lite`, and `verified`. `--dataset pro` remains on the existing generation/eval path.
 
 ### `swebench-eval` — Official SWE-bench Harness Evaluation
 
@@ -156,11 +160,14 @@ uv run python benchmarking/bench.py featurebench [OPTIONS]
 | `--workspace-root` | `/tmp/fb_ws` | Directory for cloned workspaces |
 | `--skip-install` | off | Skip dependency installation |
 | `--skip-tests` | off | Skip test verification |
+| `--unified` | off | Keep agent execution and verification in the same copied container workspace |
 | `--agent` | — | Override Spell agent EDN file |
 | `--agent-msg` | — | Override agent for message-mode |
 | `--agent-tc` | — | Override agent for toolcall-mode |
 | `--run-id` | auto | Custom run ID |
 | `--output` | auto | Output JSONL path |
+
+When `--unified` is enabled, prompts are rewritten against `/workspace` and tests run in the same container filesystem where the agent edited the repo.
 
 ### `summarize` — Aggregate Results
 

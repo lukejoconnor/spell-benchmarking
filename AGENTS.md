@@ -54,19 +54,34 @@ Maintain a neutral, skeptical stance. Present unfavorable and inconclusive resul
 | FeatureBench | varies | Feature implementation | `uv run python benchmarking/bench.py featurebench --condition spell` |
 | ScienceAgentBench | 102 | Scientific code generation (data science) | `uv run python benchmarking/bench.py scienceagentbench --condition claude_code` |
 
+Unified software-benchmark container infra:
+- `bench.py swebench --unified` runs the shared in-container agent layer for `mini`, `lite`, and `verified`; `--dataset pro` remains on the existing Pro path for now.
+- `bench.py featurebench --unified` and `bench.py exercism --unified` use the same shared container-agent infrastructure as Terminal-Bench and unified SWE-bench.
+- ScienceAgentBench is intentionally not on the shared software-benchmark container infra in this pass.
+
 SWE-bench harness defaults and workflow:
 - `bench.py swebench` now defaults to `--condition all` (`spell`, `claude_code`, `codex`) and evaluates by default (`--evaluate`).
+- Use `--name <label>` to tag a run variant across JSONL records, traces, and SWE-bench prediction filenames.
+- Use `--trailing <expr>` on Spell runs to override the default trailing policy directly instead of relying on preset variants.
 - Use `--no-evaluate` to run generation only (write predictions and unified JSONL without running `swebench.harness`).
+- `bench.py swebench --unified` uses the shared `src/docker_agents.py` container-agent layer for `mini`/`lite`/`verified`; `pro` remains on the existing path.
 - Evaluation runs conditions in series with staged cleanup:
   - non-final conditions: `cache_level=env`, `clean=false`
   - final condition: configurable final cleanup (`--eval-final-cache-level`, `--eval-final-clean`)
-- For explicit eval-only runs, use `bench.py swebench-eval`.
+- For explicit eval-only runs, use `bench.py swebench-eval` and pass the same `--name` you used for generation when predictions were label-tagged.
 
 ### Coding (Clojure harness)
 
 | Benchmark | Items | What it tests | Run command |
 |-----------|-------|---------------|-------------|
 | Exercism Python | ~225 | Programming exercises, two-attempt with test feedback | `clj -M:dev -m exercism-bench run` |
+
+Unified software-benchmark infra:
+- `src/docker_agents.py` is the shared container-agent layer for Terminal-Bench plus `bench.py --unified` software runs.
+- `bench.py exercism --unified` and `bench.py featurebench --unified` keep edits and verification in the same copied container workspace.
+- Unified Exercism prompts use stable in-container paths instead of host temp paths.
+
+The Python harness also supports `uv run python benchmarking/bench.py exercism --unified` when you want Exercism on the shared software-benchmark container infra instead of the legacy host-workspace flow.
 
 ### Terminal Tasks (Terminal-Bench harness)
 
@@ -102,6 +117,9 @@ Run `docker system prune -af --volumes` between tasks to avoid disk exhaustion.
 --condition {one_shot,spell,claude_code,codex,all}   # Which system to run
 --n N                                  # Limit to N items
 --model anthropic:claude-opus-4-5-20251101   # Model override
+--name trial-label                     # Optional run label in JSONL/traces/predictions
+--trailing "'(!extend)"               # Spell trailing override
+--agent path/to/agent.edn             # Primary Spell configuration override
 --thinking --reasoning-effort high     # Extended thinking
 --suffix-grammar                       # Suffix grammar support
 --budget N                             # Spell budget in dollars
@@ -213,6 +231,11 @@ benchmarking/
 ```
 
 Use `uv run` instead of `python3` directly.
+
+Prompt layering rules for the Python harness:
+- Put benchmark-specific prompt text in `src/datasets.py`, shared across conditions whenever the transport permits it.
+- Do not add method-specific capability text such as Python or web-search hints to benchmark prompts.
+- Put Spell-only orchestration behavior in `bench.py` as a trailing policy that feeds `build_spell_init(prompt, trailing)`.
 
 ### Terminal-Bench harness (`terminal_bench/`)
 

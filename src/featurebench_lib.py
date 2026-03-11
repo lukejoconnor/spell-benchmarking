@@ -5,9 +5,11 @@ from __future__ import annotations
 import ast
 import json
 import re
+import shlex
 import subprocess
 from pathlib import Path
 
+from .docker_agents import DockerWorkspaceContainer
 from .workspace import RepoCache, Worktree
 
 
@@ -106,6 +108,32 @@ def install_deps(workspace: Path, item: dict) -> None:
     )
 
 
+def _ensure_uv_in_container(container: DockerWorkspaceContainer, workdir: str = "/workspace") -> None:
+    result = container.exec_run(
+        "command -v uv >/dev/null 2>&1 || python -m pip install -q uv",
+        timeout=300,
+        workdir=workdir,
+    )
+    if result.exit_code != 0:
+        raise RuntimeError(f"Failed to install uv in container: {result.stderr[:500]}")
+
+
+def install_deps_in_container(
+    container: DockerWorkspaceContainer,
+    item: dict,
+    *,
+    workdir: str = "/workspace",
+) -> None:
+    settings = json.loads(item.get("repo_settings", "{}"))
+    install_cmd = settings.get("install", "")
+    if not install_cmd:
+        return
+    _ensure_uv_in_container(container, workdir=workdir)
+    result = container.exec_run(install_cmd, timeout=600, workdir=workdir)
+    if result.exit_code != 0:
+        raise RuntimeError(f"FeatureBench install failed: {result.stderr[:1000]}")
+
+
 def detect_test_deps(repo: str) -> list[str]:
     deps = {
         "mwaskom/seaborn": ["pytest", "numpy", "pandas", "matplotlib", "scipy"],
@@ -137,8 +165,37 @@ def run_tests(workspace: Path, fail_to_pass: list[str], repo: str | None = None)
     return results
 
 
+def run_tests_in_container(
+    container: DockerWorkspaceContainer,
+    fail_to_pass: list[str],
+    repo: str | None = None,
+    *,
+    workdir: str = "/workspace",
+) -> list[dict]:
+    results = []
+    extra_deps = detect_test_deps(repo) if repo else ["pytest"]
+    dep_flags: list[str] = []
+    for dep in extra_deps:
+        dep_flags.extend(["--with", dep])
+
+    _ensure_uv_in_container(container, workdir=workdir)
+    for test_path in fail_to_pass:
+        cmd = ["uv", "run", *dep_flags, "pytest", test_path, "-x", "-q", "--tb=short"]
+        joined = shlex.join(cmd)
+        proc = container.exec_run(joined, timeout=300, workdir=workdir)
+        output = (proc.stdout + proc.stderr)[-2000:]
+        results.append(
+            {
+                "test": test_path,
+                "passed": proc.exit_code == 0,
+                "output": output,
+            }
+        )
+    return results
+
+
 def format_prompt(item: dict, workspace: Path) -> str:
     text = item["problem_statement"]
     text = text.replace("/testbed/", f"{workspace}/")
     text = text.replace("/testbed", str(workspace))
-    return text
+    return f"## Environment\n\nPlatform: Linux (Debian-based).\n\n{text}"

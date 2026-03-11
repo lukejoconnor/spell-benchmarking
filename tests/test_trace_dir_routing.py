@@ -21,11 +21,27 @@ class TraceDirRoutingTest(unittest.TestCase):
         result = bench._trace_dir_for_request(None, "spell", "item-1")
         self.assertIsNone(result)
 
+    def test_trace_dir_for_condition_namespaces_by_condition_and_name(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            result = bench._trace_dir_for_condition(base, "codex", name="baseline/v1")
+            self.assertEqual(result, base / "codex" / "baseline_v1")
+            assert result is not None
+            self.assertTrue(result.exists())
+
     def test_trace_dir_for_request_namespaces_by_condition_and_item(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             base = Path(tmp_dir)
             result = bench._trace_dir_for_request(base, "spell", "instance/repo:item")
             self.assertEqual(result, base / "spell" / "instance_repo_item")
+            assert result is not None
+            self.assertTrue(result.exists())
+
+    def test_trace_dir_for_request_includes_name_segment_when_present(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            result = bench._trace_dir_for_request(base, "spell", "instance/repo:item", name="variant/v1")
+            self.assertEqual(result, base / "spell" / "variant_v1" / "instance_repo_item")
             assert result is not None
             self.assertTrue(result.exists())
 

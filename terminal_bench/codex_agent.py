@@ -7,13 +7,31 @@ for JSONL output. Parses turn.completed events for token usage.
 from __future__ import annotations
 
 import logging
-import os
-import shlex
+import sys
+from pathlib import Path
 
 try:
-    from .base import DockerExecAgent, ParsedUsage, iter_dicts, parse_jsonl_events
+    from .base import DockerExecAgent, ParsedUsage
 except ImportError:
-    from base import DockerExecAgent, ParsedUsage, iter_dicts, parse_jsonl_events
+    from base import DockerExecAgent, ParsedUsage
+
+try:
+    from src.docker_agents import (
+        codex_env_vars,
+        codex_install_script,
+        codex_parse_usage,
+        codex_run_command,
+        resolve_codex_model,
+    )
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from src.docker_agents import (
+        codex_env_vars,
+        codex_install_script,
+        codex_parse_usage,
+        codex_run_command,
+        resolve_codex_model,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -34,34 +52,19 @@ class CodexAgent(DockerExecAgent):
         return "spell-codex"
 
     def _resolve_model(self) -> str:
-        model = self._model_name or "gpt-5-codex"
-        # Strip provider prefix (e.g. "openai/gpt-5.3-codex" -> "gpt-5.3-codex")
-        if "/" in model:
-            model = model.split("/", 1)[1]
-        return model
+        return resolve_codex_model(self._model_name)
 
     def _install_script(self) -> str:
-        version = self.version or "latest"
-        return f"""
-source "$HOME/.nvm/nvm.sh"
-npm install -g @openai/codex@{version}
-mkdir -p "$HOME/.codex"
-echo '{{"OPENAI_API_KEY": "'$OPENAI_API_KEY'"}}' > "$HOME/.codex/auth.json"
-echo "codex installed: $(codex --version 2>/dev/null || echo unknown)"
-"""
+        return codex_install_script(version=self.version or "latest")
 
     def _env_vars(self) -> dict[str, str]:
-        return {"OPENAI_API_KEY": os.environ["OPENAI_API_KEY"]}
+        return codex_env_vars()
 
     def _run_command(self, instruction: str, workdir: str) -> str:
-        model = self._resolve_model()
-        escaped = shlex.quote(instruction)
-        return (
-            f'source "$HOME/.nvm/nvm.sh" && '
-            f"codex exec --json --ephemeral --skip-git-repo-check "
-            f"--sandbox danger-full-access "
-            f"-m {shlex.quote(model)} "
-            f"{escaped}"
+        return codex_run_command(
+            instruction,
+            model=self._resolve_model(),
+            workdir=workdir,
         )
 
     def _parse_usage(self, stdout: str) -> ParsedUsage | None:
@@ -70,33 +73,7 @@ echo "codex installed: $(codex --version 2>/dev/null || echo unknown)"
         Scans all events for the last dict containing token keys.
         Handles turn.completed events and any nested usage structures.
         """
-        events = parse_jsonl_events(stdout)
-
-        # Find the last dict with usage-like keys
-        usage_candidate = None
-        for event in events:
-            for d in iter_dicts(event):
-                if any(k in d for k in ("input_tokens", "output_tokens")):
-                    usage_candidate = d
-
-        if not usage_candidate:
+        usage = codex_parse_usage(stdout)
+        if not usage:
             logger.warning("No usage data found in Codex output")
-            return None
-
-        def _int(v) -> int:
-            return int(v) if isinstance(v, (int, float)) else 0
-
-        # OpenAI: input_tokens is TOTAL (includes cached), cached_input_tokens is subset
-        total_in = _int(usage_candidate.get("input_tokens", 0))
-        cached = _int(usage_candidate.get("cached_input_tokens", 0))
-        output_tokens = _int(usage_candidate.get("output_tokens", 0))
-
-        cost = usage_candidate.get("total_cost_usd") or usage_candidate.get("cost_usd")
-        cost_usd = float(cost) if isinstance(cost, (int, float)) else None
-
-        return ParsedUsage(
-            input_tokens=total_in - cached,
-            cached_input_tokens=cached,
-            output_tokens=output_tokens,
-            cost_usd=cost_usd,
-        )
+        return usage

@@ -147,7 +147,7 @@ def main():
                 init=(
                     build_spell_init(
                         prompt,
-                        '(quine sys-reminder "Recall: you are writing Spell code, not natural language.")',
+                        "'(do (quine sys-reminder \"Recall: you are writing Spell code, not natural language.\") (!extend))",
                     )
                     if cfg["condition"] == "spell"
                     else None

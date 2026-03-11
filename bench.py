@@ -40,8 +40,7 @@ from src.datasets import (
     load_swebench_lite,
     load_swebench_pro,
     load_swebench_verified_mini,
-    format_prompt_one_shot,
-    format_prompt_spell,
+    format_benchmark_prompt,
 )
 from src.evaluation import (
     extract_freeform_answer,
@@ -64,6 +63,9 @@ from src.featurebench_lib import (
 from src.swebench_output import write_predictions_jsonl
 from src.swebench_prep import setup_swebench_workspace, get_default_workspace_root
 from src.workspace import RepoCache
+from src.unified_exercism import format_unified_exercism_prompt, run_unified_exercism
+from src.unified_featurebench import run_unified_featurebench
+from src.unified_swebench import run_unified_swebench
 from src.unified_adapters import (
     OneShotAdapter,
     ClaudeCodeAdapter,
@@ -108,6 +110,10 @@ def _resolve_spell_root() -> Path:
     if (nested_candidate / "config" / "agents").exists():
         return nested_candidate
 
+    sibling_candidate = BENCHMARK_ROOT.parent / "spell"
+    if (sibling_candidate / "config" / "agents").exists():
+        return sibling_candidate
+
     # Standalone fallback: leave as benchmark root and let agent resolution
     # surface a precise error if config files are unavailable.
     return BENCHMARK_ROOT
@@ -134,103 +140,14 @@ class ProEvalConfig:
     redo: bool = False
 
 
-SWEBENCH_REMINDER_PREAMBLE = '(quine sys-reminder "Recall: you are writing Spell code, not natural language.")'
-SWEBENCH_DOCKER_PREAMBLE = (
-    '(quine sys-reminder "Recall: you are writing Spell code, not natural language. '
-    'You are working inside a Docker container. All file and system operations MUST use '
-    '(io/sh ...) shell commands. Do NOT use io/spit, io/slurp, io/read-file, '
-    'io/write-file, io/ls, io/exists?, io/mkdir — they operate on the host, not the '
-    'container. Use shell equivalents via io/sh instead.")'
-)
-OMNI_MATH_PREAMBLE = (
+OMNI_MATH_TRAILING = (
+    "'(do "
     '(quine strategy "Solve the problem using a combination of the following strategies:\\n'
     '- Pure reasoning via think blocks\\n'
     '- Numerical computation using Spell (defn, loop/recur, map/reduce, math/)\\n'
-    '- Context pruning to manage your chain of thoughts (rethink + !extend)")'
+    '- Context pruning to manage your chain of thoughts (rethink + !extend)") '
+    "(!extend))"
 )
-
-# Named SWE-bench intervention variants for experimentation.
-# Each variant specifies raw Spell preamble expressions, trailing expression,
-# and optional agent override.
-SWEBENCH_VARIANTS: dict[str, dict[str, str | None]] = {
-    "describe-all": {
-        "preamble_expr": SWEBENCH_REMINDER_PREAMBLE,
-        "trailing": "'(do (!describe io agents globals) (!extend))",
-        "agent": "config/agents/cli.agent.edn",
-    },
-    "orchestrator": {
-        "preamble_expr": (
-            SWEBENCH_REMINDER_PREAMBLE
-            + ' (quine instruction "You are the orchestrator agent. Your role is to decompose this '
-            'problem and delegate ALL work to sub-agents. Do NOT make code edits yourself. '
-            'Step 1: Spawn explorer sub-agents using (agents/spawn !llm-self \\"task\\") to '
-            'understand the codebase — read relevant files, find the right locations. '
-            'Step 2: Synthesize explorer findings into a plan. '
-            'Step 3: Spawn worker sub-agents to implement each part of the plan. '
-            'Workers should use io/sh, io/read-file, io/write-file for edits. '
-            'Use agents/!ask to collect results. Use globals/* for shared state.")'
-        ),
-        "trailing": "'(do (!describe io agents globals) (!extend))",
-        "agent": "config/agents/cli.agent.edn",
-    },
-    "describe-io": {
-        "preamble_expr": SWEBENCH_REMINDER_PREAMBLE,
-        "trailing": "'(do (!describe io) (!extend))",
-        "agent": None,
-    },
-    "context-mgmt": {
-        "preamble_expr": (
-            SWEBENCH_REMINDER_PREAMBLE
-            + ' (quine instruction "Actively manage your context window to avoid context bloat '
-            'and context rot, which is the primary cause of failure on complex tasks. '
-            'After reading large files or getting long shell outputs, use (rethink N \\"reason\\") '
-            'to prune stale reasoning and tool results before calling (!extend). '
-            'Use (!peek name expr) instead of (!call-now name expr) for large file reads — '
-            'peek bindings auto-prune on the next extension unless you persist what you need '
-            'with (def keep (subvec peeked-data start end)). '
-            'Keep your active context focused on only the information needed for the current step.")'
-        ),
-        "trailing": "'(do (!describe io) (!extend))",
-        "agent": None,
-    },
-    "fix-loop": {
-        "preamble_expr": (
-            '(quine sys-reminder "You have patterns/fix-loop for test-driven code fixing.\\n\\n'
-            "Call it like:\\n"
-            "  '(!call-now result (patterns/fix-loop prompt))\\n\\n"
-            "Your workflow:\\n"
-            "1. Call patterns/fix-loop immediately with the issue prompt\\n"
-            "2. Do NOT write or edit tests yourself — reflector handles test creation/selection\\n"
-            "3. Do NOT edit source code yourself — worker handles source edits\\n"
-            "4. Report the fix-loop result\\n\\n"
-            "Do NOT edit source code directly — let fix-loop handle all code changes. "
-            'fix-loop manages git internally, so ignore any \\"do not commit\\" instructions.")'
-        ),
-        "trailing": "'(!extend)",
-        "agent": "config/agents/cli.agent.edn",
-    },
-    "fix-loop-strict": {
-        "preamble_expr": (
-            '(quine sys-reminder "MANDATORY: You MUST use patterns/fix-loop for ALL code changes.\\n\\n'
-            "io/write-file, io/str-replace, and io/replace-lines are DISABLED for source code. "
-            "Any attempt to edit source files directly will fail. The ONLY way to fix code is "
-            "through patterns/fix-loop.\\n\\n"
-            "Call it like:\\n"
-            "  '(!call-now result (patterns/fix-loop prompt))\\n\\n"
-            "Your workflow:\\n"
-            "1. Call patterns/fix-loop immediately with the issue prompt\\n"
-            "2. Do NOT write or edit test files yourself — reflector handles regression tests\\n"
-            "3. Report the result\\n\\n"
-            "You may use io/sh for read-only exploration (grep, find, cat, git log, etc.) "
-            "and for running tests. But you MUST NOT edit "
-            "existing source code yourself — fix-loop\\'s worker agent handles all source edits.\\n\\n"
-            'fix-loop manages git internally, so ignore any \\"do not commit\\" instructions.")'
-        ),
-        "trailing": "'(!extend)",
-        "agent": "config/agents/cli.agent.edn",
-    },
-}
-
 
 @dataclass(slots=True)
 class _SwePrediction:
@@ -247,6 +164,32 @@ def _default_output(run_id: str) -> Path:
     return Path("results") / "unified" / f"{run_id}.jsonl"
 
 
+def _relocate_swebench_eval_reports(
+    run_id: str,
+    *,
+    condition: str | None = None,
+    name: str | None = None,
+) -> list[Path]:
+    report_root = BENCHMARK_ROOT / "results" / "swebench_eval_reports"
+    if condition:
+        report_root = report_root / _sanitize_trace_segment(condition, "condition")
+    if name:
+        report_root = report_root / _sanitize_trace_segment(name, "name")
+    report_root.mkdir(parents=True, exist_ok=True)
+
+    moved: list[Path] = []
+    for src in sorted(BENCHMARK_ROOT.glob(f"*.{run_id}.json")):
+        if not src.is_file():
+            continue
+        dest = report_root / src.name
+        if dest.exists():
+            dest.unlink()
+        shutil.move(str(src), str(dest))
+        moved.append(dest)
+
+    return moved
+
+
 def _resolve_trace_dir(run_id: str, trace: bool) -> Path | None:
     if not trace:
         return None
@@ -261,31 +204,45 @@ def _sanitize_trace_segment(value: str, fallback: str) -> str:
     return cleaned or fallback
 
 
+def _trace_dir_for_condition(
+    base_trace_dir: Path | None,
+    condition: str,
+    *,
+    name: str | None = None,
+) -> Path | None:
+    if base_trace_dir is None:
+        return None
+
+    path = base_trace_dir / _sanitize_trace_segment(condition, "condition")
+    if name:
+        path = path / _sanitize_trace_segment(name, "name")
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _trace_dir_for_request(
     base_trace_dir: Path | None,
     condition: str,
     item_id: str,
     *,
+    name: str | None = None,
     attempt: int | None = None,
 ) -> Path | None:
-    if base_trace_dir is None:
+    path = _trace_dir_for_condition(base_trace_dir, condition, name=name)
+    if path is None:
         return None
 
-    path = (
-        base_trace_dir
-        / _sanitize_trace_segment(condition, "condition")
-        / _sanitize_trace_segment(item_id, "item")
-    )
+    path = path / _sanitize_trace_segment(item_id, "item")
     if attempt is not None:
         path = path / f"attempt-{attempt}"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def _swebench_worktree_tag(condition: str, run_id: str, *, variant: str | None = None) -> str:
+def _swebench_worktree_tag(condition: str, run_id: str, *, name: str | None = None) -> str:
     parts = [_sanitize_trace_segment(condition, "condition")]
-    if variant:
-        parts.append(_sanitize_trace_segment(variant, "variant"))
+    if name:
+        parts.append(_sanitize_trace_segment(name, "name"))
     parts.append(_sanitize_trace_segment(run_id, "run"))
     return ".".join(parts)
 
@@ -337,100 +294,75 @@ def _general_condition_web_search(condition: str, enabled: bool) -> bool:
     return enabled and condition in GENERAL_WEB_SEARCH_CONDITIONS
 
 
-def _format_general_prompt(item: BenchmarkItem, condition: str, *, web_search: bool = False) -> str:
-    context_file = _ensure_context_file(item)
-    if item.dataset == "gaia":
-        parts: list[str] = [item.question.strip()]
-        file_path = (item.metadata or {}).get("file_path", "")
-        if file_path:
-            parts.extend(["", f"Attached file: {file_path}"])
-        parts.append("")
-        if web_search:
-            parts.append("Use web search, Python, and any tools needed to answer this question.")
-        else:
-            parts.append("Use Python and any available non-web tools needed to answer this question.")
-        parts.append(
-            "Reply with ONLY the final answer — a number, a short string, or a comma-separated list. No explanation."
-        )
-        return "\n".join(parts)
-
+def _general_context_file(condition: str, item: BenchmarkItem) -> str | None:
     if condition == "one_shot":
-        return format_prompt_one_shot(item)
-    if condition == "spell":
-        return format_prompt_spell(item, context_file=context_file)
-
-    parts: list[str] = []
-    if item.context and context_file:
-        parts.extend(
-            [
-                f"Read the document at {context_file} ({len(item.context):,} chars) and answer this question:",
-                "",
-                item.question.strip(),
-            ]
-        )
-    else:
-        parts.extend(["Solve this problem:", "", item.question.strip()])
-
-    if item.choices:
-        parts.append("")
-        parts.append("Choices:")
-        for i, choice in enumerate(item.choices):
-            letter = chr(ord("A") + i)
-            parts.append(f"  {letter}. {choice}")
-        parts.append("")
-        parts.append("Reply with ONLY the letter (A, B, C, or D). No explanation.")
-    elif item.dataset == "mathconstruct":
-        parts.append("")
-        parts.append("Follow the formatting instructions exactly.")
-        parts.append("Return your final answer in LaTeX inside \\boxed{...}.")
-    elif item.dataset in ("gsm8k", "math", "aime", "hmmt", "omni_math", "project_euler"):
-        parts.append("")
-        parts.append("You may use Python via `uv run python3` if helpful.")
-        parts.append("Reply with ONLY the final answer. No explanation.")
-    else:
-        parts.append("")
-        parts.append("Reply with ONLY the answer. No explanation.")
-
-    return "\n".join(parts)
+        return None
+    return _ensure_context_file(item)
 
 
-def _make_spell_init(
-    prompt: str,
-    preamble: str | None = None,
-    trailing: str | None = None,
-    *,
-    preamble_expr: str | None = None,
-    prompt_preamble: str | None = None,
-) -> str:
-    # Some benchmark datasets (e.g. Omni-MATH) provide a raw open Spell prefix.
-    # Keep those as-is; otherwise wrap NL prompt in the completion init template.
+def _format_general_prompt(item: BenchmarkItem, condition: str) -> str:
+    return format_benchmark_prompt(item, context_file=_general_context_file(condition, item))
+
+
+def _make_spell_init(prompt: str, trailing: str | None = None) -> str:
+    # Some benchmark datasets provide a raw open Spell prefix. Keep those as-is.
     if prompt.lstrip().startswith("("):
         return prompt
-    return build_spell_init(
-        prompt,
-        preamble=preamble,
-        trailing=trailing,
-        preamble_expr=preamble_expr,
-        prompt_preamble=prompt_preamble,
-    )
+    return build_spell_init(prompt, trailing)
 
 
-LONGBENCH_PREAMBLE = (
-    "The document may be very large (100K-1M+ chars). "
-    "NEVER try to read the entire file at once — it will be truncated and you will miss critical content. "
-    "Instead, use io/sh with grep to search for keywords relevant to the question, "
-    "then read only the specific sections you need with sed or io/read-lines."
-)
-
-
-def _general_preamble(dataset: str) -> str | None:
+def _general_spell_trailing(dataset: str) -> str | None:
     return {
-        "omni_math": OMNI_MATH_PREAMBLE,
-        "mathconstruct": OMNI_MATH_PREAMBLE,
-        "project_euler": OMNI_MATH_PREAMBLE,
-        "longbench_sampled": LONGBENCH_PREAMBLE,
-        "longbench_short": LONGBENCH_PREAMBLE,
+        "omni_math": OMNI_MATH_TRAILING,
+        "mathconstruct": OMNI_MATH_TRAILING,
+        "project_euler": OMNI_MATH_TRAILING,
     }.get(dataset)
+
+
+def _condition_label(condition: str, name: str | None = None) -> str:
+    return f"{condition}/{name}" if name else condition
+
+
+def _swebench_predictions_filename(condition: str, dataset: str, run_id: str, *, name: str | None = None) -> str:
+    parts = [condition]
+    if name:
+        parts.append(_sanitize_trace_segment(name, "name"))
+    parts.extend([dataset, run_id])
+    return "_".join(parts) + ".jsonl"
+
+
+def _swebench_eval_run_id(run_id: str, *, name: str | None = None) -> str:
+    if not name:
+        return run_id
+    return f"{run_id}__{_sanitize_trace_segment(name, 'name')}"
+
+
+def _swebench_converted_patch_filename(condition: str, dataset: str, run_id: str, *, name: str | None = None) -> str:
+    return _swebench_predictions_filename(condition, dataset, run_id, name=name).removesuffix(".jsonl") + ".patches.json"
+
+
+def _validate_general_configuration(
+    dataset: str,
+    conditions: list[str],
+    item_datasets: set[str],
+    *,
+    web_search_enabled: bool,
+) -> None:
+    uses_gaia = dataset == GAIA_DATASET_PREFIX or any(
+        item_dataset == GAIA_DATASET_PREFIX or item_dataset.startswith(f"{GAIA_DATASET_PREFIX}_")
+        for item_dataset in item_datasets
+    )
+    if not uses_gaia:
+        return
+    if not web_search_enabled:
+        raise click.ClickException("GAIA requires web search. Re-run without `--no-web-search`.")
+    unsupported = [cond for cond in conditions if cond not in GENERAL_WEB_SEARCH_CONDITIONS]
+    if unsupported:
+        unsupported_list = ", ".join(unsupported)
+        raise click.ClickException(
+            "GAIA currently supports only web-enabled conditions "
+            f"({', '.join(sorted(GENERAL_WEB_SEARCH_CONDITIONS))}); got unsupported condition(s): {unsupported_list}."
+        )
 
 
 def _format_optional_swebench_text(value: Any) -> str:
@@ -444,39 +376,52 @@ def _format_optional_swebench_text(value: Any) -> str:
         return str(value).strip()
 
 
-def _format_swebench_prompt(item: SWEBenchItem) -> str:
-    parts = [
-        f"Repository: {item.repo}",
-        "",
-        "## Issue to Fix",
-        "",
-        item.problem_statement.strip(),
-        "",
-    ]
+def _format_swebench_prompt(item: SWEBenchItem, workspace: str | Path | None = None) -> str:
+    location = str(workspace) if workspace else "/testbed"
 
+    # Build PR description from item fields.
+    pr_parts = [item.problem_statement.strip()]
     hints_text = (item.hints_text or "").strip()
     if hints_text:
-        parts.extend(["## Hints", "", hints_text, ""])
-
+        pr_parts.extend(["", "## Hints", "", hints_text])
     requirements = _format_optional_swebench_text((item.metadata or {}).get("requirements"))
     if requirements:
-        parts.extend(["## Requirements", "", requirements, ""])
-
+        pr_parts.extend(["", "## Requirements", "", requirements])
     interface = _format_optional_swebench_text((item.metadata or {}).get("interface"))
     if interface:
-        parts.extend(["## Interface Contract", "", interface, ""])
+        pr_parts.extend(["", "## Interface Contract", "", interface])
+    pr_description = "\n".join(pr_parts)
 
-    parts.extend(
-        [
-            "## Instructions",
-            "",
-            "Fix this bug with minimal code changes.",
-            "Do not commit any changes.",
-            "Run focused checks/tests when possible.",
-            "Do not install packages or modify project dependencies.",
-        ]
-    )
-    return "\n".join(parts)
+    return f"""\
+<uploaded_files>
+{location}
+</uploaded_files>
+I've uploaded a python code repository in the directory {location} (not in /tmp/inputs). Consider the following PR description:
+
+<pr_description>
+{pr_description}
+</pr_description>
+
+Can you help me implement the necessary changes to the repository so that the requirements specified in the <pr_description> are met?
+I've already taken care of all changes to any of the test files described in the <pr_description>. This means you DON'T have to modify the testing logic or any of the tests in any way!
+
+Your task is to make the minimal changes to non-tests files in the {location} directory to ensure the <pr_description> is satisfied.
+
+Follow these steps to resolve the issue:
+1. As a first step, it would be a good idea to explore the repo to familiarize yourself with its structure.
+2. Create a script to reproduce the error and execute it with `python <filename.py>` using the BashTool, to confirm the error
+3. Edit the sourcecode of the repo to resolve the issue
+4. Rerun your reproduce script and confirm that the error is fixed!
+5. Think about edgecases and make sure your fix handles them as well
+6. Run select tests from the repo to make sure that your fix doesn't break anything else.
+
+Platform: Linux (Debian-based).
+
+TIPS:
+- You must make changes in the {location} directory in order to ensure the requirements specified in the <pr_description> are met. Leaving the directory unchanged is not a valid solution.
+- When you need to find information about the codebase, use "grep" and "find" to search for relevant files and code with the bash tool
+- Use your bash tool to set up any necessary environment variables, such as those needed to run tests.
+"""
 
 
 def _evaluate_general(item: BenchmarkItem, response_text: str | None) -> tuple[str | None, bool | None]:
@@ -588,6 +533,7 @@ def _mk_record(
     split: str | None,
     item_id: str,
     condition: str,
+    name: str | None = None,
     model_spec: str | None,
     agent_file: str | None,
     response: RunResponse,
@@ -621,6 +567,7 @@ def _mk_record(
         error_type=response.error_type,
         error_message=response.error_message,
         metadata={**(metadata or {}), **response.metadata},
+        name=name,
     )
 
 
@@ -657,15 +604,19 @@ def _build_docker_adapter(condition: str, *, model: str | None, claude_model: st
     raise ValueError(f"Unknown condition: {condition}")
 
 
-def _print_summary(output_file: Path, run_id: str, condition: str) -> None:
+def _print_summary(output_file: Path, run_id: str, condition: str, *, name: str | None = None) -> None:
     rows = []
     with output_file.open("r", encoding="utf-8") as f:
         for line in f:
             row = json.loads(line)
-            if row.get("run_id") == run_id and row.get("condition") == condition:
+            if (
+                row.get("run_id") == run_id
+                and row.get("condition") == condition
+                and row.get("name") == name
+            ):
                 rows.append(row)
     summary = summarize_records(rows)
-    click.echo(f"Summary ({condition}): total={summary['total']} errors={summary['errors']} ")
+    click.echo(f"Summary ({_condition_label(condition, name)}): total={summary['total']} errors={summary['errors']} ")
     if summary["accuracy"] is not None:
         click.echo(f"  accuracy={summary['accuracy']:.1%}")
     if summary["total_cost_usd"] is not None:
@@ -763,10 +714,12 @@ def _build_swebench_eval_plan(
     final_clean: bool,
     verify_predictions: bool,
     pro: ProEvalConfig,
+    name: str | None = None,
 ) -> tuple[str, list[str], list[dict[str, Any]]]:
     conditions = _parse_swebench_conditions(condition)
     resolved_dataset_name = dataset_name or _swebench_dataset_name(dataset)
     pred_root = Path(predictions_dir)
+    eval_run_id = _swebench_eval_run_id(run_id, name=name)
 
     plan: list[dict[str, Any]] = []
     if dataset == "pro":
@@ -774,14 +727,14 @@ def _build_swebench_eval_plan(
         raw_sample = Path(pro.raw_sample_path) if pro.raw_sample_path else _default_swebench_pro_raw_sample_path(
             resolved_dataset_name, split
         )
-        output_root = Path(pro.output_dir) / run_id
+        output_root = Path(pro.output_dir) / eval_run_id
 
         for cond in conditions:
-            pred_path = pred_root / f"{cond}_{dataset}_{run_id}.jsonl"
+            pred_path = pred_root / _swebench_predictions_filename(cond, dataset, run_id, name=name)
             if verify_predictions and not pred_path.exists():
                 raise click.ClickException(f"Predictions file not found: {pred_path}")
 
-            converted_path = output_root / f"{cond}_{dataset}_{run_id}.patches.json"
+            converted_path = output_root / _swebench_converted_patch_filename(cond, dataset, run_id, name=name)
             condition_output_dir = output_root / cond
             cmd = _build_swebench_pro_command(
                 raw_sample_path=raw_sample.resolve(),
@@ -806,13 +759,15 @@ def _build_swebench_eval_plan(
                     "split": split,
                     "dockerhub_username": pro.dockerhub_username,
                     "strip_trace_artifacts": pro.strip_trace_artifacts,
+                    "eval_run_id": eval_run_id,
+                    "name": name,
                     "command": cmd,
                 }
             )
         return resolved_dataset_name, conditions, plan
 
     for idx, cond in enumerate(conditions):
-        pred_path = pred_root / f"{cond}_{dataset}_{run_id}.jsonl"
+        pred_path = pred_root / _swebench_predictions_filename(cond, dataset, run_id, name=name)
         if verify_predictions and not pred_path.exists():
             raise click.ClickException(f"Predictions file not found: {pred_path}")
 
@@ -834,7 +789,7 @@ def _build_swebench_eval_plan(
             "--timeout",
             str(timeout),
             "--run_id",
-            run_id,
+            eval_run_id,
             "--namespace",
             namespace,
             "--instance_image_tag",
@@ -855,6 +810,8 @@ def _build_swebench_eval_plan(
                 "predictions_path": str(pred_path),
                 "cache_level": cache_level,
                 "clean": clean,
+                "eval_run_id": eval_run_id,
+                "name": name,
                 "command": cmd,
             }
         )
@@ -985,6 +942,14 @@ def _run_swebench_eval_plan(plan: list[dict[str, Any]]) -> None:
             raise click.ClickException(
                 f"swebench evaluation failed for condition '{cond}' with exit code {exc.returncode}"
             ) from exc
+        eval_run_id = step.get("eval_run_id") or step["command"][step["command"].index("--run_id") + 1]
+        moved_reports = _relocate_swebench_eval_reports(
+            eval_run_id,
+            condition=cond,
+            name=step.get("name"),
+        )
+        for report_path in moved_reports:
+            click.echo(f"Moved SWE-bench eval report: {report_path}")
 
 
 @click.group()
@@ -1020,14 +985,16 @@ def cli() -> None:
     help="Enable live web search (defaults to on for GAIA, off otherwise)",
 )
 @click.option("--trace/--no-trace", default=True, show_default=True)
+@click.option("--name", default=None, help="Label for this run variant (flows into traces, predictions, and JSONL records)")
+@click.option("--trailing", default=None, help="Custom Spell trailing expression (overrides dataset default or falls back to '(!extend))")
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
 @click.option("--output", default=None, help="JSONL output path")
 def run_general(
     dataset: str,
     condition: str,
-    model: str,
-    claude_model: str,
+    model: str | None,
+    claude_model: str | None,
     codex_model: str,
     n: int | None,
     items: str | None,
@@ -1047,9 +1014,11 @@ def run_general(
     suffix_grammar: bool,
     web_search: bool | None,
     trace: bool,
-    dry_run: bool,
-    run_id: str | None,
-    output: str | None,
+    name: str | None = None,
+    trailing: str | None = None,
+    dry_run: bool = False,
+    run_id: str | None = None,
+    output: str | None = None,
 ) -> None:
     run_id = run_id or _run_id("general")
     output_file = Path(output) if output else _default_output(run_id)
@@ -1057,6 +1026,8 @@ def run_general(
 
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
+    if name:
+        click.echo(f"Name: {name}")
 
     requested_ids = {x.strip() for x in (items or "").split(",") if x.strip()}
 
@@ -1102,6 +1073,12 @@ def run_general(
         loaded = loaded[:n]
     item_datasets = {item.dataset for item in loaded}
     effective_web_search = _resolve_web_search_default(item_datasets, web_search)
+    _validate_general_configuration(
+        dataset,
+        conditions,
+        item_datasets,
+        web_search_enabled=effective_web_search,
+    )
 
     click.echo(f"Loaded {len(loaded)} items")
     if dry_run:
@@ -1126,6 +1103,8 @@ def run_general(
                     "codex_model": codex_model,
                     "parallel": parallel,
                     "budget": budget,
+                    "name": name,
+                    "trailing": trailing,
                     "web_search_requested": effective_web_search,
                     "web_search_by_condition": {
                         cond: _general_condition_web_search(cond, effective_web_search) for cond in conditions
@@ -1167,7 +1146,7 @@ def run_general(
         condition_web_search = _general_condition_web_search(cond, effective_web_search)
         requests: list[RunRequest] = []
         for item in loaded:
-            prompt = _format_general_prompt(item, cond, web_search=condition_web_search)
+            prompt = _format_general_prompt(item, cond)
             requests.append(
                 RunRequest(
                     benchmark="general",
@@ -1177,7 +1156,6 @@ def run_general(
                     prompt=prompt,
                     model_spec={"spell": model, "one_shot": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
-                    init=_make_spell_init(prompt, preamble=_general_preamble(item.dataset)) if cond == "spell" else None,
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
                     budget=budget,
                     depth=depth,
@@ -1189,10 +1167,11 @@ def run_general(
                     suffix_grammar=suffix_grammar,
                     web_search=condition_web_search,
                     trace=trace,
+                    init=_make_spell_init(prompt, trailing if trailing is not None else _general_spell_trailing(item.dataset)) if cond == "spell" else None,
                     trace_dir=(
-                        _trace_dir_for_request(trace_dir, cond, item.id)
+                        _trace_dir_for_request(trace_dir, cond, item.id, name=name)
                         if cond == "spell"
-                        else trace_dir
+                        else _trace_dir_for_condition(trace_dir, cond, name=name)
                     ),
                     metadata={"add_dir": CONTEXT_DIR},
                 )
@@ -1216,6 +1195,7 @@ def run_general(
                 split=None,
                 item_id=item.id,
                 condition=cond,
+                name=name,
                 model_spec=req.model_spec,
                 agent_file=req.agent_file,
                 response=resp,
@@ -1241,7 +1221,7 @@ def run_general(
             )
             append_jsonl(output_file, record)
 
-        _print_summary(output_file, run_id, cond)
+        _print_summary(output_file, run_id, cond, name=name)
 
 
 @cli.command("swebench")
@@ -1265,6 +1245,7 @@ def run_general(
 @click.option("--workspace-root", default=None)
 @click.option("--keep-workspaces", is_flag=True, default=False)
 @click.option("--docker", is_flag=True, default=False, help="Run agents inside Docker containers for isolation")
+@click.option("--unified", is_flag=True, default=False, help="Run on shared in-container software benchmark infra")
 @click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--trace/--no-trace", default=True, show_default=True, help="Record execution traces")
 @click.option("--evaluate/--no-evaluate", default=True, show_default=True, help="Run swebench.harness evaluation after generating predictions")
@@ -1335,27 +1316,16 @@ def run_general(
     show_default=True,
     help="Re-run SWE-bench Pro eval even if output files already exist",
 )
-@click.option(
-    "--preamble",
-    default=None,
-    help="Prompt steering text appended inside the quoted Spell task prompt; raw Spell forms are still accepted for backward compatibility",
-)
-@click.option(
-    "--preamble-expr",
-    default=None,
-    help="Raw Spell init expression inserted before the trailing expression",
-)
+@click.option("--name", default=None, help="Label for this run variant (flows into traces, predictions, and JSONL records)")
 @click.option("--trailing", default=None, help="Custom Spell trailing expression (overrides default '(!extend))")
-@click.option("--variant", default=None, type=click.Choice(list(SWEBENCH_VARIANTS.keys())),
-              help="Named intervention variant (overrides preamble/trailing/agent)")
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
 @click.option("--output", default=None)
 def run_swebench(
     dataset: str,
     condition: str,
-    model: str,
-    claude_model: str,
+    model: str | None,
+    claude_model: str | None,
     codex_model: str,
     n: int | None,
     item_ids: str | None,
@@ -1372,6 +1342,7 @@ def run_swebench(
     workspace_root: str | None,
     keep_workspaces: bool,
     docker: bool,
+    unified: bool,
     web_search: bool,
     trace: bool,
     evaluate: bool,
@@ -1393,23 +1364,19 @@ def run_swebench(
     pro_use_local_docker: bool,
     pro_block_network: bool,
     pro_redo: bool,
-    preamble: str | None,
-    preamble_expr: str | None,
-    trailing: str | None,
-    variant: str | None,
-    dry_run: bool,
-    run_id: str | None,
-    output: str | None,
+    name: str | None = None,
+    trailing: str | None = None,
+    dry_run: bool = False,
+    run_id: str | None = None,
+    output: str | None = None,
 ) -> None:
-    # Apply named variant overrides (variant takes precedence over manual preamble/trailing).
-    if variant:
-        vconf = SWEBENCH_VARIANTS[variant]
-        preamble_expr = preamble_expr or vconf.get("preamble_expr") or vconf.get("preamble")
-        trailing = trailing or vconf.get("trailing")
-        agent = agent or vconf.get("agent")
     run_id = run_id or _run_id("swebench")
     output_file = Path(output) if output else _default_output(run_id)
     conditions = _parse_swebench_conditions(condition)
+    if docker and unified:
+        raise click.ClickException("--docker and --unified are mutually exclusive")
+    if unified and dataset == "pro":
+        raise click.ClickException("--unified does not support --dataset pro yet; use the existing SWE-bench Pro path")
 
     swebench_loaders = {
         "mini": lambda: load_swebench_verified_mini(50),
@@ -1449,9 +1416,13 @@ def run_swebench(
 
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
+    if name:
+        click.echo(f"Name: {name}")
     click.echo(f"Workspace root: {root}")
     if docker:
         click.echo("Docker mode: agents run inside containers")
+    if unified:
+        click.echo("Unified mode: shared software benchmark container infra")
     click.echo(f"Loaded {len(items)} items")
     if dry_run:
         spell_resolution = None
@@ -1481,6 +1452,7 @@ def run_swebench(
                     "agent_source": spell_resolution.source if spell_resolution else None,
                     "agent_policy_key": spell_resolution.policy_key if spell_resolution else None,
                     "parallel": parallel,
+                    "unified": unified,
                     "evaluate": evaluate,
                     "eval_predictions_dir": eval_predictions_dir,
                     "eval_dataset_name": eval_dataset_name,
@@ -1500,7 +1472,7 @@ def run_swebench(
                     "pro_use_local_docker": pro_use_local_docker,
                     "pro_block_network": pro_block_network,
                     "pro_redo": pro_redo,
-                    "preamble": preamble,
+                    "name": name,
                     "trailing": trailing,
                 },
                 indent=2,
@@ -1517,9 +1489,17 @@ def run_swebench(
     cache = RepoCache(root)
 
     for cond in conditions:
-        click.echo(f"\n--- Running {cond}{' (docker)' if docker else ''} ---")
-        adapter = _build_adapter(cond, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget, docker=docker)
-        worktree_tag = _swebench_worktree_tag(cond, run_id, variant=variant)
+        mode_label = " (unified)" if unified else (" (docker)" if docker else "")
+        click.echo(f"\n--- Running {cond}{mode_label} ---")
+        adapter = None if unified else _build_adapter(
+            cond,
+            model=model,
+            claude_model=claude_model,
+            codex_model=codex_model,
+            budget=budget,
+            docker=docker,
+        )
+        worktree_tag = _swebench_worktree_tag(cond, run_id, name=name)
         spell_resolution = None
         if cond == "spell":
             spell_resolution = _resolve_spell_agent_or_die(
@@ -1539,7 +1519,7 @@ def run_swebench(
             try:
                 wt = setup_swebench_workspace(cache, item, tag=worktree_tag)
                 ws_path = wt.path
-                prompt = _format_swebench_prompt(item)
+                prompt = _format_swebench_prompt(item, workspace=ws_path)
 
                 req = RunRequest(
                     benchmark="swebench",
@@ -1549,14 +1529,7 @@ def run_swebench(
                     prompt=prompt,
                     model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
-                    init=(_make_spell_init(
-                              prompt,
-                              preamble=preamble,
-                              preamble_expr=preamble_expr or (
-                                  SWEBENCH_DOCKER_PREAMBLE if docker else SWEBENCH_REMINDER_PREAMBLE
-                              ),
-                              trailing=trailing,
-                          ) if cond == "spell" else None),
+                    init=(_make_spell_init(prompt, trailing) if cond == "spell" else None),
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
                     budget=budget,
                     depth=depth,
@@ -1565,18 +1538,37 @@ def run_swebench(
                     web_search=web_search if cond == "codex" else False,
                     trace=trace,
                     trace_dir=(
-                        _trace_dir_for_request(trace_dir, cond, item.instance_id)
+                        _trace_dir_for_request(trace_dir, cond, item.instance_id, name=name)
                         if cond == "spell"
-                        else trace_dir
+                        else _trace_dir_for_condition(trace_dir, cond, name=name)
                     ),
                     workspace=ws_path,
                 )
-                resp = adapter.run(req)
+                if unified:
+                    resp = run_unified_swebench(
+                        condition=cond,
+                        prompt=prompt,
+                        model_spec=req.model_spec,
+                        timeout=timeout,
+                        init=req.init,
+                        agent_file=req.agent_file,
+                        budget=budget,
+                        depth=depth,
+                        max_tokens=max_tokens,
+                        reasoning_effort=reasoning_effort,
+                        web_search=req.web_search,
+                        trace=trace,
+                        trace_dir=req.trace_dir,
+                        workspace=ws_path,
+                    )
+                else:
+                    assert adapter is not None
+                    resp = adapter.run(req)
 
                 # In Docker mode, the patch lives inside the container and is
                 # returned in resp.metadata by the Docker adapter. On the host
                 # (non-Docker), we read it from the worktree.
-                if docker and resp.metadata.get("docker"):
+                if (docker or unified) and resp.metadata.get("docker"):
                     patch = resp.metadata.get("patch", "")
                     changed_files = resp.metadata.get("changed_files", [])
                 else:
@@ -1607,6 +1599,7 @@ def run_swebench(
                     split=dataset,
                     item_id=item.instance_id,
                     condition=cond,
+                    name=name,
                     model_spec=req.model_spec,
                     agent_file=req.agent_file,
                     response=resp,
@@ -1617,6 +1610,7 @@ def run_swebench(
                     metadata={
                         "repo": item.repo,
                         "base_commit": item.base_commit,
+                        "unified": unified,
                         "web_search": web_search,
                         **(
                             {
@@ -1641,6 +1635,7 @@ def run_swebench(
                     split=dataset,
                     item_id=item.instance_id,
                     condition=cond,
+                    name=name,
                     model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
                     response=RunResponse(
@@ -1661,6 +1656,7 @@ def run_swebench(
                     metadata={
                         "repo": item.repo,
                         "base_commit": item.base_commit,
+                        "unified": unified,
                         **(
                             {
                                 "spell_mode": spell_resolution.spell_mode,
@@ -1697,9 +1693,9 @@ def run_swebench(
         for record in records:
             append_jsonl(output_file, record)
 
-        _print_summary(output_file, run_id, cond)
+        _print_summary(output_file, run_id, cond, name=name)
 
-        pred_path = Path("results") / "swebench" / f"{cond}_{dataset}_{run_id}.jsonl"
+        pred_path = Path("results") / "swebench" / _swebench_predictions_filename(cond, dataset, run_id, name=name)
         swe_results = [_SwePrediction(instance_id=record.item_id, patch=record.patch or "") for record in records]
         pred_model_name = {
             "spell": model or "unknown",
@@ -1725,6 +1721,7 @@ def run_swebench(
             dataset=dataset,
             condition=condition,
             run_id=run_id,
+            name=name,
             predictions_dir=eval_predictions_dir,
             dataset_name=eval_dataset_name,
             split=eval_split,
@@ -1757,7 +1754,8 @@ def run_swebench(
 @cli.command("swebench-eval")
 @click.option("--dataset", default="mini", type=click.Choice(["mini", "lite", "verified", "pro"]))
 @click.option("--condition", default="all", type=click.Choice(["spell", "claude_code", "codex", "both", "all"]))
-@click.option("--run-id", required=True, help="Run ID used in results/swebench/<condition>_<dataset>_<run-id>.jsonl")
+@click.option("--run-id", required=True, help="Run ID used in results/swebench/<condition>[_<name>]_<dataset>_<run-id>.jsonl")
+@click.option("--name", default=None, help="Optional run label used in predictions filenames")
 @click.option("--predictions-dir", default="results/swebench", show_default=True)
 @click.option("--dataset-name", default=None, help="Override swebench.harness dataset_name")
 @click.option("--split", default="test", show_default=True)
@@ -1825,25 +1823,26 @@ def run_swebench_eval(
     dataset: str,
     condition: str,
     run_id: str,
-    predictions_dir: str,
-    dataset_name: str | None,
-    split: str,
-    max_workers: int,
-    timeout: int,
-    namespace: str,
-    instance_image_tag: str,
-    env_image_tag: str,
-    final_cache_level: str,
-    final_clean: bool,
-    pro_eval_repo: str,
-    pro_raw_sample_path: str | None,
-    pro_output_dir: str,
-    pro_dockerhub_username: str,
-    pro_strip_trace_artifacts: bool,
-    pro_use_local_docker: bool,
-    pro_block_network: bool,
-    pro_redo: bool,
-    dry_run: bool,
+    name: str | None = None,
+    predictions_dir: str = "results/swebench",
+    dataset_name: str | None = None,
+    split: str = "test",
+    max_workers: int = 4,
+    timeout: int = 1800,
+    namespace: str = "none",
+    instance_image_tag: str = "latest",
+    env_image_tag: str = "latest",
+    final_cache_level: str = "base",
+    final_clean: bool = True,
+    pro_eval_repo: str = SCALE_PRO_EVAL_REPO_DEFAULT,
+    pro_raw_sample_path: str | None = None,
+    pro_output_dir: str = SCALE_PRO_OUTPUT_DIR_DEFAULT,
+    pro_dockerhub_username: str = "jefzda",
+    pro_strip_trace_artifacts: bool = True,
+    pro_use_local_docker: bool = True,
+    pro_block_network: bool = False,
+    pro_redo: bool = False,
+    dry_run: bool = False,
 ) -> None:
     pro_config = ProEvalConfig(
         eval_repo=pro_eval_repo,
@@ -1859,6 +1858,7 @@ def run_swebench_eval(
         dataset=dataset,
         condition=condition,
         run_id=run_id,
+        name=name,
         predictions_dir=predictions_dir,
         dataset_name=dataset_name,
         split=split,
@@ -1911,16 +1911,19 @@ def run_swebench_eval(
 @click.option("--workspace-root", default="/tmp/fb_ws")
 @click.option("--skip-install", is_flag=True, default=False)
 @click.option("--skip-tests", is_flag=True, default=False)
+@click.option("--unified", is_flag=True, default=False, help="Run on shared in-container software benchmark infra")
 @click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--trace/--no-trace", default=True, show_default=True)
+@click.option("--name", default=None, help="Label for this run variant (flows into traces and JSONL records)")
+@click.option("--trailing", default=None, help="Custom Spell trailing expression (overrides default '(!extend))")
 @click.option("--run-id", default=None)
 @click.option("--output", default=None)
 def run_featurebench(
     condition: str,
     split: str,
     task_ids: tuple[int, ...],
-    model: str,
-    claude_model: str,
+    model: str | None,
+    claude_model: str | None,
     codex_model: str,
     parallel: int,
     budget: float,
@@ -1934,10 +1937,13 @@ def run_featurebench(
     workspace_root: str,
     skip_install: bool,
     skip_tests: bool,
+    unified: bool,
     web_search: bool,
     trace: bool,
-    run_id: str | None,
-    output: str | None,
+    name: str | None = None,
+    trailing: str | None = None,
+    run_id: str | None = None,
+    output: str | None = None,
 ) -> None:
     run_id = run_id or _run_id("featurebench")
     output_file = Path(output) if output else _default_output(run_id)
@@ -1956,15 +1962,26 @@ def run_featurebench(
 
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
+    if name:
+        click.echo(f"Name: {name}")
     click.echo(f"Workspace root: {root}")
+    if unified:
+        click.echo("Unified mode: shared software benchmark container infra")
     click.echo(f"Loaded {len(tasks)} tasks")
     trace_dir = _resolve_trace_dir(run_id, trace)
     if trace_dir:
         click.echo(f"Trace dir: {trace_dir}")
 
     for cond in conditions:
-        click.echo(f"\n--- Running {cond} ---")
-        adapter = _build_adapter(cond, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget)
+        mode_label = " (unified)" if unified else ""
+        click.echo(f"\n--- Running {cond}{mode_label} ---")
+        adapter = None if unified else _build_adapter(
+            cond,
+            model=model,
+            claude_model=claude_model,
+            codex_model=codex_model,
+            budget=budget,
+        )
         spell_resolution = None
         if cond == "spell":
             spell_resolution = _resolve_spell_agent_or_die(
@@ -1982,10 +1999,11 @@ def run_featurebench(
         def process(item: dict) -> UnifiedRunRecord:
             wt = setup_workspace(cache, item, tag=cond)
             try:
-                if not skip_install:
+                if not skip_install and not unified:
                     install_deps(wt.path, item)
                 mask_functions(wt.path, item["problem_statement"])
-                prompt = featurebench_format_prompt(item, wt.path)
+                prompt_workspace = Path("/workspace") if unified else wt.path
+                prompt = featurebench_format_prompt(item, prompt_workspace)
 
                 req = RunRequest(
                     benchmark="featurebench",
@@ -1995,7 +2013,7 @@ def run_featurebench(
                     prompt=prompt,
                     model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
-                    init=_make_spell_init(prompt) if cond == "spell" else None,
+                    init=_make_spell_init(prompt, trailing) if cond == "spell" else None,
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
                     budget=budget,
                     depth=depth,
@@ -2004,23 +2022,47 @@ def run_featurebench(
                     web_search=web_search if cond == "codex" else False,
                     trace=trace,
                     trace_dir=(
-                        _trace_dir_for_request(trace_dir, cond, item["instance_id"])
+                        _trace_dir_for_request(trace_dir, cond, item["instance_id"], name=name)
                         if cond == "spell"
-                        else trace_dir
+                        else _trace_dir_for_condition(trace_dir, cond, name=name)
                     ),
                     workspace=wt.path,
                 )
-                resp = adapter.run(req)
-                patch = wt.diff()
-                changed_files = wt.changed_files()
-
                 test_results = []
                 tests_passed: bool | None = None
-                if not skip_tests and patch.strip():
-                    fail_to_pass = item.get("FAIL_TO_PASS", [])
-                    if fail_to_pass:
-                        test_results = run_tests(wt.path, fail_to_pass, repo=item.get("repo"))
-                        tests_passed = all(t["passed"] for t in test_results)
+                if unified:
+                    resp, tests_passed, test_results = run_unified_featurebench(
+                        condition=cond,
+                        prompt=prompt,
+                        model_spec=req.model_spec,
+                        timeout=timeout,
+                        init=req.init,
+                        agent_file=req.agent_file,
+                        budget=budget,
+                        depth=depth,
+                        max_tokens=max_tokens,
+                        reasoning_effort=reasoning_effort,
+                        web_search=req.web_search,
+                        trace=trace,
+                        trace_dir=req.trace_dir,
+                        workspace=wt.path,
+                        item=item,
+                        skip_install=skip_install,
+                        skip_tests=skip_tests,
+                    )
+                    patch = resp.metadata.get("patch", "")
+                    changed_files = resp.metadata.get("changed_files", [])
+                else:
+                    assert adapter is not None
+                    resp = adapter.run(req)
+                    patch = wt.diff()
+                    changed_files = wt.changed_files()
+
+                    if not skip_tests and patch.strip():
+                        fail_to_pass = item.get("FAIL_TO_PASS", [])
+                        if fail_to_pass:
+                            test_results = run_tests(wt.path, fail_to_pass, repo=item.get("repo"))
+                            tests_passed = all(t["passed"] for t in test_results)
 
                 status = resp.status
                 if status == "ok":
@@ -2048,6 +2090,7 @@ def run_featurebench(
                     split=split,
                     item_id=item["instance_id"],
                     condition=cond,
+                    name=name,
                     model_spec=req.model_spec,
                     agent_file=req.agent_file,
                     response=resp,
@@ -2092,7 +2135,7 @@ def run_featurebench(
         for record in records:
             append_jsonl(output_file, record)
 
-        _print_summary(output_file, run_id, cond)
+        _print_summary(output_file, run_id, cond, name=name)
 
 
 SAB_BENCHMARK_DIR = BENCHMARK_ROOT / "data" / "scienceagentbench" / "benchmark" / "benchmark"
@@ -2110,6 +2153,10 @@ def _format_sab_prompt(item: ScienceAgentBenchItem, workspace: Path, use_knowled
     parts = [
         "You are an expert Python programming assistant that helps scientist users "
         "to write high-quality code to solve their tasks.",
+        "",
+        "## Environment",
+        "",
+        "Platform: Linux (Debian-based).",
         "",
         "Write a complete, self-contained Python program and save it as `solution.py` "
         f"in the current directory ({workspace}).",
@@ -2211,17 +2258,9 @@ def _validate_python_syntax(code: str) -> tuple[bool, str | None]:
 @click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
 @click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--use-knowledge/--no-knowledge", default=False, show_default=True, help="Include domain knowledge in prompt")
-@click.option(
-    "--preamble",
-    default=None,
-    help="Prompt steering text appended inside the quoted Spell task prompt; raw Spell forms are still accepted for backward compatibility",
-)
-@click.option(
-    "--preamble-expr",
-    default=None,
-    help="Raw Spell init expression inserted before the trailing expression",
-)
 @click.option("--workspace-root", default="/tmp/sab_ws")
+@click.option("--name", default=None, help="Label for this run variant (flows into output labels and JSONL records)")
+@click.option("--trailing", default=None, help="Custom Spell trailing expression (overrides default '(!extend))")
 @click.option("--run-id", default=None)
 @click.option("--output", default=None)
 def run_scienceagentbench(
@@ -2229,8 +2268,8 @@ def run_scienceagentbench(
     n: int | None,
     instance_ids: str | None,
     domain: str | None,
-    model: str,
-    claude_model: str,
+    model: str | None,
+    claude_model: str | None,
     codex_model: str,
     parallel: int,
     budget: float,
@@ -2243,11 +2282,11 @@ def run_scienceagentbench(
     reasoning_effort: str | None,
     web_search: bool,
     use_knowledge: bool,
-    preamble: str | None,
-    preamble_expr: str | None,
     workspace_root: str,
-    run_id: str | None,
-    output: str | None,
+    name: str | None = None,
+    trailing: str | None = None,
+    run_id: str | None = None,
+    output: str | None = None,
 ) -> None:
     """Run ScienceAgentBench: data-driven scientific code generation."""
     import re
@@ -2279,6 +2318,8 @@ def run_scienceagentbench(
 
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
+    if name:
+        click.echo(f"Name: {name}")
     click.echo(f"Workspace root: {root}")
     click.echo(f"Items: {len(items)}")
     click.echo(f"Domains: {', '.join(sorted({i.domain for i in items}))}")
@@ -2345,11 +2386,7 @@ def run_scienceagentbench(
                     prompt=prompt,
                     model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
-                    init=(
-                        _make_spell_init(prompt, preamble=preamble, preamble_expr=preamble_expr)
-                        if cond == "spell"
-                        else None
-                    ),
+                    init=(_make_spell_init(prompt, trailing) if cond == "spell" else None),
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
                     budget=budget,
                     depth=depth,
@@ -2419,6 +2456,7 @@ def run_scienceagentbench(
                     split=None,
                     item_id=item.instance_id,
                     condition=cond,
+                    name=name,
                     model_spec=req.model_spec,
                     agent_file=req.agent_file,
                     response=RunResponse(
@@ -2482,10 +2520,11 @@ def run_scienceagentbench(
             append_jsonl(output_file, record)
 
         # Print summary
-        _print_summary(output_file, run_id, cond)
+        _print_summary(output_file, run_id, cond, name=name)
 
         # Save extracted programs for potential evaluation
-        pred_dir = Path("results") / "scienceagentbench" / f"{cond}_{run_id}"
+        pred_dir_name = f"{cond}_{_sanitize_trace_segment(name, 'name')}_{run_id}" if name else f"{cond}_{run_id}"
+        pred_dir = Path("results") / "scienceagentbench" / pred_dir_name
         pred_dir.mkdir(parents=True, exist_ok=True)
         for item, record in zip(items, records):
             if record.patch:
@@ -2519,6 +2558,8 @@ def _format_exercism_prompt(item: ExercismItem, ws: Path) -> str:
     test_path = ws / item.test_file
     return (
         "You are solving a Python programming exercise.\n\n"
+        "## Environment\n\n"
+        "Platform: Linux (Debian-based).\n\n"
         "## Instructions\n\n"
         f"{item.instructions}\n\n"
         "## Task\n\n"
@@ -2591,6 +2632,9 @@ def _run_exercism_pytest(test_path: Path, timeout: int = EXERCISM_PYTEST_TIMEOUT
 @click.option("--no-retry", is_flag=True, default=False, help="Skip retry on test failure")
 @click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--trace/--no-trace", default=False, show_default=True)
+@click.option("--unified", is_flag=True, default=False, help="Run on shared in-container software benchmark infra")
+@click.option("--name", default=None, help="Label for this run variant (flows into traces and JSONL records)")
+@click.option("--trailing", default=None, help="Custom Spell trailing expression (overrides default '(!extend))")
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
 @click.option("--output", default=None, help="JSONL output path")
@@ -2614,9 +2658,12 @@ def run_exercism(
     no_retry: bool,
     web_search: bool,
     trace: bool,
-    dry_run: bool,
-    run_id: str | None,
-    output: str | None,
+    unified: bool,
+    name: str | None = None,
+    trailing: str | None = None,
+    dry_run: bool = False,
+    run_id: str | None = None,
+    output: str | None = None,
 ) -> None:
     """Run Exercism Python benchmark with two-attempt protocol."""
     run_id = run_id or _run_id("exercism")
@@ -2643,7 +2690,11 @@ def run_exercism(
 
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
+    if name:
+        click.echo(f"Name: {name}")
     click.echo(f"Exercises: {len(items)}")
+    if unified:
+        click.echo("Unified mode: shared software benchmark container infra")
     click.echo(f"Retry: {'disabled' if no_retry else 'enabled'}")
 
     if dry_run:
@@ -2666,6 +2717,9 @@ def run_exercism(
                     "budget": budget,
                     "depth": depth,
                     "no_retry": no_retry,
+                    "unified": unified,
+                    "name": name,
+                    "trailing": trailing,
                     "web_search": web_search,
                     "trace": trace,
                     "agent": spell_resolution.agent_file if spell_resolution else None,
@@ -2682,8 +2736,15 @@ def run_exercism(
         click.echo(f"Trace dir: {trace_dir}")
 
     for cond in conditions:
-        click.echo(f"\n--- Running {cond} ---")
-        adapter = _build_adapter(cond, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget)
+        mode_label = " (unified)" if unified and cond != "one_shot" else ""
+        click.echo(f"\n--- Running {cond}{mode_label} ---")
+        adapter = None if (unified and cond != "one_shot") else _build_adapter(
+            cond,
+            model=model,
+            claude_model=claude_model,
+            codex_model=codex_model,
+            budget=budget,
+        )
         spell_resolution = None
         if cond == "spell":
             spell_resolution = _resolve_spell_agent_or_die(
@@ -2702,6 +2763,69 @@ def run_exercism(
         def process(item: ExercismItem) -> UnifiedRunRecord:
             ws = _setup_exercism_workspace(item, cond)
             try:
+                if unified and cond != "one_shot":
+                    outcome = run_unified_exercism(
+                        condition=cond,
+                        item=item,
+                        workspace=ws,
+                        model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
+                        timeout=timeout,
+                        init=_make_spell_init(format_unified_exercism_prompt(item), trailing) if cond == "spell" else None,
+                        agent_file=spell_resolution.agent_file if (spell_resolution and cond == "spell") else None,
+                        budget=budget,
+                        depth=depth,
+                        max_tokens=max_tokens,
+                        reasoning_effort=reasoning_effort,
+                        web_search=web_search if cond == "codex" else False,
+                        trace=trace if cond == "spell" else False,
+                        trace_dir=(_trace_dir_for_request(trace_dir, cond, item.slug, name=name) if (cond == "spell" and trace_dir is not None) else None),
+                        no_retry=no_retry,
+                    )
+                    last_resp = outcome.response
+                    status = "passed" if outcome.passed else last_resp.status
+                    if not outcome.passed and not last_resp.error_message:
+                        status = "tests_failed"
+                    return _mk_record(
+                        run_id=run_id,
+                        benchmark="exercism",
+                        dataset="exercism",
+                        split=None,
+                        item_id=item.slug,
+                        condition=cond,
+                        name=name,
+                        model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
+                        agent_file=spell_resolution.agent_file if (spell_resolution and cond == "spell") else None,
+                        response=RunResponse(
+                            status=status,
+                            response_text=last_resp.response_text,
+                            tokens_in=last_resp.tokens_in,
+                            tokens_out=last_resp.tokens_out,
+                            cost_usd=last_resp.cost_usd,
+                            latency_ms=last_resp.latency_ms,
+                            error_message=last_resp.error_message,
+                            error_type=last_resp.error_type,
+                            metadata={**last_resp.metadata, "test_output": outcome.test_output[-2000:]},
+                        ),
+                        response_text=last_resp.response_text,
+                        patch=None,
+                        answer_extracted=None,
+                        correct=outcome.passed,
+                        metadata={
+                            "difficulty": item.difficulty,
+                            "attempt": outcome.attempts,
+                            **(
+                                {
+                                    "spell_mode": spell_resolution.spell_mode,
+                                    "resolved_agent_file": spell_resolution.agent_file,
+                                    "agent_source": spell_resolution.source,
+                                    "agent_policy_key": spell_resolution.policy_key,
+                                }
+                                if (cond == "spell" and spell_resolution)
+                                else {}
+                            ),
+                        },
+                    )
+
                 test_path = ws / item.test_file
                 total_cost = 0.0
                 total_tokens_in = 0
@@ -2724,7 +2848,7 @@ def run_exercism(
                     prompt=prompt,
                     model_spec={"spell": model, "one_shot": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
-                    init=_make_spell_init(prompt) if cond == "spell" else None,
+                    init=_make_spell_init(prompt, trailing) if cond == "spell" else None,
                     agent_file=spell_resolution.agent_file if (spell_resolution and cond == "spell") else None,
                     budget=budget,
                     depth=depth,
@@ -2732,13 +2856,10 @@ def run_exercism(
                     reasoning_effort=reasoning_effort,
                     web_search=web_search if cond == "codex" else False,
                     trace=trace if cond == "spell" else False,
-                    trace_dir=(
-                        _trace_dir_for_request(trace_dir, cond, item.slug, attempt=1)
-                        if (cond == "spell" and trace_dir is not None)
-                        else None
-                    ),
+                    trace_dir=(_trace_dir_for_request(trace_dir, cond, item.slug, name=name, attempt=1) if (cond == "spell" and trace_dir is not None) else None),
                     workspace=ws if cond != "one_shot" else None,
                 )
+                assert adapter is not None
                 resp1 = adapter.run(req)
 
                 # For one_shot, extract code from response and write to file
@@ -2767,7 +2888,7 @@ def run_exercism(
                         prompt=retry_prompt,
                         model_spec=req.model_spec,
                         timeout=timeout,
-                        init=_make_spell_init(retry_prompt) if cond == "spell" else None,
+                        init=_make_spell_init(retry_prompt, trailing) if cond == "spell" else None,
                         agent_file=req.agent_file,
                         budget=budget,
                         depth=depth,
@@ -2775,11 +2896,7 @@ def run_exercism(
                         reasoning_effort=reasoning_effort,
                         web_search=web_search if cond == "codex" else False,
                         trace=trace if cond == "spell" else False,
-                        trace_dir=(
-                            _trace_dir_for_request(trace_dir, cond, item.slug, attempt=2)
-                            if (cond == "spell" and trace_dir is not None)
-                            else None
-                        ),
+                        trace_dir=(_trace_dir_for_request(trace_dir, cond, item.slug, name=name, attempt=2) if (cond == "spell" and trace_dir is not None) else None),
                         workspace=ws if cond != "one_shot" else None,
                     )
                     resp2 = adapter.run(req2)
@@ -2809,6 +2926,7 @@ def run_exercism(
                     split=None,
                     item_id=item.slug,
                     condition=cond,
+                    name=name,
                     model_spec=req.model_spec,
                     agent_file=req.agent_file,
                     response=RunResponse(
@@ -2870,14 +2988,15 @@ def run_exercism(
         for record in records:
             append_jsonl(output_file, record)
 
-        _print_summary(output_file, run_id, cond)
+        _print_summary(output_file, run_id, cond, name=name)
 
 
 @cli.command("summarize")
 @click.option("--input", "input_path", required=True, help="Input JSONL path")
 @click.option("--run-id", default=None, help="Optional run-id filter")
 @click.option("--condition", default=None, help="Optional condition filter")
-def summarize(input_path: str, run_id: str | None, condition: str | None) -> None:
+@click.option("--name", default=None, help="Optional name filter")
+def summarize(input_path: str, run_id: str | None, condition: str | None, name: str | None) -> None:
     path = Path(input_path)
     if not path.exists():
         raise click.ClickException(f"File not found: {path}")
@@ -2891,6 +3010,8 @@ def summarize(input_path: str, run_id: str | None, condition: str | None) -> Non
             if run_id and row.get("run_id") != run_id:
                 continue
             if condition and row.get("condition") != condition:
+                continue
+            if name is not None and row.get("name") != name:
                 continue
             rows.append(row)
 
