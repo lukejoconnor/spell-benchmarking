@@ -589,105 +589,95 @@ def load_babilong(context_size: str = '32k', tasks: list[str] = None) -> list[Be
     return items
 
 
-def format_prompt_one_shot(item: BenchmarkItem) -> str:
-    """Format item as a single prompt for one-shot condition."""
-    parts = [
-        "Context:",
-        item.context,
-        "",
-        "Question:",
-        item.question,
-    ]
-
-    if item.choices:
-        parts.append("")
-        parts.append("Choices:")
-        for i, choice in enumerate(item.choices):
-            letter = chr(ord('A') + i)
-            parts.append(f"  {letter}. {choice}")
-        parts.append("")
-        parts.append("Answer with just the letter (A, B, C, or D).")
-    else:
-        parts.append("")
-        parts.append("Answer with just the answer, no explanation.")
-
-    return "\n".join(parts)
+LONG_CONTEXT_PROMPT_ADVICE = (
+    "The document may be very large. Do not try to read the entire file at once — "
+    "search for keywords relevant to the question, then read only the specific sections you need."
+)
 
 
-def _escape_for_spell(s: str) -> str:
-    """Escape a string for embedding in a Spell string literal."""
-    return (s
-        .replace('\\', '\\\\')
-        .replace('"', '\\"')
-        .replace('\n', '\\n')
-        .replace('\t', '\\t'))
+def _has_external_context_ref(item: BenchmarkItem, context_ref: str | None) -> bool:
+    return bool(item.context and context_ref and not context_ref.startswith("Context:\n"))
 
 
-def format_prompt_spell(item: BenchmarkItem, context_file: str = None) -> str:
-    """Format item as a prompt for Spell condition.
+def _append_choices(parts: list[str], choices: list[str]) -> None:
+    parts.extend(["", "Choices:"])
+    for i, choice in enumerate(choices):
+        letter = chr(ord('A') + i)
+        parts.append(f"  {letter}. {choice}")
 
-    For items with context: context_file points to external file (forces programmatic search).
-    For math problems: question is self-contained, no context file.
-    NOTE: Prompts that start with '(' bypass CLI's wrap-nl and are treated as raw
-    Spell code prefixes. All others get wrapped with the completion wrapper.
-    """
-    parts = []
 
-    if item.context and context_file:
-        # External context (BABILong, LongBench, etc.)
-        doc_len = len(item.context)
-        parts.extend([
-            f'Document path: {context_file}',
-            f'Document size: {doc_len:,} chars',
-            '',
-            f'Question: {item.question.strip()}',
-        ])
-    elif item.dataset == 'gaia':
-        # GAIA: general question, optional file attachment
-        parts.append(item.question.strip())
+def format_benchmark_prompt(
+    item: BenchmarkItem,
+    context_ref: str | None = None,
+    *,
+    web_search: bool = False,
+) -> str:
+    """Format a shared, condition-neutral prompt for general benchmarks."""
+    question = item.question.strip()
+    parts: list[str] = []
+    has_external_context = _has_external_context_ref(item, context_ref)
+
+    if item.dataset == 'gaia':
+        parts.append(question)
         file_path = (item.metadata or {}).get('file_path', '')
         if file_path:
             parts.extend(['', f'Attached file: {file_path}'])
-    else:
-        # Self-contained problem (GSM8K math, etc.)
         parts.extend([
-            'Math problem:',
             '',
-            item.question.strip(),
+            'Use web search, Python, and any tools needed to answer this question.'
+            if web_search
+            else 'Use Python and any available non-web tools needed to answer this question.',
+            'Reply with ONLY the final answer — a number, a short string, or a comma-separated list. No explanation.',
         ])
+        return "\n".join(parts)
+
+    if context_ref:
+        parts.extend([context_ref, '', f'Question: {question}'])
+    else:
+        parts.append(question)
 
     if item.choices:
-        parts.append('')
-        parts.append('Choices:')
-        for i, choice in enumerate(item.choices):
-            letter = chr(ord('A') + i)
-            parts.append(f'  {letter}. {choice}')
-        parts.append('')
-        parts.append('Return just the letter (A, B, C, or D).')
-    elif item.dataset in ('gsm8k', 'math'):
-        parts.append('')
-        parts.append('Solve step by step. Return just the final answer (e.g., 42 or 3/4 or 2\\sqrt{3}).')
-    elif item.dataset == 'mathconstruct':
-        parts.append('')
-        parts.append('Follow the formatting instructions exactly and put the final answer in \\boxed{...}.')
-    elif item.dataset == 'project_euler':
-        parts.append('')
-        parts.append('Solve efficiently. Return just the final integer answer, no explanation.')
-    elif item.dataset == 'omni_math':
-        parts.append('')
-        parts.append('Return ONLY the final answer on a single line (e.g., 42, 3/4, 2\\sqrt{3}, or \\boxed{2\\sqrt{3}}). No explanation.')
+        _append_choices(parts, item.choices)
+        if has_external_context:
+            parts.extend(['', LONG_CONTEXT_PROMPT_ADVICE])
+        parts.extend(['', 'Reply with ONLY the letter (A, B, C, or D). No explanation.'])
+        return "\n".join(parts)
+
+    if has_external_context:
+        parts.extend(['', LONG_CONTEXT_PROMPT_ADVICE])
+
+    if item.dataset in ('gsm8k', 'math', 'hmmt'):
+        parts.extend([
+            '',
+            'Solve step by step. You may use Python if helpful.',
+            'Reply with ONLY the final answer (e.g., 42 or 3/4 or 2\\sqrt{3}). No explanation.',
+        ])
     elif item.dataset == 'aime':
-        parts.append('')
-        parts.append('Solve step by step. Return just the final integer answer (AIME answers are always integers 0-999).')
-    elif item.dataset == 'hmmt':
-        parts.append('')
-        parts.append('Solve step by step. Return just the final answer (e.g., 42 or 3/4 or 2\\sqrt{3}).')
-    elif item.dataset == 'gaia':
-        parts.append('')
-        parts.append('Use web search and any tools needed. Return ONLY the final answer — a number, a short string, or a comma-separated list. No explanation.')
+        parts.extend([
+            '',
+            'Solve step by step. You may use Python if helpful.',
+            'Reply with ONLY the final integer answer (AIME answers are always integers 0-999). No explanation.',
+        ])
+    elif item.dataset == 'omni_math':
+        parts.extend([
+            '',
+            'You may use Python for computation if helpful.',
+            'Reply with ONLY the final answer on a single line (e.g., 42, 3/4, 2\\sqrt{3}, or \\boxed{2\\sqrt{3}}). No explanation.',
+        ])
+    elif item.dataset == 'mathconstruct':
+        parts.extend([
+            '',
+            'You may use Python for computation if helpful.',
+            'Follow the formatting instructions exactly. Return your final answer in LaTeX inside \\boxed{...}.',
+        ])
+    elif item.dataset == 'project_euler':
+        parts.extend([
+            '',
+            'Solve efficiently. You may use Python for computation if helpful.',
+            'Reply with ONLY the final integer answer. No explanation.',
+        ])
     else:
-        parts.append('')
-        parts.append('Return just the answer (e.g., "bathroom").')
+        parts.extend(['', 'Reply with ONLY the answer. No explanation.'])
 
     return "\n".join(parts)
 

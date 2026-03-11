@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-from bench import OMNI_MATH_PREAMBLE, _general_preamble
+import sys
+import types
+
+stub = types.ModuleType("spell_benchmark_client")
+stub.SpellBenchmarkClient = object
+sys.modules.setdefault("spell_benchmark_client", stub)
+
 from src.unified_adapters import build_spell_init
-from src.datasets import BenchmarkItem, format_prompt_spell
+from src.datasets import BenchmarkItem, format_benchmark_prompt
 
 
-def test_omni_math_preamble_excludes_subagent_guidance() -> None:
-    assert "Sub-agent delegation" not in OMNI_MATH_PREAMBLE
-
-
-def test_omni_math_spell_prompt_requires_final_answer_format() -> None:
+def test_omni_math_prompt_requires_final_answer_format() -> None:
     item = BenchmarkItem(
         id="omni_math_1",
         dataset="omni_math",
@@ -18,16 +20,48 @@ def test_omni_math_spell_prompt_requires_final_answer_format() -> None:
         answer="4",
     )
 
-    prompt = format_prompt_spell(item)
+    prompt = format_benchmark_prompt(item)
 
-    assert "Return ONLY the final answer on a single line" in prompt
+    assert "Reply with ONLY the final answer on a single line" in prompt
     assert "\\boxed{2\\sqrt{3}}" in prompt
 
 
-def test_general_preamble_applies_to_omni_math_and_project_euler() -> None:
-    assert _general_preamble("omni_math") == OMNI_MATH_PREAMBLE
-    assert _general_preamble("project_euler") == OMNI_MATH_PREAMBLE
-    assert _general_preamble("math") is None
+def test_long_context_prompt_adds_shared_search_advice() -> None:
+    item = BenchmarkItem(
+        id="longbench_1",
+        dataset="longbench_short",
+        context="alpha beta gamma",
+        question="Which token appears second?",
+        answer="beta",
+        choices=["alpha", "beta", "gamma", "delta"],
+    )
+
+    prompt = format_benchmark_prompt(
+        item,
+        context_ref="Document path: /tmp/context.txt\nDocument size: 16 chars",
+    )
+
+    assert "The document may be very large." in prompt
+    assert "Reply with ONLY the letter (A, B, C, or D)." in prompt
+
+
+def test_gaia_prompt_toggles_web_search_wording() -> None:
+    item = BenchmarkItem(
+        id="gaia_1",
+        dataset="gaia",
+        context="",
+        question="Who won?",
+        answer="A",
+        metadata={},
+    )
+
+    prompt_with_web = format_benchmark_prompt(item, web_search=True)
+    prompt_without_web = format_benchmark_prompt(item, web_search=False)
+
+    assert "Use web search, Python, and any tools needed" in prompt_with_web
+    assert "non-web tools" not in prompt_with_web
+    assert "Use Python and any available non-web tools needed" in prompt_without_web
+    assert "Use web search" not in prompt_without_web
 
 
 def test_build_spell_init_treats_prose_preamble_as_prompt_text() -> None:
