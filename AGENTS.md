@@ -116,7 +116,7 @@ Run `docker system prune -af --volumes` between tasks to avoid disk exhaustion.
 ```bash
 --condition {one_shot,spell,claude_code,codex,all}   # Which system to run
 --n N                                  # Limit to N items
---model anthropic:claude-opus-4-5-20251101   # Model override
+--model anthropic-tc:claude-opus-4-6         # Model override
 --name trial-label                     # Optional run label in JSONL/traces/predictions
 --trailing "'(!extend)"               # Spell trailing override
 --agent path/to/agent.edn             # Primary Spell configuration override
