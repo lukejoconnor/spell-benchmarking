@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 import pytest
 import sys
@@ -7,17 +8,33 @@ import types
 
 
 def _import_bench_with_stubbed_client():
+    existing = sys.modules.get("bench")
+    if existing is not None:
+        return existing
+
     stub = types.ModuleType("spell_benchmark_client")
 
     class _DummyClient:  # pragma: no cover - only for import wiring
         pass
 
     stub.SpellBenchmarkClient = _DummyClient
-    sys.modules.setdefault("spell_benchmark_client", stub)
+    prior_client = sys.modules.get("spell_benchmark_client")
+    sys.modules["spell_benchmark_client"] = stub
+    try:
+        return importlib.import_module("bench")
+    finally:
+        if prior_client is None:
+            sys.modules.pop("spell_benchmark_client", None)
+        else:
+            sys.modules["spell_benchmark_client"] = prior_client
 
-    import bench as bench_module  # local import after stubbing
 
-    return bench_module
+def teardown_module(_module) -> None:
+    sys.modules.pop("bench", None)
+    sys.modules.pop("src.unified_adapters", None)
+    stubbed_client = sys.modules.get("spell_benchmark_client")
+    if stubbed_client is not None and getattr(stubbed_client, "__file__", None) is None:
+        sys.modules.pop("spell_benchmark_client", None)
 
 
 def _write_pred(path: Path) -> None:
