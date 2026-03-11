@@ -317,14 +317,6 @@ def _format_general_prompt(item: BenchmarkItem, condition: str) -> str:
     return format_benchmark_prompt(item, context_file=_general_context_file(condition, item))
 
 
-def _append_prompt_text(prompt: str, extra: str | None) -> str:
-    if not extra or not extra.strip():
-        return prompt
-    if not prompt.strip():
-        return extra.strip()
-    return f"{prompt.rstrip()}\n\n{extra.strip()}"
-
-
 def _unquote_spell_expr(expr: str) -> str:
     stripped = expr.strip()
     return stripped[1:].strip() if stripped.startswith("'") else stripped
@@ -349,13 +341,11 @@ def _make_spell_init(prompt: str, trailing: str | None = None) -> str:
 def _make_bespoke_spell_init(
     prompt: str,
     *,
-    preamble: str | None = None,
     preamble_expr: str | None = None,
     trailing: str | None = None,
 ) -> str:
-    prompt_with_preamble = _append_prompt_text(prompt, preamble)
     combined_trailing = _compose_spell_trailing([preamble_expr] if preamble_expr else [], trailing)
-    return _make_spell_init(prompt_with_preamble, combined_trailing)
+    return _make_spell_init(prompt, combined_trailing)
 
 
 def _spell_string_literal(value: str) -> str:
@@ -1315,18 +1305,13 @@ def run_general(
     help="Re-run SWE-bench Pro eval even if output files already exist",
 )
 @click.option(
-    "--preamble",
-    default=None,
-    help="Prompt steering text appended inside the quoted Spell task prompt; raw Spell forms are still accepted for backward compatibility",
-)
-@click.option(
     "--preamble-expr",
     default=None,
     help="Raw Spell init expression inserted before the trailing expression",
 )
 @click.option("--trailing", default=None, help="Custom Spell trailing expression (overrides default '(!extend))")
 @click.option("--variant", default=None, type=click.Choice(list(SWEBENCH_VARIANTS.keys())),
-              help="Named intervention variant (overrides preamble/trailing/agent)")
+              help="Named intervention variant (overrides preamble-expr/trailing/agent)")
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
 @click.option("--output", default=None)
@@ -1372,7 +1357,6 @@ def run_swebench(
     pro_use_local_docker: bool,
     pro_block_network: bool,
     pro_redo: bool,
-    preamble: str | None,
     preamble_expr: str | None,
     trailing: str | None,
     variant: str | None,
@@ -1380,10 +1364,10 @@ def run_swebench(
     run_id: str | None,
     output: str | None,
 ) -> None:
-    # Apply named variant overrides (variant takes precedence over manual preamble/trailing).
+    # Apply named variant overrides (variant takes precedence over manual preamble-expr/trailing).
     if variant:
         vconf = SWEBENCH_VARIANTS[variant]
-        preamble_expr = preamble_expr or vconf.get("preamble_expr") or vconf.get("preamble")
+        preamble_expr = preamble_expr or vconf.get("preamble_expr")
         trailing = trailing or vconf.get("trailing")
         agent = agent or vconf.get("agent")
     run_id = run_id or _run_id("swebench")
@@ -1479,7 +1463,6 @@ def run_swebench(
                     "pro_use_local_docker": pro_use_local_docker,
                     "pro_block_network": pro_block_network,
                     "pro_redo": pro_redo,
-                    "preamble": preamble,
                     "trailing": trailing,
                 },
                 indent=2,
@@ -1530,7 +1513,6 @@ def run_swebench(
                     timeout=timeout,
                     init=(_make_bespoke_spell_init(
                               prompt,
-                              preamble=preamble,
                               preamble_expr=preamble_expr or (
                                   SWEBENCH_DOCKER_PREAMBLE if docker else SWEBENCH_REMINDER_PREAMBLE
                               ),
@@ -2191,11 +2173,6 @@ def _validate_python_syntax(code: str) -> tuple[bool, str | None]:
 @click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--use-knowledge/--no-knowledge", default=False, show_default=True, help="Include domain knowledge in prompt")
 @click.option(
-    "--preamble",
-    default=None,
-    help="Prompt steering text appended inside the quoted Spell task prompt; raw Spell forms are still accepted for backward compatibility",
-)
-@click.option(
     "--preamble-expr",
     default=None,
     help="Raw Spell init expression inserted before the trailing expression",
@@ -2222,7 +2199,6 @@ def run_scienceagentbench(
     reasoning_effort: str | None,
     web_search: bool,
     use_knowledge: bool,
-    preamble: str | None,
     preamble_expr: str | None,
     workspace_root: str,
     run_id: str | None,
@@ -2325,7 +2301,7 @@ def run_scienceagentbench(
                     model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
                     init=(
-                        _make_bespoke_spell_init(prompt, preamble=preamble, preamble_expr=preamble_expr)
+                        _make_bespoke_spell_init(prompt, preamble_expr=preamble_expr)
                         if cond == "spell"
                         else None
                     ),

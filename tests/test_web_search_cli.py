@@ -153,8 +153,8 @@ class WebSearchCliRegressionTest(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(len(requests), 1)
         self.assertIs(requests[0].web_search, True)
+        self.assertIn("Use web search", requests[0].prompt)
         self.assertIn("Return ONLY the final answer", requests[0].prompt)
-        self.assertNotIn("Use web search", requests[0].prompt)
 
     def test_general_gaia_no_web_search_is_rejected(self):
         requests = []

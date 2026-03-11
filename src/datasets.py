@@ -660,6 +660,7 @@ def format_benchmark_prompt(item: BenchmarkItem, context_file: str | None = None
         parts.append('Solve step by step. Return just the final answer (e.g., 42 or 3/4 or 2\\sqrt{3}).')
     elif item.dataset == 'gaia':
         parts.append('')
+        parts.append('Use web search, Python, and any tools needed to answer this question.')
         parts.append('Return ONLY the final answer — a number, a short string, or a comma-separated list. No explanation.')
     else:
         parts.append('')

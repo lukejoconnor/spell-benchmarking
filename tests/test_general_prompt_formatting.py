@@ -98,6 +98,19 @@ class GeneralPromptFormattingTest(unittest.TestCase):
         self.assertIn('(quine sys-reminder "Recall: you are writing Spell code.")', init)
         self.assertIn("'(do (quine sys-reminder", init)
 
+    def test_gaia_prompt_mentions_web_search(self) -> None:
+        item = BenchmarkItem(
+            id="gaia_1",
+            dataset="gaia",
+            context="",
+            question="Who won?",
+            answer="A",
+        )
+
+        prompt = format_benchmark_prompt(item)
+
+        self.assertIn("Use web search, Python, and any tools needed", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()
