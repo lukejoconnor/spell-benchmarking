@@ -15,13 +15,26 @@ from pathlib import Path
 import anthropic
 import openai
 
-from .datasets import BenchmarkItem, SWEBenchItem, format_prompt_one_shot, format_prompt_spell
+from .datasets import BenchmarkItem, SWEBenchItem, format_benchmark_prompt
 
 # Directory for context files (within spell project for tools/read-file access)
 CONTEXT_DIR = Path(__file__).parent.parent.parent / 'benchmarking' / 'data' / 'contexts'
 
 # Directory for detailed traces
 TRACES_DIR = Path(__file__).parent.parent / 'traces'
+
+
+def _context_ref(item: BenchmarkItem, condition: str, context_file: str | None = None) -> str | None:
+    if not item.context:
+        return None
+    if condition == 'one_shot':
+        return f"Context:\n{item.context}"
+    if not context_file:
+        return None
+    n_chars = len(item.context)
+    if condition == 'spell':
+        return f"Document path: {context_file}\nDocument size: {n_chars:,} chars"
+    return f"Read the document at {context_file} ({n_chars:,} chars)"
 
 
 class TraceLogger:
@@ -164,7 +177,7 @@ class OneShotRunner:
 
     def run(self, item: BenchmarkItem) -> RunResult:
         """Run a single item through one-shot condition."""
-        prompt = format_prompt_one_shot(item)
+        prompt = format_benchmark_prompt(item, context_ref=_context_ref(item, "one_shot", None))
         start = time.time()
 
         try:
@@ -321,7 +334,7 @@ class SpellRunner:
                 context_file = str(context_file)
 
             # Format prompt (with context file if applicable)
-            prompt = format_prompt_spell(item, context_file)
+            prompt = format_benchmark_prompt(item, context_ref=_context_ref(item, "spell", context_file))
 
             # Write prompt to temp file (.spl so CLI treats it as prompt content)
             with tempfile.NamedTemporaryFile(mode='w', suffix='.spl', delete=False) as f:

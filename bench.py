@@ -40,8 +40,7 @@ from src.datasets import (
     load_swebench_lite,
     load_swebench_pro,
     load_swebench_verified_mini,
-    format_prompt_one_shot,
-    format_prompt_spell,
+    format_benchmark_prompt,
 )
 from src.evaluation import (
     extract_freeform_answer,
@@ -142,13 +141,6 @@ SWEBENCH_DOCKER_PREAMBLE = (
     'io/write-file, io/ls, io/exists?, io/mkdir — they operate on the host, not the '
     'container. Use shell equivalents via io/sh instead.")'
 )
-OMNI_MATH_PREAMBLE = (
-    '(quine strategy "Solve the problem using a combination of the following strategies:\\n'
-    '- Pure reasoning via think blocks\\n'
-    '- Numerical computation using Spell (defn, loop/recur, map/reduce, math/)\\n'
-    '- Context pruning to manage your chain of thoughts (rethink + !extend)")'
-)
-
 # Named SWE-bench intervention variants for experimentation.
 # Each variant specifies raw Spell preamble expressions, trailing expression,
 # and optional agent override.
@@ -306,61 +298,21 @@ def _general_condition_web_search(condition: str, enabled: bool) -> bool:
     return enabled and condition in GENERAL_WEB_SEARCH_CONDITIONS
 
 
-def _format_general_prompt(item: BenchmarkItem, condition: str, *, web_search: bool = False) -> str:
-    context_file = _ensure_context_file(item)
-    if item.dataset == "gaia":
-        parts: list[str] = [item.question.strip()]
-        file_path = (item.metadata or {}).get("file_path", "")
-        if file_path:
-            parts.extend(["", f"Attached file: {file_path}"])
-        parts.append("")
-        if web_search:
-            parts.append("Use web search, Python, and any tools needed to answer this question.")
-        else:
-            parts.append("Use Python and any available non-web tools needed to answer this question.")
-        parts.append(
-            "Reply with ONLY the final answer — a number, a short string, or a comma-separated list. No explanation."
-        )
-        return "\n".join(parts)
+def _context_ref(item: BenchmarkItem, condition: str, context_file: str | None) -> str | None:
+    if not item.context or not context_file:
+        return None
 
+    n_chars = len(item.context)
     if condition == "one_shot":
-        return format_prompt_one_shot(item)
+        return f"Context:\n{item.context}"
     if condition == "spell":
-        return format_prompt_spell(item, context_file=context_file)
+        return f"Document path: {context_file}\nDocument size: {n_chars:,} chars"
+    return f"Read the document at {context_file} ({n_chars:,} chars)"
 
-    parts: list[str] = []
-    if item.context and context_file:
-        parts.extend(
-            [
-                f"Read the document at {context_file} ({len(item.context):,} chars) and answer this question:",
-                "",
-                item.question.strip(),
-            ]
-        )
-    else:
-        parts.extend(["Solve this problem:", "", item.question.strip()])
 
-    if item.choices:
-        parts.append("")
-        parts.append("Choices:")
-        for i, choice in enumerate(item.choices):
-            letter = chr(ord("A") + i)
-            parts.append(f"  {letter}. {choice}")
-        parts.append("")
-        parts.append("Reply with ONLY the letter (A, B, C, or D). No explanation.")
-    elif item.dataset == "mathconstruct":
-        parts.append("")
-        parts.append("Follow the formatting instructions exactly.")
-        parts.append("Return your final answer in LaTeX inside \\boxed{...}.")
-    elif item.dataset in ("gsm8k", "math", "aime", "hmmt", "omni_math", "project_euler"):
-        parts.append("")
-        parts.append("You may use Python via `uv run python3` if helpful.")
-        parts.append("Reply with ONLY the final answer. No explanation.")
-    else:
-        parts.append("")
-        parts.append("Reply with ONLY the answer. No explanation.")
-
-    return "\n".join(parts)
+def _format_general_prompt(item: BenchmarkItem, condition: str) -> str:
+    context_file = _ensure_context_file(item)
+    return format_benchmark_prompt(item, context_ref=_context_ref(item, condition, context_file))
 
 
 def _make_spell_init(
@@ -382,24 +334,6 @@ def _make_spell_init(
         preamble_expr=preamble_expr,
         prompt_preamble=prompt_preamble,
     )
-
-
-LONGBENCH_PREAMBLE = (
-    "The document may be very large (100K-1M+ chars). "
-    "NEVER try to read the entire file at once — it will be truncated and you will miss critical content. "
-    "Instead, use io/sh with grep to search for keywords relevant to the question, "
-    "then read only the specific sections you need with sed or io/read-lines."
-)
-
-
-def _general_preamble(dataset: str) -> str | None:
-    return {
-        "omni_math": OMNI_MATH_PREAMBLE,
-        "mathconstruct": OMNI_MATH_PREAMBLE,
-        "project_euler": OMNI_MATH_PREAMBLE,
-        "longbench_sampled": LONGBENCH_PREAMBLE,
-        "longbench_short": LONGBENCH_PREAMBLE,
-    }.get(dataset)
 
 
 def _format_optional_swebench_text(value: Any) -> str:
@@ -1136,7 +1070,7 @@ def run_general(
         condition_web_search = _general_condition_web_search(cond, effective_web_search)
         requests: list[RunRequest] = []
         for item in loaded:
-            prompt = _format_general_prompt(item, cond, web_search=condition_web_search)
+            prompt = _format_general_prompt(item, cond)
             requests.append(
                 RunRequest(
                     benchmark="general",
@@ -1146,7 +1080,7 @@ def run_general(
                     prompt=prompt,
                     model_spec={"spell": model, "one_shot": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
-                    init=_make_spell_init(prompt, preamble=_general_preamble(item.dataset)) if cond == "spell" else None,
+                    init=_make_spell_init(prompt) if cond == "spell" else None,
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
                     budget=budget,
                     depth=depth,
