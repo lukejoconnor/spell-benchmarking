@@ -10,13 +10,29 @@ from __future__ import annotations
 import base64
 import logging
 import os
-import shlex
+import sys
 from pathlib import Path
 
 try:
-    from .base import DockerExecAgent, ParsedUsage, parse_jsonl_events
+    from .base import DockerExecAgent, ParsedUsage
 except ImportError:
-    from base import DockerExecAgent, ParsedUsage, parse_jsonl_events
+    from base import DockerExecAgent, ParsedUsage
+
+try:
+    from src.docker_agents import (
+        cc_env_vars,
+        cc_install_script,
+        cc_parse_usage,
+        cc_run_command,
+    )
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from src.docker_agents import (
+        cc_env_vars,
+        cc_install_script,
+        cc_parse_usage,
+        cc_run_command,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -52,15 +68,7 @@ class ClaudeCodeAgent(DockerExecAgent):
         return os.environ.get("ANTHROPIC_MODEL")
 
     def _install_script(self) -> str:
-        version = self.version or "latest"
-        return f"""
-source "$HOME/.nvm/nvm.sh"
-npm install -g @anthropic-ai/claude-code@{version}
-if [ -n "${{CLAUDE_JSON_B64:-}}" ]; then
-  printf '%s' "$CLAUDE_JSON_B64" | base64 -d > "$HOME/.claude.json"
-fi
-echo "claude installed: $(claude --version 2>/dev/null || echo unknown)"
-"""
+        return cc_install_script(version=self.version or "latest")
 
     def _load_claude_json_b64(self) -> str | None:
         # Optional explicit override for nonstandard auth locations.
@@ -73,46 +81,24 @@ echo "claude installed: $(claude --version 2>/dev/null || echo unknown)"
         return base64.b64encode(claude_json.read_bytes()).decode("ascii")
 
     def _env_vars(self) -> dict[str, str]:
-        env = {
-            "FORCE_AUTO_BACKGROUND_TASKS": "1",
-            "ENABLE_BACKGROUND_TASKS": "1",
-        }
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if api_key:
-            env["ANTHROPIC_API_KEY"] = api_key
-
         claude_json_b64 = self._load_claude_json_b64()
-        if claude_json_b64:
-            env["CLAUDE_JSON_B64"] = claude_json_b64
-
-        if not api_key and not claude_json_b64:
+        env = cc_env_vars(model=self._resolve_model())
+        if not env.get("ANTHROPIC_API_KEY") and not claude_json_b64:
             logger.warning(
                 "No ANTHROPIC_API_KEY or ~/.claude.json found for Claude Code container auth. "
                 "Runs may fail unless one is provided."
             )
-
-        model = self._resolve_model()
-        if model:
-            env["ANTHROPIC_MODEL"] = model
         return env
 
     def _run_command(self, instruction: str, workdir: str) -> str:
-        escaped = shlex.quote(instruction)
-        parts = ['source "$HOME/.nvm/nvm.sh" &&', "claude"]
-
-        parts.append(f"--setting-sources {shlex.quote(self._setting_sources)}")
-        parts.append("--verbose")
-        parts.append("--output-format stream-json")
-        parts.append(f"--max-budget-usd {self._max_budget_usd}")
-
-        model = self._resolve_model()
-        if model:
-            parts.append(f"--model {shlex.quote(model)}")
-
-        parts.append(f"--allowedTools {' '.join(self.ALLOWED_TOOLS)}")
-        parts.append(f"-p {escaped}")
-
-        return " ".join(parts)
+        del workdir
+        return cc_run_command(
+            instruction,
+            model=self._resolve_model(),
+            budget=self._max_budget_usd,
+            allowed_tools=self.ALLOWED_TOOLS,
+            setting_sources=self._setting_sources,
+        )
 
     def _parse_usage(self, stdout: str) -> ParsedUsage | None:
         """Parse usage from Claude Code stream-json output.
@@ -121,39 +107,7 @@ echo "claude installed: $(claude --version 2>/dev/null || echo unknown)"
         {"type": "result", "cost_usd": X, "total_cost_usd": Y,
          "usage": {"input_tokens": N, "output_tokens": M}}
         """
-        events = parse_jsonl_events(stdout)
-
-        # Find the last "result" event
-        result_event = None
-        for event in reversed(events):
-            if event.get("type") == "result":
-                result_event = event
-                break
-
-        if not result_event:
+        usage = cc_parse_usage(stdout)
+        if not usage:
             logger.warning("No result event found in Claude Code output")
-            return None
-
-        usage = result_event.get("usage", {})
-
-        def _int(v) -> int:
-            return int(v) if isinstance(v, (int, float)) else 0
-
-        # CC's input_tokens is non-cached only; cached tokens are separate
-        input_tokens = _int(usage.get("input_tokens", 0))
-        cached = (_int(usage.get("cache_creation_input_tokens", 0))
-                  + _int(usage.get("cache_read_input_tokens", 0)))
-        output_tokens = _int(usage.get("output_tokens", 0))
-
-        cost_usd = result_event.get("total_cost_usd")
-        if cost_usd is None:
-            cost_usd = result_event.get("cost_usd")
-        if cost_usd is not None:
-            cost_usd = float(cost_usd)
-
-        return ParsedUsage(
-            input_tokens=input_tokens,
-            cached_input_tokens=cached,
-            output_tokens=output_tokens,
-            cost_usd=cost_usd,
-        )
+        return usage

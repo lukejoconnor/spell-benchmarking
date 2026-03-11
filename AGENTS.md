@@ -54,9 +54,15 @@ Maintain a neutral, skeptical stance. Present unfavorable and inconclusive resul
 | FeatureBench | varies | Feature implementation | `uv run python benchmarking/bench.py featurebench --condition spell` |
 | ScienceAgentBench | 102 | Scientific code generation (data science) | `uv run python benchmarking/bench.py scienceagentbench --condition claude_code` |
 
+Unified software-benchmark container infra:
+- `bench.py swebench --unified` runs the shared in-container agent layer for `mini`, `lite`, and `verified`; `--dataset pro` remains on the existing Pro path for now.
+- `bench.py featurebench --unified` and `bench.py exercism --unified` use the same shared container-agent infrastructure as Terminal-Bench and unified SWE-bench.
+- ScienceAgentBench is intentionally not on the shared software-benchmark container infra in this pass.
+
 SWE-bench harness defaults and workflow:
 - `bench.py swebench` now defaults to `--condition all` (`spell`, `claude_code`, `codex`) and evaluates by default (`--evaluate`).
 - Use `--no-evaluate` to run generation only (write predictions and unified JSONL without running `swebench.harness`).
+- `bench.py swebench --unified` uses the shared `src/docker_agents.py` container-agent layer for `mini`/`lite`/`verified`; `pro` remains on the existing path.
 - Evaluation runs conditions in series with staged cleanup:
   - non-final conditions: `cache_level=env`, `clean=false`
   - final condition: configurable final cleanup (`--eval-final-cache-level`, `--eval-final-clean`)
@@ -67,6 +73,13 @@ SWE-bench harness defaults and workflow:
 | Benchmark | Items | What it tests | Run command |
 |-----------|-------|---------------|-------------|
 | Exercism Python | ~225 | Programming exercises, two-attempt with test feedback | `clj -M:dev -m exercism-bench run` |
+
+Unified software-benchmark infra:
+- `src/docker_agents.py` is the shared container-agent layer for Terminal-Bench plus `bench.py --unified` software runs.
+- `bench.py exercism --unified` and `bench.py featurebench --unified` keep edits and verification in the same copied container workspace.
+- Unified Exercism prompts use stable in-container paths instead of host temp paths.
+
+The Python harness also supports `uv run python benchmarking/bench.py exercism --unified` when you want Exercism on the shared software-benchmark container infra instead of the legacy host-workspace flow.
 
 ### Terminal Tasks (Terminal-Bench harness)
 

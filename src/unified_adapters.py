@@ -27,6 +27,10 @@ def _resolve_spell_root() -> Path:
     if (nested_candidate / "config" / "agents").exists():
         return nested_candidate
 
+    sibling_candidate = BENCHMARK_ROOT.parent / "spell"
+    if (sibling_candidate / "config" / "agents").exists():
+        return sibling_candidate
+
     return BENCHMARK_ROOT
 
 
