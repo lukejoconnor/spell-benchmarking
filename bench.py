@@ -195,7 +195,7 @@ SWEBENCH_VARIANTS: dict[str, dict[str, str | None]] = {
     },
     "fix-loop": {
         "preamble_expr": None,
-        "trailing": "(patterns/fix-loop prompt)",
+        "trailing": "'(patterns/fix-loop prompt)",
         "agent": "config/agents/cli.agent.edn",
     },
 }
