@@ -308,6 +308,19 @@ _MATH_DATASETS = frozenset({
     "gsm8k", "math", "aime", "hmmt", "omni_math", "mathconstruct", "project_euler",
 })
 
+# Per-dataset default timeouts (seconds).  Datasets not listed use _DEFAULT_TIMEOUT.
+_DEFAULT_TIMEOUT = 300
+_DATASET_TIMEOUTS: dict[str, int] = {
+    "omni_math":      3600,
+    "omni_math_hard": 3600,
+    "aime_2025":       600,
+    "aime_2026":       600,
+    "hmmt_feb_2025":   600,
+    "hmmt_nov_2025":   600,
+    "project_euler":   600,
+    "mathconstruct":   600,
+}
+
 
 def _general_spell_trailing(dataset: str) -> str | None:
     if dataset in _MATH_DATASETS:
@@ -979,7 +992,7 @@ def cli() -> None:
 @click.option("--agent-tc", default=None, help="Spell tc-mode agent override")
 @click.option("--depth", type=int, default=None)
 @click.option("--max-tokens", type=int, default=None)
-@click.option("--timeout", type=int, default=300, show_default=True)
+@click.option("--timeout", type=int, default=None, help="Per-item timeout in seconds (default: dataset-dependent, see _DATASET_TIMEOUTS)")
 @click.option("--thinking/--no-thinking", default=False, show_default=True)
 @click.option("--thinking-budget", type=int, default=10000, show_default=True)
 @click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
@@ -1012,7 +1025,7 @@ def run_general(
     agent_tc: str | None,
     depth: int | None,
     max_tokens: int | None,
-    timeout: int,
+    timeout: int | None,
     thinking: bool,
     thinking_budget: int,
     reasoning_effort: str | None,
@@ -1029,6 +1042,8 @@ def run_general(
 ) -> None:
     run_id = run_id or _run_id("general")
     output_file = Path(output) if output else _default_output(run_id)
+    if timeout is None:
+        timeout = _DATASET_TIMEOUTS.get(dataset, _DEFAULT_TIMEOUT)
     conditions = _parse_conditions(condition, ("one_shot", "spell", "claude_code", "codex", "all"))
 
     click.echo(f"Run ID: {run_id}")
