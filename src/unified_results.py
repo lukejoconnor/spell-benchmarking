@@ -33,6 +33,7 @@ class UnifiedRunRecord:
     error_type: str | None
     error_message: str | None
     metadata: dict[str, Any]
+    name: str | None = None
 
 
 def now_iso() -> str:
@@ -71,7 +72,9 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     by_condition: dict[str, dict[str, Any]] = {}
     for r in records:
         condition = r.get("condition", "unknown")
-        bucket = by_condition.setdefault(condition, {"total": 0, "errors": 0, "correct": 0, "scored": 0, "cost_usd": 0.0})
+        name = r.get("name")
+        bucket_key = f"{condition}/{name}" if name else condition
+        bucket = by_condition.setdefault(bucket_key, {"total": 0, "errors": 0, "correct": 0, "scored": 0, "cost_usd": 0.0})
         bucket["total"] += 1
         if r.get("error_message"):
             bucket["errors"] += 1

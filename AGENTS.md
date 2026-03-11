@@ -61,12 +61,14 @@ Unified software-benchmark container infra:
 
 SWE-bench harness defaults and workflow:
 - `bench.py swebench` now defaults to `--condition all` (`spell`, `claude_code`, `codex`) and evaluates by default (`--evaluate`).
+- Use `--name <label>` to tag a run variant across JSONL records, traces, and SWE-bench prediction filenames.
+- Use `--trailing <expr>` on Spell runs to override the default trailing policy directly instead of relying on preset variants.
 - Use `--no-evaluate` to run generation only (write predictions and unified JSONL without running `swebench.harness`).
 - `bench.py swebench --unified` uses the shared `src/docker_agents.py` container-agent layer for `mini`/`lite`/`verified`; `pro` remains on the existing path.
 - Evaluation runs conditions in series with staged cleanup:
   - non-final conditions: `cache_level=env`, `clean=false`
   - final condition: configurable final cleanup (`--eval-final-cache-level`, `--eval-final-clean`)
-- For explicit eval-only runs, use `bench.py swebench-eval`.
+- For explicit eval-only runs, use `bench.py swebench-eval` and pass the same `--name` you used for generation when predictions were label-tagged.
 
 ### Coding (Clojure harness)
 
@@ -115,6 +117,9 @@ Run `docker system prune -af --volumes` between tasks to avoid disk exhaustion.
 --condition {one_shot,spell,claude_code,codex,all}   # Which system to run
 --n N                                  # Limit to N items
 --model anthropic:claude-opus-4-5-20251101   # Model override
+--name trial-label                     # Optional run label in JSONL/traces/predictions
+--trailing "'(!extend)"               # Spell trailing override
+--agent path/to/agent.edn             # Primary Spell configuration override
 --thinking --reasoning-effort high     # Extended thinking
 --suffix-grammar                       # Suffix grammar support
 --budget N                             # Spell budget in dollars

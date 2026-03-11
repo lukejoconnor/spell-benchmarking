@@ -149,54 +149,6 @@ OMNI_MATH_TRAILING = (
     "(!extend))"
 )
 
-# Named SWE-bench intervention variants for experimentation.
-# Each variant specifies a trailing expression and optional agent override.
-SWEBENCH_VARIANTS: dict[str, dict[str, str | None]] = {
-    "describe-all": {
-        "trailing": "'(do (!describe io agents globals) (!extend))",
-        "agent": "config/agents/cli.agent.edn",
-    },
-    "orchestrator": {
-        "trailing": (
-            "'(do "
-            '(quine instruction "You are the orchestrator agent. Your role is to decompose this '
-            'problem and delegate ALL work to sub-agents. Do NOT make code edits yourself. '
-            'Step 1: Spawn explorer sub-agents using (agents/spawn !llm-self \\"task\\") to '
-            'understand the codebase — read relevant files, find the right locations. '
-            'Step 2: Synthesize explorer findings into a plan. '
-            'Step 3: Spawn worker sub-agents to implement each part of the plan. '
-            'Workers should use io/sh, io/read-file, io/write-file for edits. '
-            'Use agents/!ask to collect results. Use globals/* for shared state.") '
-            "(!describe io agents globals) (!extend))"
-        ),
-        "agent": "config/agents/cli.agent.edn",
-    },
-    "describe-io": {
-        "trailing": "'(do (!describe io) (!extend))",
-        "agent": None,
-    },
-    "context-mgmt": {
-        "trailing": (
-            "'(do "
-            '(quine instruction "Actively manage your context window to avoid context bloat '
-            'and context rot, which is the primary cause of failure on complex tasks. '
-            'After reading large files or getting long shell outputs, use (rethink N \\"reason\\") '
-            'to prune stale reasoning and tool results before calling (!extend). '
-            'Use (!peek name expr) instead of (!call-now name expr) for large file reads — '
-            'peek bindings auto-prune on the next extension unless you persist what you need '
-            'with (def keep (subvec peeked-data start end)). '
-            'Keep your active context focused on only the information needed for the current step.") '
-            "(!describe io) (!extend))"
-        ),
-        "agent": None,
-    },
-    "fix-loop": {
-        "trailing": "'(patterns/fix-loop prompt)",
-        "agent": "config/agents/cli.agent.edn",
-    },
-}
-
-
 @dataclass(slots=True)
 class _SwePrediction:
     instance_id: str
@@ -248,26 +200,26 @@ def _trace_dir_for_request(
     condition: str,
     item_id: str,
     *,
+    name: str | None = None,
     attempt: int | None = None,
 ) -> Path | None:
     if base_trace_dir is None:
         return None
 
-    path = (
-        base_trace_dir
-        / _sanitize_trace_segment(condition, "condition")
-        / _sanitize_trace_segment(item_id, "item")
-    )
+    path = base_trace_dir / _sanitize_trace_segment(condition, "condition")
+    if name:
+        path = path / _sanitize_trace_segment(name, "name")
+    path = path / _sanitize_trace_segment(item_id, "item")
     if attempt is not None:
         path = path / f"attempt-{attempt}"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def _swebench_worktree_tag(condition: str, run_id: str, *, variant: str | None = None) -> str:
+def _swebench_worktree_tag(condition: str, run_id: str, *, name: str | None = None) -> str:
     parts = [_sanitize_trace_segment(condition, "condition")]
-    if variant:
-        parts.append(_sanitize_trace_segment(variant, "variant"))
+    if name:
+        parts.append(_sanitize_trace_segment(name, "name"))
     parts.append(_sanitize_trace_segment(run_id, "run"))
     return ".".join(parts)
 
@@ -342,6 +294,18 @@ def _general_spell_trailing(dataset: str) -> str | None:
         "mathconstruct": OMNI_MATH_TRAILING,
         "project_euler": OMNI_MATH_TRAILING,
     }.get(dataset)
+
+
+def _condition_label(condition: str, name: str | None = None) -> str:
+    return f"{condition}/{name}" if name else condition
+
+
+def _swebench_predictions_filename(condition: str, dataset: str, run_id: str, *, name: str | None = None) -> str:
+    parts = [condition]
+    if name:
+        parts.append(_sanitize_trace_segment(name, "name"))
+    parts.extend([dataset, run_id])
+    return "_".join(parts) + ".jsonl"
 
 
 def _validate_general_configuration(
@@ -536,6 +500,7 @@ def _mk_record(
     split: str | None,
     item_id: str,
     condition: str,
+    name: str | None = None,
     model_spec: str | None,
     agent_file: str | None,
     response: RunResponse,
@@ -569,6 +534,7 @@ def _mk_record(
         error_type=response.error_type,
         error_message=response.error_message,
         metadata={**(metadata or {}), **response.metadata},
+        name=name,
     )
 
 
@@ -605,15 +571,19 @@ def _build_docker_adapter(condition: str, *, model: str | None, claude_model: st
     raise ValueError(f"Unknown condition: {condition}")
 
 
-def _print_summary(output_file: Path, run_id: str, condition: str) -> None:
+def _print_summary(output_file: Path, run_id: str, condition: str, *, name: str | None = None) -> None:
     rows = []
     with output_file.open("r", encoding="utf-8") as f:
         for line in f:
             row = json.loads(line)
-            if row.get("run_id") == run_id and row.get("condition") == condition:
+            if (
+                row.get("run_id") == run_id
+                and row.get("condition") == condition
+                and row.get("name") == name
+            ):
                 rows.append(row)
     summary = summarize_records(rows)
-    click.echo(f"Summary ({condition}): total={summary['total']} errors={summary['errors']} ")
+    click.echo(f"Summary ({_condition_label(condition, name)}): total={summary['total']} errors={summary['errors']} ")
     if summary["accuracy"] is not None:
         click.echo(f"  accuracy={summary['accuracy']:.1%}")
     if summary["total_cost_usd"] is not None:
@@ -699,6 +669,7 @@ def _build_swebench_eval_plan(
     dataset: str,
     condition: str,
     run_id: str,
+    name: str | None,
     predictions_dir: str,
     dataset_name: str | None,
     split: str,
@@ -725,7 +696,7 @@ def _build_swebench_eval_plan(
         output_root = Path(pro.output_dir) / run_id
 
         for cond in conditions:
-            pred_path = pred_root / f"{cond}_{dataset}_{run_id}.jsonl"
+            pred_path = pred_root / _swebench_predictions_filename(cond, dataset, run_id, name=name)
             if verify_predictions and not pred_path.exists():
                 raise click.ClickException(f"Predictions file not found: {pred_path}")
 
@@ -760,7 +731,7 @@ def _build_swebench_eval_plan(
         return resolved_dataset_name, conditions, plan
 
     for idx, cond in enumerate(conditions):
-        pred_path = pred_root / f"{cond}_{dataset}_{run_id}.jsonl"
+        pred_path = pred_root / _swebench_predictions_filename(cond, dataset, run_id, name=name)
         if verify_predictions and not pred_path.exists():
             raise click.ClickException(f"Predictions file not found: {pred_path}")
 
@@ -971,6 +942,8 @@ def cli() -> None:
     help="Enable live web search (defaults to on for GAIA, off otherwise)",
 )
 @click.option("--trace/--no-trace", default=True, show_default=True)
+@click.option("--name", default=None, help="Label for this run variant (flows into traces, predictions, and JSONL records)")
+@click.option("--trailing", default=None, help="Custom Spell trailing expression (overrides dataset default or falls back to '(!extend))")
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
 @click.option("--output", default=None, help="JSONL output path")
@@ -998,6 +971,8 @@ def run_general(
     suffix_grammar: bool,
     web_search: bool | None,
     trace: bool,
+    name: str | None,
+    trailing: str | None,
     dry_run: bool,
     run_id: str | None,
     output: str | None,
@@ -1008,6 +983,8 @@ def run_general(
 
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
+    if name:
+        click.echo(f"Name: {name}")
 
     requested_ids = {x.strip() for x in (items or "").split(",") if x.strip()}
 
@@ -1083,6 +1060,8 @@ def run_general(
                     "codex_model": codex_model,
                     "parallel": parallel,
                     "budget": budget,
+                    "name": name,
+                    "trailing": trailing,
                     "web_search_requested": effective_web_search,
                     "web_search_by_condition": {
                         cond: _general_condition_web_search(cond, effective_web_search) for cond in conditions
@@ -1134,7 +1113,6 @@ def run_general(
                     prompt=prompt,
                     model_spec={"spell": model, "one_shot": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
-                    init=_make_spell_init(prompt, _general_spell_trailing(item.dataset)) if cond == "spell" else None,
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
                     budget=budget,
                     depth=depth,
@@ -1146,11 +1124,8 @@ def run_general(
                     suffix_grammar=suffix_grammar,
                     web_search=condition_web_search,
                     trace=trace,
-                    trace_dir=(
-                        _trace_dir_for_request(trace_dir, cond, item.id)
-                        if cond == "spell"
-                        else trace_dir
-                    ),
+                    init=_make_spell_init(prompt, trailing if trailing is not None else _general_spell_trailing(item.dataset)) if cond == "spell" else None,
+                    trace_dir=(_trace_dir_for_request(trace_dir, cond, item.id, name=name) if cond == "spell" else trace_dir),
                     metadata={"add_dir": CONTEXT_DIR},
                 )
             )
@@ -1173,6 +1148,7 @@ def run_general(
                 split=None,
                 item_id=item.id,
                 condition=cond,
+                name=name,
                 model_spec=req.model_spec,
                 agent_file=req.agent_file,
                 response=resp,
@@ -1198,7 +1174,7 @@ def run_general(
             )
             append_jsonl(output_file, record)
 
-        _print_summary(output_file, run_id, cond)
+        _print_summary(output_file, run_id, cond, name=name)
 
 
 @cli.command("swebench")
@@ -1293,9 +1269,8 @@ def run_general(
     show_default=True,
     help="Re-run SWE-bench Pro eval even if output files already exist",
 )
+@click.option("--name", default=None, help="Label for this run variant (flows into traces, predictions, and JSONL records)")
 @click.option("--trailing", default=None, help="Custom Spell trailing expression (overrides default '(!extend))")
-@click.option("--variant", default=None, type=click.Choice(list(SWEBENCH_VARIANTS.keys())),
-              help="Named intervention variant (overrides trailing/agent)")
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
 @click.option("--output", default=None)
@@ -1342,17 +1317,12 @@ def run_swebench(
     pro_use_local_docker: bool,
     pro_block_network: bool,
     pro_redo: bool,
+    name: str | None,
     trailing: str | None,
-    variant: str | None,
     dry_run: bool,
     run_id: str | None,
     output: str | None,
 ) -> None:
-    # Apply named variant overrides (CLI flags take precedence over variant defaults).
-    if variant:
-        vconf = SWEBENCH_VARIANTS[variant]
-        trailing = trailing or vconf.get("trailing")
-        agent = agent or vconf.get("agent")
     run_id = run_id or _run_id("swebench")
     output_file = Path(output) if output else _default_output(run_id)
     conditions = _parse_swebench_conditions(condition)
@@ -1399,6 +1369,8 @@ def run_swebench(
 
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
+    if name:
+        click.echo(f"Name: {name}")
     click.echo(f"Workspace root: {root}")
     if docker:
         click.echo("Docker mode: agents run inside containers")
@@ -1453,6 +1425,7 @@ def run_swebench(
                     "pro_use_local_docker": pro_use_local_docker,
                     "pro_block_network": pro_block_network,
                     "pro_redo": pro_redo,
+                    "name": name,
                     "trailing": trailing,
                 },
                 indent=2,
@@ -1479,7 +1452,7 @@ def run_swebench(
             budget=budget,
             docker=docker,
         )
-        worktree_tag = _swebench_worktree_tag(cond, run_id, variant=variant)
+        worktree_tag = _swebench_worktree_tag(cond, run_id, name=name)
         spell_resolution = None
         if cond == "spell":
             spell_resolution = _resolve_spell_agent_or_die(
@@ -1517,11 +1490,7 @@ def run_swebench(
                     reasoning_effort=reasoning_effort,
                     web_search=web_search if cond == "codex" else False,
                     trace=trace,
-                    trace_dir=(
-                        _trace_dir_for_request(trace_dir, cond, item.instance_id)
-                        if cond == "spell"
-                        else trace_dir
-                    ),
+                    trace_dir=(_trace_dir_for_request(trace_dir, cond, item.instance_id, name=name) if cond == "spell" else trace_dir),
                     workspace=ws_path,
                 )
                 if unified:
@@ -1579,6 +1548,7 @@ def run_swebench(
                     split=dataset,
                     item_id=item.instance_id,
                     condition=cond,
+                    name=name,
                     model_spec=req.model_spec,
                     agent_file=req.agent_file,
                     response=resp,
@@ -1614,6 +1584,7 @@ def run_swebench(
                     split=dataset,
                     item_id=item.instance_id,
                     condition=cond,
+                    name=name,
                     model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
                     response=RunResponse(
@@ -1671,9 +1642,9 @@ def run_swebench(
         for record in records:
             append_jsonl(output_file, record)
 
-        _print_summary(output_file, run_id, cond)
+        _print_summary(output_file, run_id, cond, name=name)
 
-        pred_path = Path("results") / "swebench" / f"{cond}_{dataset}_{run_id}.jsonl"
+        pred_path = Path("results") / "swebench" / _swebench_predictions_filename(cond, dataset, run_id, name=name)
         swe_results = [_SwePrediction(instance_id=record.item_id, patch=record.patch or "") for record in records]
         pred_model_name = {
             "spell": model or "unknown",
@@ -1699,6 +1670,7 @@ def run_swebench(
             dataset=dataset,
             condition=condition,
             run_id=run_id,
+            name=name,
             predictions_dir=eval_predictions_dir,
             dataset_name=eval_dataset_name,
             split=eval_split,
@@ -1731,7 +1703,8 @@ def run_swebench(
 @cli.command("swebench-eval")
 @click.option("--dataset", default="mini", type=click.Choice(["mini", "lite", "verified", "pro"]))
 @click.option("--condition", default="all", type=click.Choice(["spell", "claude_code", "codex", "both", "all"]))
-@click.option("--run-id", required=True, help="Run ID used in results/swebench/<condition>_<dataset>_<run-id>.jsonl")
+@click.option("--run-id", required=True, help="Run ID used in results/swebench/<condition>[_<name>]_<dataset>_<run-id>.jsonl")
+@click.option("--name", default=None, help="Optional run label used in predictions filenames")
 @click.option("--predictions-dir", default="results/swebench", show_default=True)
 @click.option("--dataset-name", default=None, help="Override swebench.harness dataset_name")
 @click.option("--split", default="test", show_default=True)
@@ -1799,6 +1772,7 @@ def run_swebench_eval(
     dataset: str,
     condition: str,
     run_id: str,
+    name: str | None,
     predictions_dir: str,
     dataset_name: str | None,
     split: str,
@@ -1833,6 +1807,7 @@ def run_swebench_eval(
         dataset=dataset,
         condition=condition,
         run_id=run_id,
+        name=name,
         predictions_dir=predictions_dir,
         dataset_name=dataset_name,
         split=split,
@@ -1888,6 +1863,8 @@ def run_swebench_eval(
 @click.option("--unified", is_flag=True, default=False, help="Run on shared in-container software benchmark infra")
 @click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--trace/--no-trace", default=True, show_default=True)
+@click.option("--name", default=None, help="Label for this run variant (flows into traces and JSONL records)")
+@click.option("--trailing", default=None, help="Custom Spell trailing expression (overrides default '(!extend))")
 @click.option("--run-id", default=None)
 @click.option("--output", default=None)
 def run_featurebench(
@@ -1912,6 +1889,8 @@ def run_featurebench(
     unified: bool,
     web_search: bool,
     trace: bool,
+    name: str | None,
+    trailing: str | None,
     run_id: str | None,
     output: str | None,
 ) -> None:
@@ -1932,6 +1911,8 @@ def run_featurebench(
 
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
+    if name:
+        click.echo(f"Name: {name}")
     click.echo(f"Workspace root: {root}")
     if unified:
         click.echo("Unified mode: shared software benchmark container infra")
@@ -1981,7 +1962,7 @@ def run_featurebench(
                     prompt=prompt,
                     model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
-                    init=_make_spell_init(prompt) if cond == "spell" else None,
+                    init=_make_spell_init(prompt, trailing) if cond == "spell" else None,
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
                     budget=budget,
                     depth=depth,
@@ -1989,11 +1970,7 @@ def run_featurebench(
                     reasoning_effort=reasoning_effort,
                     web_search=web_search if cond == "codex" else False,
                     trace=trace,
-                    trace_dir=(
-                        _trace_dir_for_request(trace_dir, cond, item["instance_id"])
-                        if cond == "spell"
-                        else trace_dir
-                    ),
+                    trace_dir=(_trace_dir_for_request(trace_dir, cond, item["instance_id"], name=name) if cond == "spell" else trace_dir),
                     workspace=wt.path,
                 )
                 test_results = []
@@ -2058,6 +2035,7 @@ def run_featurebench(
                     split=split,
                     item_id=item["instance_id"],
                     condition=cond,
+                    name=name,
                     model_spec=req.model_spec,
                     agent_file=req.agent_file,
                     response=resp,
@@ -2102,7 +2080,7 @@ def run_featurebench(
         for record in records:
             append_jsonl(output_file, record)
 
-        _print_summary(output_file, run_id, cond)
+        _print_summary(output_file, run_id, cond, name=name)
 
 
 SAB_BENCHMARK_DIR = BENCHMARK_ROOT / "data" / "scienceagentbench" / "benchmark" / "benchmark"
@@ -2226,6 +2204,8 @@ def _validate_python_syntax(code: str) -> tuple[bool, str | None]:
 @click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--use-knowledge/--no-knowledge", default=False, show_default=True, help="Include domain knowledge in prompt")
 @click.option("--workspace-root", default="/tmp/sab_ws")
+@click.option("--name", default=None, help="Label for this run variant (flows into output labels and JSONL records)")
+@click.option("--trailing", default=None, help="Custom Spell trailing expression (overrides default '(!extend))")
 @click.option("--run-id", default=None)
 @click.option("--output", default=None)
 def run_scienceagentbench(
@@ -2248,6 +2228,8 @@ def run_scienceagentbench(
     web_search: bool,
     use_knowledge: bool,
     workspace_root: str,
+    name: str | None,
+    trailing: str | None,
     run_id: str | None,
     output: str | None,
 ) -> None:
@@ -2281,6 +2263,8 @@ def run_scienceagentbench(
 
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
+    if name:
+        click.echo(f"Name: {name}")
     click.echo(f"Workspace root: {root}")
     click.echo(f"Items: {len(items)}")
     click.echo(f"Domains: {', '.join(sorted({i.domain for i in items}))}")
@@ -2347,7 +2331,7 @@ def run_scienceagentbench(
                     prompt=prompt,
                     model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
-                    init=(_make_spell_init(prompt) if cond == "spell" else None),
+                    init=(_make_spell_init(prompt, trailing) if cond == "spell" else None),
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
                     budget=budget,
                     depth=depth,
@@ -2417,6 +2401,7 @@ def run_scienceagentbench(
                     split=None,
                     item_id=item.instance_id,
                     condition=cond,
+                    name=name,
                     model_spec=req.model_spec,
                     agent_file=req.agent_file,
                     response=RunResponse(
@@ -2480,10 +2465,11 @@ def run_scienceagentbench(
             append_jsonl(output_file, record)
 
         # Print summary
-        _print_summary(output_file, run_id, cond)
+        _print_summary(output_file, run_id, cond, name=name)
 
         # Save extracted programs for potential evaluation
-        pred_dir = Path("results") / "scienceagentbench" / f"{cond}_{run_id}"
+        pred_dir_name = f"{cond}_{_sanitize_trace_segment(name, 'name')}_{run_id}" if name else f"{cond}_{run_id}"
+        pred_dir = Path("results") / "scienceagentbench" / pred_dir_name
         pred_dir.mkdir(parents=True, exist_ok=True)
         for item, record in zip(items, records):
             if record.patch:
@@ -2592,6 +2578,8 @@ def _run_exercism_pytest(test_path: Path, timeout: int = EXERCISM_PYTEST_TIMEOUT
 @click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--trace/--no-trace", default=False, show_default=True)
 @click.option("--unified", is_flag=True, default=False, help="Run on shared in-container software benchmark infra")
+@click.option("--name", default=None, help="Label for this run variant (flows into traces and JSONL records)")
+@click.option("--trailing", default=None, help="Custom Spell trailing expression (overrides default '(!extend))")
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
 @click.option("--output", default=None, help="JSONL output path")
@@ -2616,6 +2604,8 @@ def run_exercism(
     web_search: bool,
     trace: bool,
     unified: bool,
+    name: str | None,
+    trailing: str | None,
     dry_run: bool,
     run_id: str | None,
     output: str | None,
@@ -2645,6 +2635,8 @@ def run_exercism(
 
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
+    if name:
+        click.echo(f"Name: {name}")
     click.echo(f"Exercises: {len(items)}")
     if unified:
         click.echo("Unified mode: shared software benchmark container infra")
@@ -2671,6 +2663,8 @@ def run_exercism(
                     "depth": depth,
                     "no_retry": no_retry,
                     "unified": unified,
+                    "name": name,
+                    "trailing": trailing,
                     "web_search": web_search,
                     "trace": trace,
                     "agent": spell_resolution.agent_file if spell_resolution else None,
@@ -2721,7 +2715,7 @@ def run_exercism(
                         workspace=ws,
                         model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                         timeout=timeout,
-                        init=_make_spell_init(format_unified_exercism_prompt(item)) if cond == "spell" else None,
+                        init=_make_spell_init(format_unified_exercism_prompt(item), trailing) if cond == "spell" else None,
                         agent_file=spell_resolution.agent_file if (spell_resolution and cond == "spell") else None,
                         budget=budget,
                         depth=depth,
@@ -2729,11 +2723,7 @@ def run_exercism(
                         reasoning_effort=reasoning_effort,
                         web_search=web_search if cond == "codex" else False,
                         trace=trace if cond == "spell" else False,
-                        trace_dir=(
-                            _trace_dir_for_request(trace_dir, cond, item.slug)
-                            if (cond == "spell" and trace_dir is not None)
-                            else None
-                        ),
+                        trace_dir=(_trace_dir_for_request(trace_dir, cond, item.slug, name=name) if (cond == "spell" and trace_dir is not None) else None),
                         no_retry=no_retry,
                     )
                     last_resp = outcome.response
@@ -2747,6 +2737,7 @@ def run_exercism(
                         split=None,
                         item_id=item.slug,
                         condition=cond,
+                        name=name,
                         model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                         agent_file=spell_resolution.agent_file if (spell_resolution and cond == "spell") else None,
                         response=RunResponse(
@@ -2802,7 +2793,7 @@ def run_exercism(
                     prompt=prompt,
                     model_spec={"spell": model, "one_shot": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
-                    init=_make_spell_init(prompt) if cond == "spell" else None,
+                    init=_make_spell_init(prompt, trailing) if cond == "spell" else None,
                     agent_file=spell_resolution.agent_file if (spell_resolution and cond == "spell") else None,
                     budget=budget,
                     depth=depth,
@@ -2810,11 +2801,7 @@ def run_exercism(
                     reasoning_effort=reasoning_effort,
                     web_search=web_search if cond == "codex" else False,
                     trace=trace if cond == "spell" else False,
-                    trace_dir=(
-                        _trace_dir_for_request(trace_dir, cond, item.slug, attempt=1)
-                        if (cond == "spell" and trace_dir is not None)
-                        else None
-                    ),
+                    trace_dir=(_trace_dir_for_request(trace_dir, cond, item.slug, name=name, attempt=1) if (cond == "spell" and trace_dir is not None) else None),
                     workspace=ws if cond != "one_shot" else None,
                 )
                 assert adapter is not None
@@ -2846,7 +2833,7 @@ def run_exercism(
                         prompt=retry_prompt,
                         model_spec=req.model_spec,
                         timeout=timeout,
-                        init=_make_spell_init(retry_prompt) if cond == "spell" else None,
+                        init=_make_spell_init(retry_prompt, trailing) if cond == "spell" else None,
                         agent_file=req.agent_file,
                         budget=budget,
                         depth=depth,
@@ -2854,11 +2841,7 @@ def run_exercism(
                         reasoning_effort=reasoning_effort,
                         web_search=web_search if cond == "codex" else False,
                         trace=trace if cond == "spell" else False,
-                        trace_dir=(
-                            _trace_dir_for_request(trace_dir, cond, item.slug, attempt=2)
-                            if (cond == "spell" and trace_dir is not None)
-                            else None
-                        ),
+                        trace_dir=(_trace_dir_for_request(trace_dir, cond, item.slug, name=name, attempt=2) if (cond == "spell" and trace_dir is not None) else None),
                         workspace=ws if cond != "one_shot" else None,
                     )
                     resp2 = adapter.run(req2)
@@ -2888,6 +2871,7 @@ def run_exercism(
                     split=None,
                     item_id=item.slug,
                     condition=cond,
+                    name=name,
                     model_spec=req.model_spec,
                     agent_file=req.agent_file,
                     response=RunResponse(
@@ -2949,14 +2933,15 @@ def run_exercism(
         for record in records:
             append_jsonl(output_file, record)
 
-        _print_summary(output_file, run_id, cond)
+        _print_summary(output_file, run_id, cond, name=name)
 
 
 @cli.command("summarize")
 @click.option("--input", "input_path", required=True, help="Input JSONL path")
 @click.option("--run-id", default=None, help="Optional run-id filter")
 @click.option("--condition", default=None, help="Optional condition filter")
-def summarize(input_path: str, run_id: str | None, condition: str | None) -> None:
+@click.option("--name", default=None, help="Optional name filter")
+def summarize(input_path: str, run_id: str | None, condition: str | None, name: str | None) -> None:
     path = Path(input_path)
     if not path.exists():
         raise click.ClickException(f"File not found: {path}")
@@ -2970,6 +2955,8 @@ def summarize(input_path: str, run_id: str | None, condition: str | None) -> Non
             if run_id and row.get("run_id") != run_id:
                 continue
             if condition and row.get("condition") != condition:
+                continue
+            if name is not None and row.get("name") != name:
                 continue
             rows.append(row)
 
