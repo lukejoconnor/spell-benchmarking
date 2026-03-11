@@ -424,6 +424,17 @@ TIPS:
 """
 
 
+def _swebench_prompt_workspace(
+    workspace: str | Path,
+    *,
+    docker: bool,
+    unified: bool,
+) -> str | Path:
+    if docker or unified:
+        return Path("/workspace")
+    return workspace
+
+
 def _evaluate_general(item: BenchmarkItem, response_text: str | None) -> tuple[str | None, bool | None]:
     response = (response_text or "").strip()
     if not response:
@@ -1519,7 +1530,12 @@ def run_swebench(
             try:
                 wt = setup_swebench_workspace(cache, item, tag=worktree_tag)
                 ws_path = wt.path
-                prompt = _format_swebench_prompt(item, workspace=ws_path)
+                prompt_workspace = _swebench_prompt_workspace(
+                    ws_path,
+                    docker=docker,
+                    unified=unified,
+                )
+                prompt = _format_swebench_prompt(item, workspace=prompt_workspace)
 
                 req = RunRequest(
                     benchmark="swebench",
