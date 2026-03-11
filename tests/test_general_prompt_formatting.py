@@ -19,7 +19,11 @@ def _import_bench_with_stubbed_client():
     stub = types.ModuleType("spell_benchmark_client")
 
     class _DummyClient:  # pragma: no cover - import wiring only
-        pass
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, *args, **kwargs):
+            raise NotImplementedError
 
     stub.SpellBenchmarkClient = _DummyClient
     prior_client = sys.modules.get("spell_benchmark_client")
@@ -31,6 +35,7 @@ def _import_bench_with_stubbed_client():
             sys.modules.pop("spell_benchmark_client", None)
         else:
             sys.modules["spell_benchmark_client"] = prior_client
+        sys.modules.pop("src.unified_adapters", None)
 
 
 bench = _import_bench_with_stubbed_client()

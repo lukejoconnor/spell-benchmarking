@@ -203,7 +203,7 @@ SWEBENCH_VARIANTS: dict[str, dict[str, str | None]] = {
     },
     "fix-loop": {
         "preamble_expr": None,
-        "trailing": "'(patterns/fix-loop __PROMPT__)",
+        "trailing": "'(patterns/fix-loop prompt)",
         "agent": "config/agents/cli.agent.edn",
     },
 }
@@ -370,22 +370,6 @@ def _make_bespoke_spell_init(
 ) -> str:
     combined_trailing = _compose_spell_trailing([preamble_expr] if preamble_expr else [], trailing)
     return _make_spell_init(prompt, combined_trailing)
-
-
-def _spell_string_literal(value: str) -> str:
-    escaped = (
-        value.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\n", "\\n")
-        .replace("\t", "\\t")
-    )
-    return f'"{escaped}"'
-
-
-def _render_swebench_trailing_expr(prompt: str, trailing: str | None) -> str | None:
-    if not trailing or "__PROMPT__" not in trailing:
-        return trailing
-    return trailing.replace("__PROMPT__", _spell_string_literal(prompt))
 
 
 def _general_spell_trailing(dataset: str) -> str | None:
@@ -1560,7 +1544,7 @@ def run_swebench(
                               preamble_expr=preamble_expr or (
                                   SWEBENCH_DOCKER_PREAMBLE if docker else SWEBENCH_REMINDER_PREAMBLE
                               ),
-                              trailing=_render_swebench_trailing_expr(prompt, trailing),
+                              trailing=trailing,
                           ) if cond == "spell" else None),
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
                     budget=budget,
@@ -1641,6 +1625,7 @@ def run_swebench(
                     metadata={
                         "repo": item.repo,
                         "base_commit": item.base_commit,
+                        "unified": unified,
                         "web_search": web_search,
                         **(
                             {
@@ -1685,6 +1670,7 @@ def run_swebench(
                     metadata={
                         "repo": item.repo,
                         "base_commit": item.base_commit,
+                        "unified": unified,
                         **(
                             {
                                 "spell_mode": spell_resolution.spell_mode,

@@ -19,7 +19,11 @@ def _import_bench_with_stubbed_client():
     stub = types.ModuleType("spell_benchmark_client")
 
     class _DummyClient:  # pragma: no cover - import wiring only
-        pass
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, *args, **kwargs):
+            raise NotImplementedError
 
     stub.SpellBenchmarkClient = _DummyClient
     prior_client = sys.modules.get("spell_benchmark_client")
@@ -31,6 +35,7 @@ def _import_bench_with_stubbed_client():
             sys.modules.pop("spell_benchmark_client", None)
         else:
             sys.modules["spell_benchmark_client"] = prior_client
+        sys.modules.pop("src.unified_adapters", None)
 
 
 bench = _import_bench_with_stubbed_client()
@@ -63,18 +68,14 @@ class SpellInitRegressionTest(unittest.TestCase):
         self.assertIn("'(do (quine sys-reminder \"Use tools\") (!describe io) (!extend))", init)
         self.assertNotIn("'(!extend))))", init)
 
-    def test_fix_loop_variant_renders_prompt_text_into_trailing_expr(self):
-        prompt = "Repository: demo/repo\n\n## Issue to Fix\n\nHandle newline-sensitive input."
-
-        trailing = bench._render_swebench_trailing_expr(
-            prompt,
+    def test_fix_loop_variant_uses_bound_prompt_symbol(self):
+        init = bench._make_spell_init(
+            "Repository: demo/repo\n\n## Issue to Fix\n\nHandle newline-sensitive input.",
             bench.SWEBENCH_VARIANTS["fix-loop"]["trailing"],
         )
 
-        self.assertEqual(
-            trailing,
-            '\'(patterns/fix-loop "Repository: demo/repo\\n\\n## Issue to Fix\\n\\nHandle newline-sensitive input.")',
-        )
+        self.assertIn("(quine prompt \"Repository: demo/repo\\n\\n## Issue to Fix\\n\\nHandle newline-sensitive input.\")", init)
+        self.assertIn("'(patterns/fix-loop prompt)", init)
 
 
 class GeneralLoadingRegressionTest(unittest.TestCase):
