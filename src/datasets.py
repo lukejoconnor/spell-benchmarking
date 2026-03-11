@@ -589,69 +589,45 @@ def load_babilong(context_size: str = '32k', tasks: list[str] = None) -> list[Be
     return items
 
 
-def format_prompt_one_shot(item: BenchmarkItem) -> str:
-    """Format item as a single prompt for one-shot condition."""
-    parts = [
-        "Context:",
-        item.context,
-        "",
-        "Question:",
-        item.question,
-    ]
-
-    if item.choices:
-        parts.append("")
-        parts.append("Choices:")
-        for i, choice in enumerate(item.choices):
-            letter = chr(ord('A') + i)
-            parts.append(f"  {letter}. {choice}")
-        parts.append("")
-        parts.append("Answer with just the letter (A, B, C, or D).")
-    else:
-        parts.append("")
-        parts.append("Answer with just the answer, no explanation.")
-
-    return "\n".join(parts)
+LONGBENCH_SEARCH_GUIDANCE = (
+    "The document may be very large. Do not read the entire file at once. "
+    "Search for relevant keywords first, then inspect only the specific sections you need."
+)
 
 
-def _escape_for_spell(s: str) -> str:
-    """Escape a string for embedding in a Spell string literal."""
-    return (s
-        .replace('\\', '\\\\')
-        .replace('"', '\\"')
-        .replace('\n', '\\n')
-        .replace('\t', '\\t'))
-
-
-def format_prompt_spell(item: BenchmarkItem, context_file: str = None) -> str:
-    """Format item as a prompt for Spell condition.
-
-    For items with context: context_file points to external file (forces programmatic search).
-    For math problems: question is self-contained, no context file.
-    NOTE: Prompts that start with '(' bypass CLI's wrap-nl and are treated as raw
-    Spell code prefixes. All others get wrapped with the completion wrapper.
-    """
+def format_benchmark_prompt(item: BenchmarkItem, context_file: str | None = None) -> str:
+    """Format a benchmark item without execution-condition-specific wording."""
     parts = []
 
     if item.context and context_file:
-        # External context (BABILong, LongBench, etc.)
         doc_len = len(item.context)
         parts.extend([
             f'Document path: {context_file}',
             f'Document size: {doc_len:,} chars',
             '',
-            f'Question: {item.question.strip()}',
+        ])
+        if item.dataset in ('longbench_sampled', 'longbench_short'):
+            parts.extend([LONGBENCH_SEARCH_GUIDANCE, ''])
+        parts.extend([
+            'Question:',
+            item.question.strip(),
+        ])
+    elif item.context:
+        parts.extend([
+            'Context:',
+            item.context,
+            '',
+            'Question:',
+            item.question.strip(),
         ])
     elif item.dataset == 'gaia':
-        # GAIA: general question, optional file attachment
         parts.append(item.question.strip())
         file_path = (item.metadata or {}).get('file_path', '')
         if file_path:
             parts.extend(['', f'Attached file: {file_path}'])
     else:
-        # Self-contained problem (GSM8K math, etc.)
         parts.extend([
-            'Math problem:',
+            'Problem:',
             '',
             item.question.strip(),
         ])
@@ -684,12 +660,22 @@ def format_prompt_spell(item: BenchmarkItem, context_file: str = None) -> str:
         parts.append('Solve step by step. Return just the final answer (e.g., 42 or 3/4 or 2\\sqrt{3}).')
     elif item.dataset == 'gaia':
         parts.append('')
-        parts.append('Use web search and any tools needed. Return ONLY the final answer — a number, a short string, or a comma-separated list. No explanation.')
+        parts.append('Return ONLY the final answer — a number, a short string, or a comma-separated list. No explanation.')
     else:
         parts.append('')
         parts.append('Return just the answer (e.g., "bathroom").')
 
     return "\n".join(parts)
+
+
+def format_prompt_one_shot(item: BenchmarkItem) -> str:
+    """Backward-compatible wrapper for text-only prompt formatting."""
+    return format_benchmark_prompt(item)
+
+
+def format_prompt_spell(item: BenchmarkItem, context_file: str | None = None) -> str:
+    """Backward-compatible wrapper for prompt formatting with optional file references."""
+    return format_benchmark_prompt(item, context_file=context_file)
 
 
 def load_gaia(level: int = None, max_items: int = None) -> list[BenchmarkItem]:

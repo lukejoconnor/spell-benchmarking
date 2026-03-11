@@ -58,7 +58,7 @@ class WebSearchCliRegressionTest(unittest.TestCase):
         self.assertTrue(self.bench._resolve_web_search_default({"gaia", "math"}, None))
         self.assertFalse(self.bench._resolve_web_search_default({"math"}, None))
 
-    def test_general_gaia_defaults_web_search_on_only_for_supported_conditions(self):
+    def test_general_gaia_rejects_unsupported_conditions(self):
         requests = []
         gaia_item = self.bench.BenchmarkItem(
             id="gaia_1",
@@ -109,22 +109,9 @@ class WebSearchCliRegressionTest(unittest.TestCase):
                 ],
             )
 
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertEqual(len(requests), 4)
-        self.assertEqual(
-            self._web_search_by_condition(requests),
-            {
-                "one_shot": False,
-                "spell": False,
-                "claude_code": True,
-                "codex": True,
-            },
-        )
-        prompt_by_condition = {req.condition: req.prompt for req in requests}
-        self.assertIn("Use web search", prompt_by_condition["claude_code"])
-        self.assertIn("Use web search", prompt_by_condition["codex"])
-        self.assertIn("non-web tools", prompt_by_condition["one_shot"])
-        self.assertIn("non-web tools", prompt_by_condition["spell"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("GAIA currently supports only web-enabled conditions", result.output)
+        self.assertEqual(requests, [])
 
     def test_general_gaia_subset_defaults_web_search_on(self):
         requests = []
@@ -166,9 +153,10 @@ class WebSearchCliRegressionTest(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(len(requests), 1)
         self.assertIs(requests[0].web_search, True)
-        self.assertIn("Use web search", requests[0].prompt)
+        self.assertIn("Return ONLY the final answer", requests[0].prompt)
+        self.assertNotIn("Use web search", requests[0].prompt)
 
-    def test_general_gaia_no_web_search_turns_off_requests_and_prompt(self):
+    def test_general_gaia_no_web_search_is_rejected(self):
         requests = []
         gaia_item = self.bench.BenchmarkItem(
             id="gaia_1",
@@ -206,13 +194,9 @@ class WebSearchCliRegressionTest(unittest.TestCase):
                     "general",
                     "--dataset",
                     "gaia",
-                    "--condition",
-                    "all",
-                    "--model",
-                    "anthropic-tc:opus46",
-                    "--claude-model",
-                    "sonnet",
                     "--codex-model",
+                    "codex",
+                    "--condition",
                     "codex",
                     "--no-web-search",
                     "--output",
@@ -220,19 +204,9 @@ class WebSearchCliRegressionTest(unittest.TestCase):
                 ],
             )
 
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertEqual(len(requests), 4)
-        self.assertEqual(
-            self._web_search_by_condition(requests),
-            {
-                "one_shot": False,
-                "spell": False,
-                "claude_code": False,
-                "codex": False,
-            },
-        )
-        self.assertTrue(all("Use web search" not in req.prompt for req in requests))
-        self.assertTrue(all("non-web tools" in req.prompt for req in requests))
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("GAIA requires web search", result.output)
+        self.assertEqual(requests, [])
 
     def test_featurebench_web_search_flag_reaches_run_request(self):
         seen = []

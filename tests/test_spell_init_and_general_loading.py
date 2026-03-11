@@ -3,12 +3,28 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 import sys
+import types
 
 BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 if str(BENCHMARK_ROOT) not in sys.path:
     sys.path.insert(0, str(BENCHMARK_ROOT))
 
-import bench
+
+def _import_bench_with_stubbed_client():
+    stub = types.ModuleType("spell_benchmark_client")
+
+    class _DummyClient:  # pragma: no cover - import wiring only
+        pass
+
+    stub.SpellBenchmarkClient = _DummyClient
+    sys.modules.setdefault("spell_benchmark_client", stub)
+
+    import bench as bench_module  # local import after stubbing
+
+    return bench_module
+
+
+bench = _import_bench_with_stubbed_client()
 from src.datasets import BenchmarkItem
 from src.unified_adapters import build_spell_init
 
@@ -23,12 +39,11 @@ class SpellInitRegressionTest(unittest.TestCase):
     def test_build_spell_init_accepts_custom_trailing(self):
         init = build_spell_init(
             "Solve it",
-            preamble='(quine sys-reminder "Use tools")',
-            trailing="'(do (!describe io) (!extend))",
+            trailing='\'(do (quine sys-reminder "Use tools") (!describe io) (!extend))',
         )
 
         self.assertIn('(quine sys-reminder "Use tools")', init)
-        self.assertIn("'(do (!describe io) (!extend))", init)
+        self.assertIn("'(do (quine sys-reminder \"Use tools\") (!describe io) (!extend))", init)
         self.assertNotIn("'(!extend))))", init)
 
     def test_fix_loop_variant_renders_prompt_text_into_trailing_expr(self):

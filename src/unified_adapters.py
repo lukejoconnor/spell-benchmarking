@@ -97,44 +97,11 @@ def _escape_for_spell(s: str) -> str:
     )
 
 
-def _looks_like_spell_expr(text: str) -> bool:
-    stripped = text.lstrip()
-    return (
-        stripped.startswith("(")
-        or stripped.startswith("'(")
-        or stripped.startswith("[")
-        or stripped.startswith("{")
-    )
-
-
-def _append_prompt_text(prompt: str, extra: str | None) -> str:
-    if not extra or not extra.strip():
-        return prompt
-    if not prompt.strip():
-        return extra.strip()
-    return f"{prompt.rstrip()}\n\n{extra.strip()}"
-
-
-def build_spell_init(
-    prompt: str,
-    preamble: str | None = None,
-    trailing: str | None = None,
-    *,
-    preamble_expr: str | None = None,
-    prompt_preamble: str | None = None,
-) -> str:
-    if preamble:
-        if _looks_like_spell_expr(preamble):
-            preamble_expr = preamble_expr or preamble
-        else:
-            prompt_preamble = _append_prompt_text(prompt_preamble or "", preamble)
-
-    escaped_prompt = _escape_for_spell(_append_prompt_text(prompt, prompt_preamble))
-    preamble_part = f"{preamble_expr} " if preamble_expr else ""
+def build_spell_init(prompt: str, trailing: str | None = None) -> str:
+    escaped_prompt = _escape_for_spell(prompt)
     trailing_expr = trailing or "'(!extend)"
     return (
         f'(quine completion (eval (do (quine prompt "{escaped_prompt}") '
-        f"{preamble_part}"
         f"{trailing_expr})))"
     )
 
