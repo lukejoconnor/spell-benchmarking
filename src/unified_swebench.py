@@ -22,6 +22,7 @@ def run_unified_swebench(
     reasoning_effort: str | None,
     web_search: bool,
     trace: bool,
+    trace_dir: Path | None,
     workspace: Path,
 ) -> RunResponse:
     with DockerWorkspaceContainer(workspace, container_workdir="/workspace") as container:
@@ -38,10 +39,12 @@ def run_unified_swebench(
             reasoning_effort=reasoning_effort,
             web_search=web_search,
             trace=trace,
+            trace_dir=trace_dir if condition == "spell" else None,
             init=init,
         )
-        patch = container.diff()
-        changed_files = container.changed_files()
+        base_ref = container.initial_commit or "HEAD"
+        patch = container.diff(base_ref)
+        changed_files = container.changed_files(base_ref)
 
     status = "timeout" if result.output.timed_out else ("ok" if result.output.exit_code == 0 else "error")
     if result.raw and not result.raw.get("ok", False):
@@ -61,6 +64,7 @@ def run_unified_swebench(
             "unified": True,
             "patch": patch,
             "changed_files": changed_files,
+            "trace_dir": result.trace_dir,
             "raw": result.raw,
         },
     )

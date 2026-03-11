@@ -23,6 +23,7 @@ def run_unified_featurebench(
     reasoning_effort: str | None,
     web_search: bool,
     trace: bool,
+    trace_dir: Path | None,
     workspace: Path,
     item: dict,
     skip_install: bool,
@@ -48,11 +49,13 @@ def run_unified_featurebench(
             reasoning_effort=reasoning_effort,
             web_search=web_search,
             trace=trace,
+            trace_dir=trace_dir if condition == "spell" else None,
             init=init,
         )
 
-        patch = container.diff()
-        changed_files = container.changed_files()
+        base_ref = container.initial_commit or "HEAD"
+        patch = container.diff(base_ref)
+        changed_files = container.changed_files(base_ref)
 
         if not skip_tests and patch.strip():
             fail_to_pass = item.get("FAIL_TO_PASS", [])
@@ -80,6 +83,7 @@ def run_unified_featurebench(
                 "patch": patch,
                 "changed_files": changed_files,
                 "test_results": test_results,
+                "trace_dir": result.trace_dir,
                 "raw": result.raw,
             },
         ),

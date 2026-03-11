@@ -16,6 +16,7 @@ def _response_from_container_run(
     *,
     patch: str,
     changed_files: list[str],
+    trace_dir: str | None = None,
 ) -> RunResponse:
     usage = result.usage
     status = "timeout" if result.output.timed_out else ("ok" if result.output.exit_code == 0 else "error")
@@ -34,6 +35,7 @@ def _response_from_container_run(
             "docker": True,
             "patch": patch,
             "changed_files": changed_files,
+            "trace_dir": trace_dir,
             "raw": result.raw,
         },
     )
@@ -64,17 +66,20 @@ class _BaseDockerAdapter:
                 max_tokens=req.max_tokens,
                 reasoning_effort=req.reasoning_effort,
                 trace=req.trace,
+                trace_dir=req.trace_dir if self.condition == "spell" else None,
                 agent_file=req.agent_file,
                 web_search=req.web_search,
                 init=req.init,
             )
-            patch = container.diff()
-            changed_files = container.changed_files()
+            base_ref = container.initial_commit or "HEAD"
+            patch = container.diff(base_ref)
+            changed_files = container.changed_files(base_ref)
 
         return _response_from_container_run(
             result,
             patch=patch,
             changed_files=changed_files,
+            trace_dir=result.trace_dir,
         )
 
 

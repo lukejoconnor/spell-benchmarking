@@ -23,6 +23,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Callable, Literal
 
 logger = logging.getLogger(__name__)
@@ -163,6 +164,7 @@ class AgentRunResult:
     error_message: str | None = None
     error_type: str | None = None
     raw: dict[str, Any] | None = None
+    trace_dir: str | None = None
 
 
 def parse_jsonl_events(stdout: str) -> list[dict[str, Any]]:
@@ -208,6 +210,7 @@ class DockerWorkspaceContainer:
         self.image = image
         self.container_workdir = container_workdir
         self.container_id: str | None = None
+        self.initial_commit: str | None = None
 
     def start(self) -> str:
         result = subprocess.run(
@@ -256,6 +259,11 @@ class DockerWorkspaceContainer:
         )
         if git_result.exit_code != 0:
             raise RuntimeError(f"git init failed in container: {git_result.stderr.strip()}")
+
+        head_result = self.exec_run("git rev-parse HEAD", timeout=30)
+        if head_result.exit_code != 0:
+            raise RuntimeError(f"git rev-parse HEAD failed in container: {head_result.stderr.strip()}")
+        self.initial_commit = head_result.stdout.strip() or None
 
         return self.container_id
 
@@ -391,6 +399,7 @@ class DockerWorkspaceContainer:
             timeout=30,
         )
         self.container_id = None
+        self.initial_commit = None
 
     def __enter__(self):
         self.start()
@@ -417,6 +426,40 @@ def install_nvm_node(container: DockerWorkspaceContainer) -> bool:
         workdir="/",
     )
     return fallback.exit_code == 0
+
+
+def container_exec(
+    container: Any,
+    cmd: str,
+    *,
+    timeout: int | None = None,
+    env: dict[str, str] | None = None,
+    workdir: str | None = None,
+) -> ExecOutput:
+    if isinstance(container, DockerWorkspaceContainer):
+        return container.exec_run(cmd, timeout=timeout, env=env, workdir=workdir)
+
+    if timeout:
+        shell_cmd = f"timeout {timeout}s bash -c {shlex.quote(cmd)}"
+    else:
+        shell_cmd = cmd
+
+    result = container.exec_run(
+        ["bash", "-c", shell_cmd],
+        environment=env or {},
+        workdir=workdir,
+        demux=True,
+    )
+    stdout_bytes, stderr_bytes = result.output or (b"", b"")
+    stdout = (stdout_bytes or b"").decode("utf-8", errors="replace")
+    stderr = (stderr_bytes or b"").decode("utf-8", errors="replace")
+    timed_out = result.exit_code == 124 and timeout is not None
+    return ExecOutput(
+        exit_code=result.exit_code,
+        stdout=stdout,
+        stderr=stderr,
+        timed_out=timed_out,
+    )
 
 
 def install_nvm_node_exec(exec_fn: Callable[..., ExecOutput]) -> bool:
@@ -675,6 +718,10 @@ def _is_spell_root(path: Path) -> bool:
 
 
 def discover_spell_root(explicit: str | None = None, *, search_from: Path | None = None) -> Path | None:
+    def _lineage(anchor: Path) -> list[Path]:
+        base = anchor if anchor.is_dir() else anchor.parent
+        return [base, *base.parents]
+
     candidates: list[Path] = []
     if explicit:
         candidates.append(Path(explicit).expanduser().resolve())
@@ -685,10 +732,15 @@ def discover_spell_root(explicit: str | None = None, *, search_from: Path | None
 
     if search_from is not None:
         resolved = Path(search_from).resolve()
-        candidates.extend([resolved, *resolved.parents])
+        lineage = _lineage(resolved)
+        candidates.extend(lineage)
+        candidates.extend(parent / "spell" for parent in lineage)
 
     here = Path(__file__).resolve()
-    candidates.extend([here.parents[1], here.parents[1] / "spell", Path.cwd()])
+    here_lineage = _lineage(here)
+    candidates.extend(here_lineage)
+    candidates.extend(parent / "spell" for parent in here_lineage)
+    candidates.append(Path.cwd())
 
     seen: set[Path] = set()
     for candidate in candidates:
@@ -765,6 +817,7 @@ def spell_run_command(
     max_tokens: int | None = None,
     reasoning_effort: str | None = None,
     trace: bool = False,
+    trace_dir: str | None = None,
     init: str | None = None,
 ) -> str:
     payload: dict[str, Any] = {
@@ -776,6 +829,7 @@ def spell_run_command(
         "max_tokens": max_tokens,
         "reasoning_effort": reasoning_effort,
         "trace": trace,
+        "trace_dir": trace_dir,
     }
     if init is not None:
         payload["init"] = init
@@ -810,6 +864,54 @@ def spell_parse_benchmark_response(stdout: str) -> dict[str, Any] | None:
             continue
         if isinstance(parsed, dict) and ("ok" in parsed or "usage" in parsed):
             return parsed
+    return None
+
+
+def copy_container_tree_to_host(
+    container: DockerWorkspaceContainer,
+    source: str,
+    dest: Path,
+) -> bool:
+    normalized = source.rstrip("/")
+    if not normalized:
+        return False
+
+    candidates: list[str] = []
+    if normalized.startswith("/"):
+        candidates.append(normalized)
+    else:
+        candidates.append(str(PurePosixPath(container.container_workdir) / normalized))
+        candidates.append(normalized)
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        copy_source = candidate if candidate.endswith("/.") else f"{candidate}/."
+        if container.copy_to_host(copy_source, dest):
+            return True
+
+    logger.warning("Could not copy container path '%s' to host dir %s", source, dest)
+    return False
+
+
+def copy_spell_traces_to_host(
+    container: DockerWorkspaceContainer,
+    raw_response: dict[str, Any] | None,
+    host_trace_dir: Path | None,
+) -> str | None:
+    if host_trace_dir is None or not raw_response:
+        return None
+
+    trace_dir = raw_response.get("trace_dir")
+    if not trace_dir:
+        return None
+
+    dest = Path(host_trace_dir)
+    dest.mkdir(parents=True, exist_ok=True)
+    if copy_container_tree_to_host(container, trace_dir, dest):
+        return str(dest)
     return None
 
 
@@ -878,6 +980,8 @@ def run_agent_in_container(
     reasoning_effort: str | None = None,
     web_search: bool = False,
     trace: bool = False,
+    trace_dir: Path | None = None,
+    trace_subdir: str | None = None,
     init: str | None = None,
     version: str | None = None,
 ) -> AgentRunResult:
@@ -933,6 +1037,11 @@ def run_agent_in_container(
 
     resolved_model = resolve_spell_model(model_spec)
     env = spell_env_vars(resolved_model)
+    container_trace_dir = None
+    if trace_dir is not None:
+        container_trace_dir = ".spell-trace"
+        if trace_subdir:
+            container_trace_dir = f"{container_trace_dir}/{trace_subdir}"
     output = container.exec_run(
         spell_run_command(
             prompt=prompt,
@@ -943,6 +1052,7 @@ def run_agent_in_container(
             max_tokens=max_tokens,
             reasoning_effort=reasoning_effort,
             trace=trace,
+            trace_dir=container_trace_dir,
             init=init,
         ),
         timeout=timeout,
@@ -950,6 +1060,7 @@ def run_agent_in_container(
     )
     parsed = spell_parse_benchmark_response(output.stdout)
     usage = spell_parse_usage(output.stdout)
+    persisted_trace_dir = copy_spell_traces_to_host(container, parsed, trace_dir)
     return AgentRunResult(
         output=output,
         usage=usage,
@@ -957,6 +1068,7 @@ def run_agent_in_container(
         error_message=((parsed or {}).get("error") if parsed else output.stderr[:2000]) or None,
         error_type=(parsed or {}).get("error_type") if parsed else "parse_error",
         raw=parsed,
+        trace_dir=persisted_trace_dir,
     )
 
 

@@ -1578,6 +1578,7 @@ def run_swebench(
                         reasoning_effort=reasoning_effort,
                         web_search=req.web_search,
                         trace=trace,
+                        trace_dir=req.trace_dir,
                         workspace=ws_path,
                     )
                 else:
@@ -2049,6 +2050,7 @@ def run_featurebench(
                         reasoning_effort=reasoning_effort,
                         web_search=req.web_search,
                         trace=trace,
+                        trace_dir=req.trace_dir,
                         workspace=wt.path,
                         item=item,
                         skip_install=skip_install,
@@ -2775,6 +2777,11 @@ def run_exercism(
                         reasoning_effort=reasoning_effort,
                         web_search=web_search if cond == "codex" else False,
                         trace=trace if cond == "spell" else False,
+                        trace_dir=(
+                            _trace_dir_for_request(trace_dir, cond, item.slug)
+                            if (cond == "spell" and trace_dir is not None)
+                            else None
+                        ),
                         no_retry=no_retry,
                     )
                     last_resp = outcome.response

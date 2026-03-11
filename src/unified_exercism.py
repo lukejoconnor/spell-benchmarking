@@ -95,6 +95,7 @@ def run_unified_exercism(
     reasoning_effort: str | None,
     web_search: bool,
     trace: bool,
+    trace_dir: Path | None,
     no_retry: bool,
 ) -> UnifiedExercismOutcome:
     _ensure_git_repo(workspace)
@@ -122,6 +123,8 @@ def run_unified_exercism(
             reasoning_effort=reasoning_effort,
             web_search=web_search,
             trace=trace,
+            trace_dir=trace_dir / "attempt-1" if (condition == "spell" and trace_dir is not None) else None,
+            trace_subdir="attempt-1" if (condition == "spell" and trace_dir is not None) else None,
             init=init,
         )
 
@@ -148,6 +151,8 @@ def run_unified_exercism(
                 reasoning_effort=reasoning_effort,
                 web_search=web_search,
                 trace=trace,
+                trace_dir=trace_dir / "attempt-2" if (condition == "spell" and trace_dir is not None) else None,
+                trace_subdir="attempt-2" if (condition == "spell" and trace_dir is not None) else None,
                 init=None,
             )
             total_tokens_in += retry_result.usage.total_input_tokens if retry_result.usage else 0
@@ -173,8 +178,9 @@ def run_unified_exercism(
             metadata={
                 "docker": True,
                 "unified": True,
-                "patch": container.diff(),
-                "changed_files": container.changed_files(),
+                "patch": container.diff(container.initial_commit or "HEAD"),
+                "changed_files": container.changed_files(container.initial_commit or "HEAD"),
+                "trace_dir": str(trace_dir) if trace_dir is not None else None,
                 "raw": current_result.raw,
             },
         )
