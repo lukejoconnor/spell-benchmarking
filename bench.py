@@ -63,6 +63,9 @@ from src.featurebench_lib import (
 from src.swebench_output import write_predictions_jsonl
 from src.swebench_prep import setup_swebench_workspace, get_default_workspace_root
 from src.workspace import RepoCache
+from src.unified_exercism import format_unified_exercism_prompt, run_unified_exercism
+from src.unified_featurebench import run_unified_featurebench
+from src.unified_swebench import run_unified_swebench
 from src.unified_adapters import (
     OneShotAdapter,
     ClaudeCodeAdapter,
@@ -106,6 +109,10 @@ def _resolve_spell_root() -> Path:
     nested_candidate = BENCHMARK_ROOT.parent
     if (nested_candidate / "config" / "agents").exists():
         return nested_candidate
+
+    sibling_candidate = BENCHMARK_ROOT.parent / "spell"
+    if (sibling_candidate / "config" / "agents").exists():
+        return sibling_candidate
 
     # Standalone fallback: leave as benchmark root and let agent resolution
     # surface a precise error if config files are unavailable.
@@ -1254,6 +1261,7 @@ def run_general(
 @click.option("--workspace-root", default=None)
 @click.option("--keep-workspaces", is_flag=True, default=False)
 @click.option("--docker", is_flag=True, default=False, help="Run agents inside Docker containers for isolation")
+@click.option("--unified", is_flag=True, default=False, help="Run on shared in-container software benchmark infra")
 @click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--trace/--no-trace", default=True, show_default=True, help="Record execution traces")
 @click.option("--evaluate/--no-evaluate", default=True, show_default=True, help="Run swebench.harness evaluation after generating predictions")
@@ -1356,6 +1364,7 @@ def run_swebench(
     workspace_root: str | None,
     keep_workspaces: bool,
     docker: bool,
+    unified: bool,
     web_search: bool,
     trace: bool,
     evaluate: bool,
@@ -1393,6 +1402,10 @@ def run_swebench(
     run_id = run_id or _run_id("swebench")
     output_file = Path(output) if output else _default_output(run_id)
     conditions = _parse_swebench_conditions(condition)
+    if docker and unified:
+        raise click.ClickException("--docker and --unified are mutually exclusive")
+    if unified and dataset == "pro":
+        raise click.ClickException("--unified does not support --dataset pro yet; use the existing SWE-bench Pro path")
 
     swebench_loaders = {
         "mini": lambda: load_swebench_verified_mini(50),
@@ -1435,6 +1448,8 @@ def run_swebench(
     click.echo(f"Workspace root: {root}")
     if docker:
         click.echo("Docker mode: agents run inside containers")
+    if unified:
+        click.echo("Unified mode: shared software benchmark container infra")
     click.echo(f"Loaded {len(items)} items")
     if dry_run:
         spell_resolution = None
@@ -1464,6 +1479,7 @@ def run_swebench(
                     "agent_source": spell_resolution.source if spell_resolution else None,
                     "agent_policy_key": spell_resolution.policy_key if spell_resolution else None,
                     "parallel": parallel,
+                    "unified": unified,
                     "evaluate": evaluate,
                     "eval_predictions_dir": eval_predictions_dir,
                     "eval_dataset_name": eval_dataset_name,
@@ -1499,8 +1515,16 @@ def run_swebench(
     cache = RepoCache(root)
 
     for cond in conditions:
-        click.echo(f"\n--- Running {cond}{' (docker)' if docker else ''} ---")
-        adapter = _build_adapter(cond, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget, docker=docker)
+        mode_label = " (unified)" if unified else (" (docker)" if docker else "")
+        click.echo(f"\n--- Running {cond}{mode_label} ---")
+        adapter = None if unified else _build_adapter(
+            cond,
+            model=model,
+            claude_model=claude_model,
+            codex_model=codex_model,
+            budget=budget,
+            docker=docker,
+        )
         worktree_tag = _swebench_worktree_tag(cond, run_id, variant=variant)
         spell_resolution = None
         if cond == "spell":
@@ -1552,12 +1576,31 @@ def run_swebench(
                     ),
                     workspace=ws_path,
                 )
-                resp = adapter.run(req)
+                if unified:
+                    resp = run_unified_swebench(
+                        condition=cond,
+                        prompt=prompt,
+                        model_spec=req.model_spec,
+                        timeout=timeout,
+                        init=req.init,
+                        agent_file=req.agent_file,
+                        budget=budget,
+                        depth=depth,
+                        max_tokens=max_tokens,
+                        reasoning_effort=reasoning_effort,
+                        web_search=req.web_search,
+                        trace=trace,
+                        trace_dir=req.trace_dir,
+                        workspace=ws_path,
+                    )
+                else:
+                    assert adapter is not None
+                    resp = adapter.run(req)
 
                 # In Docker mode, the patch lives inside the container and is
                 # returned in resp.metadata by the Docker adapter. On the host
                 # (non-Docker), we read it from the worktree.
-                if docker and resp.metadata.get("docker"):
+                if (docker or unified) and resp.metadata.get("docker"):
                     patch = resp.metadata.get("patch", "")
                     changed_files = resp.metadata.get("changed_files", [])
                 else:
@@ -1892,6 +1935,7 @@ def run_swebench_eval(
 @click.option("--workspace-root", default="/tmp/fb_ws")
 @click.option("--skip-install", is_flag=True, default=False)
 @click.option("--skip-tests", is_flag=True, default=False)
+@click.option("--unified", is_flag=True, default=False, help="Run on shared in-container software benchmark infra")
 @click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--trace/--no-trace", default=True, show_default=True)
 @click.option("--run-id", default=None)
@@ -1915,6 +1959,7 @@ def run_featurebench(
     workspace_root: str,
     skip_install: bool,
     skip_tests: bool,
+    unified: bool,
     web_search: bool,
     trace: bool,
     run_id: str | None,
@@ -1938,14 +1983,23 @@ def run_featurebench(
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
     click.echo(f"Workspace root: {root}")
+    if unified:
+        click.echo("Unified mode: shared software benchmark container infra")
     click.echo(f"Loaded {len(tasks)} tasks")
     trace_dir = _resolve_trace_dir(run_id, trace)
     if trace_dir:
         click.echo(f"Trace dir: {trace_dir}")
 
     for cond in conditions:
-        click.echo(f"\n--- Running {cond} ---")
-        adapter = _build_adapter(cond, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget)
+        mode_label = " (unified)" if unified else ""
+        click.echo(f"\n--- Running {cond}{mode_label} ---")
+        adapter = None if unified else _build_adapter(
+            cond,
+            model=model,
+            claude_model=claude_model,
+            codex_model=codex_model,
+            budget=budget,
+        )
         spell_resolution = None
         if cond == "spell":
             spell_resolution = _resolve_spell_agent_or_die(
@@ -1963,10 +2017,11 @@ def run_featurebench(
         def process(item: dict) -> UnifiedRunRecord:
             wt = setup_workspace(cache, item, tag=cond)
             try:
-                if not skip_install:
+                if not skip_install and not unified:
                     install_deps(wt.path, item)
                 mask_functions(wt.path, item["problem_statement"])
-                prompt = featurebench_format_prompt(item, wt.path)
+                prompt_workspace = Path("/workspace") if unified else wt.path
+                prompt = featurebench_format_prompt(item, prompt_workspace)
 
                 req = RunRequest(
                     benchmark="featurebench",
@@ -1991,17 +2046,41 @@ def run_featurebench(
                     ),
                     workspace=wt.path,
                 )
-                resp = adapter.run(req)
-                patch = wt.diff()
-                changed_files = wt.changed_files()
-
                 test_results = []
                 tests_passed: bool | None = None
-                if not skip_tests and patch.strip():
-                    fail_to_pass = item.get("FAIL_TO_PASS", [])
-                    if fail_to_pass:
-                        test_results = run_tests(wt.path, fail_to_pass, repo=item.get("repo"))
-                        tests_passed = all(t["passed"] for t in test_results)
+                if unified:
+                    resp, tests_passed, test_results = run_unified_featurebench(
+                        condition=cond,
+                        prompt=prompt,
+                        model_spec=req.model_spec,
+                        timeout=timeout,
+                        init=req.init,
+                        agent_file=req.agent_file,
+                        budget=budget,
+                        depth=depth,
+                        max_tokens=max_tokens,
+                        reasoning_effort=reasoning_effort,
+                        web_search=req.web_search,
+                        trace=trace,
+                        trace_dir=req.trace_dir,
+                        workspace=wt.path,
+                        item=item,
+                        skip_install=skip_install,
+                        skip_tests=skip_tests,
+                    )
+                    patch = resp.metadata.get("patch", "")
+                    changed_files = resp.metadata.get("changed_files", [])
+                else:
+                    assert adapter is not None
+                    resp = adapter.run(req)
+                    patch = wt.diff()
+                    changed_files = wt.changed_files()
+
+                    if not skip_tests and patch.strip():
+                        fail_to_pass = item.get("FAIL_TO_PASS", [])
+                        if fail_to_pass:
+                            test_results = run_tests(wt.path, fail_to_pass, repo=item.get("repo"))
+                            tests_passed = all(t["passed"] for t in test_results)
 
                 status = resp.status
                 if status == "ok":
@@ -2566,6 +2645,7 @@ def _run_exercism_pytest(test_path: Path, timeout: int = EXERCISM_PYTEST_TIMEOUT
 @click.option("--no-retry", is_flag=True, default=False, help="Skip retry on test failure")
 @click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--trace/--no-trace", default=False, show_default=True)
+@click.option("--unified", is_flag=True, default=False, help="Run on shared in-container software benchmark infra")
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
 @click.option("--output", default=None, help="JSONL output path")
@@ -2589,6 +2669,7 @@ def run_exercism(
     no_retry: bool,
     web_search: bool,
     trace: bool,
+    unified: bool,
     dry_run: bool,
     run_id: str | None,
     output: str | None,
@@ -2619,6 +2700,8 @@ def run_exercism(
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
     click.echo(f"Exercises: {len(items)}")
+    if unified:
+        click.echo("Unified mode: shared software benchmark container infra")
     click.echo(f"Retry: {'disabled' if no_retry else 'enabled'}")
 
     if dry_run:
@@ -2641,6 +2724,7 @@ def run_exercism(
                     "budget": budget,
                     "depth": depth,
                     "no_retry": no_retry,
+                    "unified": unified,
                     "web_search": web_search,
                     "trace": trace,
                     "agent": spell_resolution.agent_file if spell_resolution else None,
@@ -2657,8 +2741,15 @@ def run_exercism(
         click.echo(f"Trace dir: {trace_dir}")
 
     for cond in conditions:
-        click.echo(f"\n--- Running {cond} ---")
-        adapter = _build_adapter(cond, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget)
+        mode_label = " (unified)" if unified and cond != "one_shot" else ""
+        click.echo(f"\n--- Running {cond}{mode_label} ---")
+        adapter = None if (unified and cond != "one_shot") else _build_adapter(
+            cond,
+            model=model,
+            claude_model=claude_model,
+            codex_model=codex_model,
+            budget=budget,
+        )
         spell_resolution = None
         if cond == "spell":
             spell_resolution = _resolve_spell_agent_or_die(
@@ -2677,6 +2768,72 @@ def run_exercism(
         def process(item: ExercismItem) -> UnifiedRunRecord:
             ws = _setup_exercism_workspace(item, cond)
             try:
+                if unified and cond != "one_shot":
+                    outcome = run_unified_exercism(
+                        condition=cond,
+                        item=item,
+                        workspace=ws,
+                        model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
+                        timeout=timeout,
+                        init=_make_spell_init(format_unified_exercism_prompt(item)) if cond == "spell" else None,
+                        agent_file=spell_resolution.agent_file if (spell_resolution and cond == "spell") else None,
+                        budget=budget,
+                        depth=depth,
+                        max_tokens=max_tokens,
+                        reasoning_effort=reasoning_effort,
+                        web_search=web_search if cond == "codex" else False,
+                        trace=trace if cond == "spell" else False,
+                        trace_dir=(
+                            _trace_dir_for_request(trace_dir, cond, item.slug)
+                            if (cond == "spell" and trace_dir is not None)
+                            else None
+                        ),
+                        no_retry=no_retry,
+                    )
+                    last_resp = outcome.response
+                    status = "passed" if outcome.passed else last_resp.status
+                    if not outcome.passed and not last_resp.error_message:
+                        status = "tests_failed"
+                    return _mk_record(
+                        run_id=run_id,
+                        benchmark="exercism",
+                        dataset="exercism",
+                        split=None,
+                        item_id=item.slug,
+                        condition=cond,
+                        model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
+                        agent_file=spell_resolution.agent_file if (spell_resolution and cond == "spell") else None,
+                        response=RunResponse(
+                            status=status,
+                            response_text=last_resp.response_text,
+                            tokens_in=last_resp.tokens_in,
+                            tokens_out=last_resp.tokens_out,
+                            cost_usd=last_resp.cost_usd,
+                            latency_ms=last_resp.latency_ms,
+                            error_message=last_resp.error_message,
+                            error_type=last_resp.error_type,
+                            metadata={**last_resp.metadata, "test_output": outcome.test_output[-2000:]},
+                        ),
+                        response_text=last_resp.response_text,
+                        patch=None,
+                        answer_extracted=None,
+                        correct=outcome.passed,
+                        metadata={
+                            "difficulty": item.difficulty,
+                            "attempt": outcome.attempts,
+                            **(
+                                {
+                                    "spell_mode": spell_resolution.spell_mode,
+                                    "resolved_agent_file": spell_resolution.agent_file,
+                                    "agent_source": spell_resolution.source,
+                                    "agent_policy_key": spell_resolution.policy_key,
+                                }
+                                if (cond == "spell" and spell_resolution)
+                                else {}
+                            ),
+                        },
+                    )
+
                 test_path = ws / item.test_file
                 total_cost = 0.0
                 total_tokens_in = 0
@@ -2714,6 +2871,7 @@ def run_exercism(
                     ),
                     workspace=ws if cond != "one_shot" else None,
                 )
+                assert adapter is not None
                 resp1 = adapter.run(req)
 
                 # For one_shot, extract code from response and write to file

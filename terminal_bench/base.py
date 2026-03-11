@@ -9,84 +9,36 @@ from __future__ import annotations
 import json
 import logging
 import shlex
+import sys
 import time
 from abc import abstractmethod
-from dataclasses import dataclass
 from pathlib import Path
 
 from terminal_bench.agents.base_agent import AgentResult, BaseAgent
 from terminal_bench.agents.failure_mode import FailureMode
 from terminal_bench.terminal.tmux_session import TmuxSession
 
+try:
+    from src.docker_agents import (
+        ExecOutput,
+        ParsedUsage,
+        container_exec,
+        install_nvm_node_exec,
+        iter_dicts,
+        parse_jsonl_events,
+    )
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from src.docker_agents import (
+        ExecOutput,
+        ParsedUsage,
+        container_exec,
+        install_nvm_node_exec,
+        iter_dicts,
+        parse_jsonl_events,
+    )
+
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ExecOutput:
-    """Result from a container exec_run call."""
-    exit_code: int
-    stdout: str
-    stderr: str
-    timed_out: bool
-
-
-@dataclass
-class ParsedUsage:
-    """Token usage extracted from agent output."""
-    input_tokens: int = 0
-    cached_input_tokens: int = 0
-    output_tokens: int = 0
-    cost_usd: float | None = None
-
-    @property
-    def total_input_tokens(self) -> int:
-        """Total tokens seen by the model (non-cached + cached)."""
-        return self.input_tokens + self.cached_input_tokens
-
-
-# Idempotent NVM + Node 22 install script.
-NVM_NODE_INSTALL = r"""
-set -e
-if [ -d "$HOME/.nvm" ]; then
-    source "$HOME/.nvm/nvm.sh" 2>/dev/null || true
-    if command -v node >/dev/null 2>&1; then
-        echo "node already installed: $(node --version)"
-        exit 0
-    fi
-fi
-apt-get update -qq && apt-get install -y -qq curl >/dev/null 2>&1
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash
-source "$HOME/.nvm/nvm.sh"
-nvm install 22
-echo "node installed: $(node --version)"
-"""
-
-
-def parse_jsonl_events(stdout: str) -> list[dict]:
-    """Parse JSONL from stdout, skipping non-JSON lines."""
-    events = []
-    for line in stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-            if isinstance(obj, dict):
-                events.append(obj)
-        except json.JSONDecodeError:
-            continue
-    return events
-
-
-def iter_dicts(v):
-    """Recursively yield all dicts nested in a JSON value."""
-    if isinstance(v, dict):
-        yield v
-        for child in v.values():
-            yield from iter_dicts(child)
-    elif isinstance(v, list):
-        for child in v:
-            yield from iter_dicts(child)
 
 
 class DockerExecAgent(BaseAgent):
@@ -119,33 +71,12 @@ class DockerExecAgent(BaseAgent):
         env: dict[str, str] | None = None,
         workdir: str | None = None,
     ) -> ExecOutput:
-        """Run a shell command in the container via exec_run(demux=True).
-
-        Uses shell `timeout` for time-bounding since docker-py exec_run
-        has no native timeout parameter.
-        """
-        if timeout:
-            shell_cmd = f"timeout {timeout}s bash -c {shlex.quote(cmd)}"
-        else:
-            shell_cmd = cmd
-
-        result = container.exec_run(
-            ["bash", "-c", shell_cmd],
-            environment=env or {},
+        return container_exec(
+            container,
+            cmd,
+            timeout=timeout,
+            env=env,
             workdir=workdir,
-            demux=True,
-        )
-
-        stdout_bytes, stderr_bytes = result.output or (b"", b"")
-        stdout = (stdout_bytes or b"").decode("utf-8", errors="replace")
-        stderr = (stderr_bytes or b"").decode("utf-8", errors="replace")
-        timed_out = result.exit_code == 124 and timeout is not None
-
-        return ExecOutput(
-            exit_code=result.exit_code,
-            stdout=stdout,
-            stderr=stderr,
-            timed_out=timed_out,
         )
 
     def _detect_workdir(self, container) -> str:
@@ -157,11 +88,13 @@ class DockerExecAgent(BaseAgent):
     def _install_nvm_node(self, container) -> bool:
         """Install NVM and Node 22 (idempotent). Returns True on success."""
         logger.info("Installing NVM + Node...")
-        result = self._container_exec(container, NVM_NODE_INSTALL, timeout=300)
-        if result.exit_code != 0:
-            logger.error(f"NVM/Node install failed:\n{result.stderr[:1000]}")
+        ok = install_nvm_node_exec(
+            lambda command, **kwargs: self._container_exec(container, command, **kwargs)
+        )
+        if not ok:
+            logger.error("NVM/Node install failed")
             return False
-        logger.info(result.stdout.strip().splitlines()[-1])
+        logger.info("Node runtime ready")
         return True
 
     def _install_agent_cli(self, container) -> bool:
