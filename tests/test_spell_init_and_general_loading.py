@@ -31,6 +31,19 @@ class SpellInitRegressionTest(unittest.TestCase):
         self.assertIn("'(do (!describe io) (!extend))", init)
         self.assertNotIn("'(!extend))))", init)
 
+    def test_fix_loop_variant_renders_prompt_text_into_trailing_expr(self):
+        prompt = "Repository: demo/repo\n\n## Issue to Fix\n\nHandle newline-sensitive input."
+
+        trailing = bench._render_swebench_trailing_expr(
+            prompt,
+            bench.SWEBENCH_VARIANTS["fix-loop"]["trailing"],
+        )
+
+        self.assertEqual(
+            trailing,
+            '\'(patterns/fix-loop "Repository: demo/repo\\n\\n## Issue to Fix\\n\\nHandle newline-sensitive input.")',
+        )
+
 
 class GeneralLoadingRegressionTest(unittest.TestCase):
     def test_project_euler_items_filter_uses_normalized_ids(self):
