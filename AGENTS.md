@@ -211,12 +211,9 @@ Opus 4.6: Spell wins 6, CC wins 0. Codex: Codex CLI wins 5, Spell wins 1 genuine
 ```
 benchmarking/
 ├── bench.py               # Unified CLI: general/swebench/featurebench/summarize
-├── run_benchmark.py       # Legacy shim -> bench.py general
-├── run_swebench.py        # Legacy shim -> bench.py swebench
-├── run_featurebench.py    # Legacy shim -> bench.py featurebench
-├── manual_swebench_high_reasoning.py # Manual SWE-bench runner for focused diagnostics
 ├── src/
 │   ├── datasets.py        # Dataset loading
+│   ├── docker_agents.py   # Shared in-container agent execution
 │   ├── unified_adapters.py # Condition adapters (Spell/OneShot/Claude/Codex)
 │   ├── unified_results.py  # Unified JSONL schema + summaries
 │   ├── evaluation.py      # Scoring (exact match, regex extraction)

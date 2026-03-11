@@ -668,17 +668,6 @@ def format_benchmark_prompt(item: BenchmarkItem, context_file: str | None = None
 
     return "\n".join(parts)
 
-
-def format_prompt_one_shot(item: BenchmarkItem) -> str:
-    """Backward-compatible wrapper for text-only prompt formatting."""
-    return format_benchmark_prompt(item)
-
-
-def format_prompt_spell(item: BenchmarkItem, context_file: str | None = None) -> str:
-    """Backward-compatible wrapper for prompt formatting with optional file references."""
-    return format_benchmark_prompt(item, context_file=context_file)
-
-
 def load_gaia(level: int = None, max_items: int = None) -> list[BenchmarkItem]:
     """Load GAIA benchmark for general AI assistant evaluation.
 

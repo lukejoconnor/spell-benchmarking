@@ -405,11 +405,9 @@ benchmarking/
 │   ├── agent_policy.py       # Agent selection from model/provider transport
 │   ├── featurebench_lib.py   # FeatureBench workspace setup and test execution
 │   ├── swebench_prep.py      # SWE-bench workspace setup (clone, checkout, worktree)
+│   ├── docker_agents.py      # Shared in-container agent execution for software benchmarks
 │   ├── swebench_output.py    # SWE-bench predictions JSONL writer
 │   └── workspace.py          # Shared repo cache and worktree management
-├── run_benchmark.py          # Legacy shim → bench.py general
-├── run_swebench.py           # Legacy shim → bench.py swebench
-├── run_featurebench.py       # Legacy shim → bench.py featurebench
 ├── results/                  # JSONL output (gitignored)
 ├── traces/                   # Execution traces (gitignored)
 └── data/                     # Cached datasets (gitignored)

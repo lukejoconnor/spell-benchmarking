@@ -1070,7 +1070,3 @@ def run_agent_in_container(
         raw=parsed,
         trace_dir=persisted_trace_dir,
     )
-
-
-# Backward-compatible alias for older in-flight refactors.
-execute_agent_in_container = run_agent_in_container

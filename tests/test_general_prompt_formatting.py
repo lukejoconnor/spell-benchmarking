@@ -44,8 +44,6 @@ from src.datasets import (
     BenchmarkItem,
     LONGBENCH_SEARCH_GUIDANCE,
     format_benchmark_prompt,
-    format_prompt_one_shot,
-    format_prompt_spell,
 )
 
 
@@ -72,8 +70,6 @@ class GeneralPromptFormattingTest(unittest.TestCase):
 
         prompt = format_benchmark_prompt(item)
 
-        self.assertEqual(prompt, format_prompt_one_shot(item))
-        self.assertEqual(prompt, format_prompt_spell(item))
         self.assertNotIn("uv run python3", prompt)
         self.assertIn("Problem:", prompt)
 
