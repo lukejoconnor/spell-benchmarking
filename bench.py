@@ -140,14 +140,6 @@ class ProEvalConfig:
     redo: bool = False
 
 
-SWEBENCH_REMINDER_PREAMBLE = '(quine sys-reminder "Recall: you are writing Spell code, not natural language.")'
-SWEBENCH_DOCKER_PREAMBLE = (
-    '(quine sys-reminder "Recall: you are writing Spell code, not natural language. '
-    'You are working inside a Docker container. All file and system operations MUST use '
-    '(io/sh ...) shell commands. Do NOT use io/spit, io/slurp, io/read-file, '
-    'io/write-file, io/ls, io/exists?, io/mkdir — they operate on the host, not the '
-    'container. Use shell equivalents via io/sh instead.")'
-)
 OMNI_MATH_TRAILING = (
     "'(do "
     '(quine strategy "Solve the problem using a combination of the following strategies:\\n'
@@ -158,51 +150,47 @@ OMNI_MATH_TRAILING = (
 )
 
 # Named SWE-bench intervention variants for experimentation.
-# Each variant specifies raw Spell preamble expressions, trailing expression,
-# and optional agent override.
+# Each variant specifies a trailing expression and optional agent override.
 SWEBENCH_VARIANTS: dict[str, dict[str, str | None]] = {
     "describe-all": {
-        "preamble_expr": SWEBENCH_REMINDER_PREAMBLE,
         "trailing": "'(do (!describe io agents globals) (!extend))",
         "agent": "config/agents/cli.agent.edn",
     },
     "orchestrator": {
-        "preamble_expr": (
-            SWEBENCH_REMINDER_PREAMBLE
-            + ' (quine instruction "You are the orchestrator agent. Your role is to decompose this '
+        "trailing": (
+            "'(do "
+            '(quine instruction "You are the orchestrator agent. Your role is to decompose this '
             'problem and delegate ALL work to sub-agents. Do NOT make code edits yourself. '
             'Step 1: Spawn explorer sub-agents using (agents/spawn !llm-self \\"task\\") to '
             'understand the codebase — read relevant files, find the right locations. '
             'Step 2: Synthesize explorer findings into a plan. '
             'Step 3: Spawn worker sub-agents to implement each part of the plan. '
             'Workers should use io/sh, io/read-file, io/write-file for edits. '
-            'Use agents/!ask to collect results. Use globals/* for shared state.")'
+            'Use agents/!ask to collect results. Use globals/* for shared state.") '
+            "(!describe io agents globals) (!extend))"
         ),
-        "trailing": "'(do (!describe io agents globals) (!extend))",
         "agent": "config/agents/cli.agent.edn",
     },
     "describe-io": {
-        "preamble_expr": SWEBENCH_REMINDER_PREAMBLE,
         "trailing": "'(do (!describe io) (!extend))",
         "agent": None,
     },
     "context-mgmt": {
-        "preamble_expr": (
-            SWEBENCH_REMINDER_PREAMBLE
-            + ' (quine instruction "Actively manage your context window to avoid context bloat '
+        "trailing": (
+            "'(do "
+            '(quine instruction "Actively manage your context window to avoid context bloat '
             'and context rot, which is the primary cause of failure on complex tasks. '
             'After reading large files or getting long shell outputs, use (rethink N \\"reason\\") '
             'to prune stale reasoning and tool results before calling (!extend). '
             'Use (!peek name expr) instead of (!call-now name expr) for large file reads — '
             'peek bindings auto-prune on the next extension unless you persist what you need '
             'with (def keep (subvec peeked-data start end)). '
-            'Keep your active context focused on only the information needed for the current step.")'
+            'Keep your active context focused on only the information needed for the current step.") '
+            "(!describe io) (!extend))"
         ),
-        "trailing": "'(do (!describe io) (!extend))",
         "agent": None,
     },
     "fix-loop": {
-        "preamble_expr": None,
         "trailing": "'(patterns/fix-loop prompt)",
         "agent": "config/agents/cli.agent.edn",
     },
@@ -341,35 +329,11 @@ def _format_general_prompt(item: BenchmarkItem, condition: str) -> str:
     return format_benchmark_prompt(item, context_file=_general_context_file(condition, item))
 
 
-def _unquote_spell_expr(expr: str) -> str:
-    stripped = expr.strip()
-    return stripped[1:].strip() if stripped.startswith("'") else stripped
-
-
-def _compose_spell_trailing(setup_exprs: list[str], trailing: str | None) -> str | None:
-    rendered_setup = [expr.strip() for expr in setup_exprs if expr and expr.strip()]
-    if not rendered_setup:
-        return trailing
-    action = _unquote_spell_expr(trailing or "'(!extend)")
-    body = " ".join([*rendered_setup, action])
-    return f"'(do {body})"
-
-
 def _make_spell_init(prompt: str, trailing: str | None = None) -> str:
     # Some benchmark datasets provide a raw open Spell prefix. Keep those as-is.
     if prompt.lstrip().startswith("("):
         return prompt
     return build_spell_init(prompt, trailing)
-
-
-def _make_bespoke_spell_init(
-    prompt: str,
-    *,
-    preamble_expr: str | None = None,
-    trailing: str | None = None,
-) -> str:
-    combined_trailing = _compose_spell_trailing([preamble_expr] if preamble_expr else [], trailing)
-    return _make_spell_init(prompt, combined_trailing)
 
 
 def _general_spell_trailing(dataset: str) -> str | None:
@@ -1316,14 +1280,9 @@ def run_general(
     show_default=True,
     help="Re-run SWE-bench Pro eval even if output files already exist",
 )
-@click.option(
-    "--preamble-expr",
-    default=None,
-    help="Raw Spell init expression inserted before the trailing expression",
-)
 @click.option("--trailing", default=None, help="Custom Spell trailing expression (overrides default '(!extend))")
 @click.option("--variant", default=None, type=click.Choice(list(SWEBENCH_VARIANTS.keys())),
-              help="Named intervention variant (overrides preamble-expr/trailing/agent)")
+              help="Named intervention variant (overrides trailing/agent)")
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
 @click.option("--output", default=None)
@@ -1370,17 +1329,15 @@ def run_swebench(
     pro_use_local_docker: bool,
     pro_block_network: bool,
     pro_redo: bool,
-    preamble_expr: str | None,
     trailing: str | None,
     variant: str | None,
     dry_run: bool,
     run_id: str | None,
     output: str | None,
 ) -> None:
-    # Apply named variant overrides (variant takes precedence over manual preamble-expr/trailing).
+    # Apply named variant overrides (CLI flags take precedence over variant defaults).
     if variant:
         vconf = SWEBENCH_VARIANTS[variant]
-        preamble_expr = preamble_expr or vconf.get("preamble_expr")
         trailing = trailing or vconf.get("trailing")
         agent = agent or vconf.get("agent")
     run_id = run_id or _run_id("swebench")
@@ -1539,13 +1496,7 @@ def run_swebench(
                     prompt=prompt,
                     model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
-                    init=(_make_bespoke_spell_init(
-                              prompt,
-                              preamble_expr=preamble_expr or (
-                                  SWEBENCH_DOCKER_PREAMBLE if docker else SWEBENCH_REMINDER_PREAMBLE
-                              ),
-                              trailing=trailing,
-                          ) if cond == "spell" else None),
+                    init=(_make_spell_init(prompt, trailing) if cond == "spell" else None),
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
                     budget=budget,
                     depth=depth,
@@ -2257,11 +2208,6 @@ def _validate_python_syntax(code: str) -> tuple[bool, str | None]:
 @click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
 @click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--use-knowledge/--no-knowledge", default=False, show_default=True, help="Include domain knowledge in prompt")
-@click.option(
-    "--preamble-expr",
-    default=None,
-    help="Raw Spell init expression inserted before the trailing expression",
-)
 @click.option("--workspace-root", default="/tmp/sab_ws")
 @click.option("--run-id", default=None)
 @click.option("--output", default=None)
@@ -2284,7 +2230,6 @@ def run_scienceagentbench(
     reasoning_effort: str | None,
     web_search: bool,
     use_knowledge: bool,
-    preamble_expr: str | None,
     workspace_root: str,
     run_id: str | None,
     output: str | None,
@@ -2385,11 +2330,7 @@ def run_scienceagentbench(
                     prompt=prompt,
                     model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
                     timeout=timeout,
-                    init=(
-                        _make_bespoke_spell_init(prompt, preamble_expr=preamble_expr)
-                        if cond == "spell"
-                        else None
-                    ),
+                    init=(_make_spell_init(prompt) if cond == "spell" else None),
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
                     budget=budget,
                     depth=depth,
