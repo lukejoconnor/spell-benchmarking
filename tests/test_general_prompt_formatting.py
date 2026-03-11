@@ -57,7 +57,7 @@ def test_shared_prompt_skips_long_context_guidance_for_inline_context() -> None:
     assert "Choices:" in prompt
 
 
-def test_shared_prompt_formats_gaia_as_tool_neutral() -> None:
+def test_shared_prompt_formats_gaia_with_tool_availability_toggle() -> None:
     item = BenchmarkItem(
         id="gaia_1",
         dataset="gaia",
@@ -67,7 +67,9 @@ def test_shared_prompt_formats_gaia_as_tool_neutral() -> None:
         metadata={"file_path": "/tmp/input.txt"},
     )
 
-    prompt = format_benchmark_prompt(item)
+    prompt_with_web = format_benchmark_prompt(item, web_search=True)
+    prompt_without_web = format_benchmark_prompt(item, web_search=False)
 
-    assert "Attached file: /tmp/input.txt" in prompt
-    assert "Use any available tools to answer this question." in prompt
+    assert "Attached file: /tmp/input.txt" in prompt_with_web
+    assert "Use web search, Python, and any tools needed to answer this question." in prompt_with_web
+    assert "Use Python and any available non-web tools needed to answer this question." in prompt_without_web
