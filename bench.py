@@ -164,8 +164,17 @@ def _default_output(run_id: str) -> Path:
     return Path("results") / "unified" / f"{run_id}.jsonl"
 
 
-def _relocate_swebench_eval_reports(run_id: str) -> list[Path]:
+def _relocate_swebench_eval_reports(
+    run_id: str,
+    *,
+    condition: str | None = None,
+    name: str | None = None,
+) -> list[Path]:
     report_root = BENCHMARK_ROOT / "results" / "swebench_eval_reports"
+    if condition:
+        report_root = report_root / _sanitize_trace_segment(condition, "condition")
+    if name:
+        report_root = report_root / _sanitize_trace_segment(name, "name")
     report_root.mkdir(parents=True, exist_ok=True)
 
     moved: list[Path] = []
@@ -195,6 +204,22 @@ def _sanitize_trace_segment(value: str, fallback: str) -> str:
     return cleaned or fallback
 
 
+def _trace_dir_for_condition(
+    base_trace_dir: Path | None,
+    condition: str,
+    *,
+    name: str | None = None,
+) -> Path | None:
+    if base_trace_dir is None:
+        return None
+
+    path = base_trace_dir / _sanitize_trace_segment(condition, "condition")
+    if name:
+        path = path / _sanitize_trace_segment(name, "name")
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _trace_dir_for_request(
     base_trace_dir: Path | None,
     condition: str,
@@ -203,12 +228,10 @@ def _trace_dir_for_request(
     name: str | None = None,
     attempt: int | None = None,
 ) -> Path | None:
-    if base_trace_dir is None:
+    path = _trace_dir_for_condition(base_trace_dir, condition, name=name)
+    if path is None:
         return None
 
-    path = base_trace_dir / _sanitize_trace_segment(condition, "condition")
-    if name:
-        path = path / _sanitize_trace_segment(name, "name")
     path = path / _sanitize_trace_segment(item_id, "item")
     if attempt is not None:
         path = path / f"attempt-{attempt}"
@@ -306,6 +329,16 @@ def _swebench_predictions_filename(condition: str, dataset: str, run_id: str, *,
         parts.append(_sanitize_trace_segment(name, "name"))
     parts.extend([dataset, run_id])
     return "_".join(parts) + ".jsonl"
+
+
+def _swebench_eval_run_id(run_id: str, *, name: str | None = None) -> str:
+    if not name:
+        return run_id
+    return f"{run_id}__{_sanitize_trace_segment(name, 'name')}"
+
+
+def _swebench_converted_patch_filename(condition: str, dataset: str, run_id: str, *, name: str | None = None) -> str:
+    return _swebench_predictions_filename(condition, dataset, run_id, name=name).removesuffix(".jsonl") + ".patches.json"
 
 
 def _validate_general_configuration(
@@ -669,7 +702,6 @@ def _build_swebench_eval_plan(
     dataset: str,
     condition: str,
     run_id: str,
-    name: str | None,
     predictions_dir: str,
     dataset_name: str | None,
     split: str,
@@ -682,10 +714,12 @@ def _build_swebench_eval_plan(
     final_clean: bool,
     verify_predictions: bool,
     pro: ProEvalConfig,
+    name: str | None = None,
 ) -> tuple[str, list[str], list[dict[str, Any]]]:
     conditions = _parse_swebench_conditions(condition)
     resolved_dataset_name = dataset_name or _swebench_dataset_name(dataset)
     pred_root = Path(predictions_dir)
+    eval_run_id = _swebench_eval_run_id(run_id, name=name)
 
     plan: list[dict[str, Any]] = []
     if dataset == "pro":
@@ -693,14 +727,14 @@ def _build_swebench_eval_plan(
         raw_sample = Path(pro.raw_sample_path) if pro.raw_sample_path else _default_swebench_pro_raw_sample_path(
             resolved_dataset_name, split
         )
-        output_root = Path(pro.output_dir) / run_id
+        output_root = Path(pro.output_dir) / eval_run_id
 
         for cond in conditions:
             pred_path = pred_root / _swebench_predictions_filename(cond, dataset, run_id, name=name)
             if verify_predictions and not pred_path.exists():
                 raise click.ClickException(f"Predictions file not found: {pred_path}")
 
-            converted_path = output_root / f"{cond}_{dataset}_{run_id}.patches.json"
+            converted_path = output_root / _swebench_converted_patch_filename(cond, dataset, run_id, name=name)
             condition_output_dir = output_root / cond
             cmd = _build_swebench_pro_command(
                 raw_sample_path=raw_sample.resolve(),
@@ -725,6 +759,8 @@ def _build_swebench_eval_plan(
                     "split": split,
                     "dockerhub_username": pro.dockerhub_username,
                     "strip_trace_artifacts": pro.strip_trace_artifacts,
+                    "eval_run_id": eval_run_id,
+                    "name": name,
                     "command": cmd,
                 }
             )
@@ -753,7 +789,7 @@ def _build_swebench_eval_plan(
             "--timeout",
             str(timeout),
             "--run_id",
-            run_id,
+            eval_run_id,
             "--namespace",
             namespace,
             "--instance_image_tag",
@@ -774,6 +810,8 @@ def _build_swebench_eval_plan(
                 "predictions_path": str(pred_path),
                 "cache_level": cache_level,
                 "clean": clean,
+                "eval_run_id": eval_run_id,
+                "name": name,
                 "command": cmd,
             }
         )
@@ -904,7 +942,12 @@ def _run_swebench_eval_plan(plan: list[dict[str, Any]]) -> None:
             raise click.ClickException(
                 f"swebench evaluation failed for condition '{cond}' with exit code {exc.returncode}"
             ) from exc
-        moved_reports = _relocate_swebench_eval_reports(step["command"][step["command"].index("--run_id") + 1])
+        eval_run_id = step.get("eval_run_id") or step["command"][step["command"].index("--run_id") + 1]
+        moved_reports = _relocate_swebench_eval_reports(
+            eval_run_id,
+            condition=cond,
+            name=step.get("name"),
+        )
         for report_path in moved_reports:
             click.echo(f"Moved SWE-bench eval report: {report_path}")
 
@@ -950,8 +993,8 @@ def cli() -> None:
 def run_general(
     dataset: str,
     condition: str,
-    model: str,
-    claude_model: str,
+    model: str | None,
+    claude_model: str | None,
     codex_model: str,
     n: int | None,
     items: str | None,
@@ -971,11 +1014,11 @@ def run_general(
     suffix_grammar: bool,
     web_search: bool | None,
     trace: bool,
-    name: str | None,
-    trailing: str | None,
-    dry_run: bool,
-    run_id: str | None,
-    output: str | None,
+    name: str | None = None,
+    trailing: str | None = None,
+    dry_run: bool = False,
+    run_id: str | None = None,
+    output: str | None = None,
 ) -> None:
     run_id = run_id or _run_id("general")
     output_file = Path(output) if output else _default_output(run_id)
@@ -1125,7 +1168,11 @@ def run_general(
                     web_search=condition_web_search,
                     trace=trace,
                     init=_make_spell_init(prompt, trailing if trailing is not None else _general_spell_trailing(item.dataset)) if cond == "spell" else None,
-                    trace_dir=(_trace_dir_for_request(trace_dir, cond, item.id, name=name) if cond == "spell" else trace_dir),
+                    trace_dir=(
+                        _trace_dir_for_request(trace_dir, cond, item.id, name=name)
+                        if cond == "spell"
+                        else _trace_dir_for_condition(trace_dir, cond, name=name)
+                    ),
                     metadata={"add_dir": CONTEXT_DIR},
                 )
             )
@@ -1277,8 +1324,8 @@ def run_general(
 def run_swebench(
     dataset: str,
     condition: str,
-    model: str,
-    claude_model: str,
+    model: str | None,
+    claude_model: str | None,
     codex_model: str,
     n: int | None,
     item_ids: str | None,
@@ -1317,11 +1364,11 @@ def run_swebench(
     pro_use_local_docker: bool,
     pro_block_network: bool,
     pro_redo: bool,
-    name: str | None,
-    trailing: str | None,
-    dry_run: bool,
-    run_id: str | None,
-    output: str | None,
+    name: str | None = None,
+    trailing: str | None = None,
+    dry_run: bool = False,
+    run_id: str | None = None,
+    output: str | None = None,
 ) -> None:
     run_id = run_id or _run_id("swebench")
     output_file = Path(output) if output else _default_output(run_id)
@@ -1490,7 +1537,11 @@ def run_swebench(
                     reasoning_effort=reasoning_effort,
                     web_search=web_search if cond == "codex" else False,
                     trace=trace,
-                    trace_dir=(_trace_dir_for_request(trace_dir, cond, item.instance_id, name=name) if cond == "spell" else trace_dir),
+                    trace_dir=(
+                        _trace_dir_for_request(trace_dir, cond, item.instance_id, name=name)
+                        if cond == "spell"
+                        else _trace_dir_for_condition(trace_dir, cond, name=name)
+                    ),
                     workspace=ws_path,
                 )
                 if unified:
@@ -1772,26 +1823,26 @@ def run_swebench_eval(
     dataset: str,
     condition: str,
     run_id: str,
-    name: str | None,
-    predictions_dir: str,
-    dataset_name: str | None,
-    split: str,
-    max_workers: int,
-    timeout: int,
-    namespace: str,
-    instance_image_tag: str,
-    env_image_tag: str,
-    final_cache_level: str,
-    final_clean: bool,
-    pro_eval_repo: str,
-    pro_raw_sample_path: str | None,
-    pro_output_dir: str,
-    pro_dockerhub_username: str,
-    pro_strip_trace_artifacts: bool,
-    pro_use_local_docker: bool,
-    pro_block_network: bool,
-    pro_redo: bool,
-    dry_run: bool,
+    name: str | None = None,
+    predictions_dir: str = "results/swebench",
+    dataset_name: str | None = None,
+    split: str = "test",
+    max_workers: int = 4,
+    timeout: int = 1800,
+    namespace: str = "none",
+    instance_image_tag: str = "latest",
+    env_image_tag: str = "latest",
+    final_cache_level: str = "base",
+    final_clean: bool = True,
+    pro_eval_repo: str = SCALE_PRO_EVAL_REPO_DEFAULT,
+    pro_raw_sample_path: str | None = None,
+    pro_output_dir: str = SCALE_PRO_OUTPUT_DIR_DEFAULT,
+    pro_dockerhub_username: str = "jefzda",
+    pro_strip_trace_artifacts: bool = True,
+    pro_use_local_docker: bool = True,
+    pro_block_network: bool = False,
+    pro_redo: bool = False,
+    dry_run: bool = False,
 ) -> None:
     pro_config = ProEvalConfig(
         eval_repo=pro_eval_repo,
@@ -1871,8 +1922,8 @@ def run_featurebench(
     condition: str,
     split: str,
     task_ids: tuple[int, ...],
-    model: str,
-    claude_model: str,
+    model: str | None,
+    claude_model: str | None,
     codex_model: str,
     parallel: int,
     budget: float,
@@ -1889,10 +1940,10 @@ def run_featurebench(
     unified: bool,
     web_search: bool,
     trace: bool,
-    name: str | None,
-    trailing: str | None,
-    run_id: str | None,
-    output: str | None,
+    name: str | None = None,
+    trailing: str | None = None,
+    run_id: str | None = None,
+    output: str | None = None,
 ) -> None:
     run_id = run_id or _run_id("featurebench")
     output_file = Path(output) if output else _default_output(run_id)
@@ -1970,7 +2021,11 @@ def run_featurebench(
                     reasoning_effort=reasoning_effort,
                     web_search=web_search if cond == "codex" else False,
                     trace=trace,
-                    trace_dir=(_trace_dir_for_request(trace_dir, cond, item["instance_id"], name=name) if cond == "spell" else trace_dir),
+                    trace_dir=(
+                        _trace_dir_for_request(trace_dir, cond, item["instance_id"], name=name)
+                        if cond == "spell"
+                        else _trace_dir_for_condition(trace_dir, cond, name=name)
+                    ),
                     workspace=wt.path,
                 )
                 test_results = []
@@ -2213,8 +2268,8 @@ def run_scienceagentbench(
     n: int | None,
     instance_ids: str | None,
     domain: str | None,
-    model: str,
-    claude_model: str,
+    model: str | None,
+    claude_model: str | None,
     codex_model: str,
     parallel: int,
     budget: float,
@@ -2228,10 +2283,10 @@ def run_scienceagentbench(
     web_search: bool,
     use_knowledge: bool,
     workspace_root: str,
-    name: str | None,
-    trailing: str | None,
-    run_id: str | None,
-    output: str | None,
+    name: str | None = None,
+    trailing: str | None = None,
+    run_id: str | None = None,
+    output: str | None = None,
 ) -> None:
     """Run ScienceAgentBench: data-driven scientific code generation."""
     import re
@@ -2604,11 +2659,11 @@ def run_exercism(
     web_search: bool,
     trace: bool,
     unified: bool,
-    name: str | None,
-    trailing: str | None,
-    dry_run: bool,
-    run_id: str | None,
-    output: str | None,
+    name: str | None = None,
+    trailing: str | None = None,
+    dry_run: bool = False,
+    run_id: str | None = None,
+    output: str | None = None,
 ) -> None:
     """Run Exercism Python benchmark with two-attempt protocol."""
     run_id = run_id or _run_id("exercism")

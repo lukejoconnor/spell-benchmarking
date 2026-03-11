@@ -118,6 +118,40 @@ def test_build_swebench_eval_plan_keeps_standard_pipeline_for_verified(tmp_path)
     assert "src.swebench_eval_wrapper" in " ".join(plan[0]["command"])
 
 
+def test_build_swebench_eval_plan_namespaces_named_variants(tmp_path) -> None:
+    bench = _import_bench_with_stubbed_client()
+    run_id = "run123"
+    pred_dir = tmp_path / "preds"
+    _write_pred(pred_dir / f"spell_baseline_v1_verified_{run_id}.jsonl")
+
+    pro = bench.ProEvalConfig()
+    dataset_name, conditions, plan = bench._build_swebench_eval_plan(
+        dataset="verified",
+        condition="spell",
+        run_id=run_id,
+        predictions_dir=str(pred_dir),
+        dataset_name=None,
+        split="test",
+        max_workers=2,
+        timeout=60,
+        namespace="none",
+        instance_image_tag="latest",
+        env_image_tag="latest",
+        final_cache_level="base",
+        final_clean=True,
+        verify_predictions=True,
+        pro=pro,
+        name="baseline/v1",
+    )
+
+    assert dataset_name == "princeton-nlp/SWE-bench_Verified"
+    assert conditions == ["spell"]
+    assert plan[0]["predictions_path"].endswith("spell_baseline_v1_verified_run123.jsonl")
+    assert plan[0]["eval_run_id"] == "run123__baseline_v1"
+    run_id_index = plan[0]["command"].index("--run_id") + 1
+    assert plan[0]["command"][run_id_index] == "run123__baseline_v1"
+
+
 def test_run_swebench_eval_plan_passes_at_threshold(monkeypatch) -> None:
     bench = _import_bench_with_stubbed_client()
     free_bytes = bench.SWEBENCH_MIN_FREE_DISK_GB * (1024**3)
@@ -165,13 +199,31 @@ def test_relocate_swebench_eval_reports_moves_root_report(tmp_path, monkeypatch)
     assert not src.exists()
 
 
+def test_relocate_swebench_eval_reports_namespaces_condition_and_name(tmp_path, monkeypatch) -> None:
+    bench = _import_bench_with_stubbed_client()
+    monkeypatch.setattr(bench, "BENCHMARK_ROOT", tmp_path)
+
+    src = tmp_path / "codex-tc:gpt-5.3-codex.run123__baseline_v1.json"
+    src.write_text("{}", encoding="utf-8")
+
+    moved = bench._relocate_swebench_eval_reports(
+        "run123__baseline_v1",
+        condition="codex",
+        name="baseline/v1",
+    )
+
+    assert moved == [tmp_path / "results" / "swebench_eval_reports" / "codex" / "baseline_v1" / src.name]
+    assert moved[0].read_text(encoding="utf-8") == "{}"
+    assert not src.exists()
+
+
 def test_run_swebench_eval_plan_moves_reports_after_standard_eval(tmp_path, monkeypatch) -> None:
     bench = _import_bench_with_stubbed_client()
     free_bytes = bench.SWEBENCH_MIN_FREE_DISK_GB * (1024**3)
     monkeypatch.setattr(bench.shutil, "disk_usage", lambda _path: (free_bytes * 2, free_bytes, free_bytes))
     monkeypatch.setattr(bench, "BENCHMARK_ROOT", tmp_path)
 
-    run_id = "run123"
+    run_id = "run123__baseline_v1"
 
     def fake_run(command, check, cwd, env):
         assert check is True
@@ -189,11 +241,13 @@ def test_run_swebench_eval_plan_moves_reports_after_standard_eval(tmp_path, monk
                 "condition": "spell",
                 "cache_level": "env",
                 "clean": False,
+                "eval_run_id": run_id,
+                "name": "baseline/v1",
                 "command": ["python", "-m", "src.swebench_eval_wrapper", "--run_id", run_id],
             }
         ]
     )
 
-    moved = tmp_path / "results" / "swebench_eval_reports" / f"anthropic-tc:claude-opus-4-6.{run_id}.json"
+    moved = tmp_path / "results" / "swebench_eval_reports" / "spell" / "baseline_v1" / f"anthropic-tc:claude-opus-4-6.{run_id}.json"
     assert moved.exists()
     assert any("Moved SWE-bench eval report" in line for line in seen)
