@@ -9,7 +9,7 @@ mkdir -p "$CLEAN_HOME"
 
 # Reuse existing auth so you do not need to log in again.
 if [ -f "$HOME/.codex/auth.json" ]; then
-  ln -sf "$HOME/.codex/auth.json" "$CLEAN_HOME/auth.json"
+  ln -sf "$HOME/.codex/auth.json" "$CLEAN_HOME/auth.json" 2>/dev/null || true
 fi
 
 exec env CODEX_HOME="$CLEAN_HOME" codex \
