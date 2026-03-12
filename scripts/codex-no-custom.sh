@@ -8,8 +8,8 @@ INSTR_FILE="$ROOT_DIR/.codex-empty-instructions.md"
 mkdir -p "$CLEAN_HOME"
 
 # Reuse existing auth so you do not need to log in again.
-if [ ! -e "$CLEAN_HOME/auth.json" ] && [ -f "$HOME/.codex/auth.json" ]; then
-  ln -s "$HOME/.codex/auth.json" "$CLEAN_HOME/auth.json"
+if [ -f "$HOME/.codex/auth.json" ]; then
+  ln -sf "$HOME/.codex/auth.json" "$CLEAN_HOME/auth.json"
 fi
 
 exec env CODEX_HOME="$CLEAN_HOME" codex \
