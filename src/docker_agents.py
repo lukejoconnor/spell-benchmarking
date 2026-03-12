@@ -809,6 +809,21 @@ def spell_env_vars(
     return env
 
 
+def _resolve_agent_for_container(agent_file: str | None) -> str:
+    """Map a host-absolute agent path to its /opt/spell container equivalent."""
+    if agent_file is None:
+        return SPELL_AGENT_IN_CONTAINER
+    # If already a container path, pass through
+    if agent_file.startswith("/opt/spell/"):
+        return agent_file
+    # Match host paths ending with config/agents/... and remap
+    marker = "/config/agents/"
+    idx = agent_file.find(marker)
+    if idx >= 0:
+        return f"/opt/spell{agent_file[idx:]}"
+    return agent_file
+
+
 def spell_run_command(
     *,
     prompt: str | None,
@@ -826,7 +841,7 @@ def spell_run_command(
         "mode": "spell",
         "model": model_name,
         "budget": budget,
-        "agent": agent_file or SPELL_AGENT_IN_CONTAINER,
+        "agent": _resolve_agent_for_container(agent_file),
         "depth": depth,
         "max_tokens": max_tokens,
         "reasoning_effort": reasoning_effort,
