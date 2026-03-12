@@ -116,7 +116,7 @@ Run `docker system prune -af --volumes` between tasks to avoid disk exhaustion.
 ```bash
 --condition {one_shot,spell,claude_code,codex,all}   # Which system to run
 --n N                                  # Limit to N items
---model anthropic:claude-opus-4-5-20251101   # Model override
+--model anthropic-tc:claude-opus-4-6         # Model override
 --name trial-label                     # Optional run label in JSONL/traces/predictions
 --trailing "'(!extend)"               # Spell trailing override
 --agent path/to/agent.edn             # Primary Spell configuration override
@@ -211,12 +211,9 @@ Opus 4.6: Spell wins 6, CC wins 0. Codex: Codex CLI wins 5, Spell wins 1 genuine
 ```
 benchmarking/
 ├── bench.py               # Unified CLI: general/swebench/featurebench/summarize
-├── run_benchmark.py       # Legacy shim -> bench.py general
-├── run_swebench.py        # Legacy shim -> bench.py swebench
-├── run_featurebench.py    # Legacy shim -> bench.py featurebench
-├── manual_swebench_high_reasoning.py # Manual SWE-bench runner for focused diagnostics
 ├── src/
 │   ├── datasets.py        # Dataset loading
+│   ├── docker_agents.py   # Shared in-container agent execution
 │   ├── unified_adapters.py # Condition adapters (Spell/OneShot/Claude/Codex)
 │   ├── unified_results.py  # Unified JSONL schema + summaries
 │   ├── evaluation.py      # Scoring (exact match, regex extraction)

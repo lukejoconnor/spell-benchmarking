@@ -14,7 +14,7 @@ from src.unified_adapters import (
     RunRequest,
     SpellAdapter,
 )
-from src.docker_swebench import run_codex
+from src.docker_agents import codex_run_command
 
 
 def _request(condition: str, model_spec: str | None = None, trace_dir: Path | None = None) -> RunRequest:
@@ -304,17 +304,19 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         self.assertEqual(response.status, "ok")
         self.assertEqual(client_run_mock.call_args.kwargs["cwd"], Path("/tmp/spell-bench-test"))
         tempdir_cm.__exit__.assert_called_once()
-    def test_run_codex_includes_search_flag_before_exec_when_requested(self):
+
+    def test_codex_run_command_includes_search_flag_before_exec_when_requested(self):
         container = MagicMock()
         env = {"OPENAI_API_KEY": "test"}
 
-        run_codex(
-            container,
-            "Return 42.",
-            model="gpt-5-codex",
+        container.exec_run(
+            codex_run_command(
+                "Return 42.",
+                model="gpt-5-codex",
+                web_search=True,
+            ),
             timeout=30,
             env=env,
-            web_search=True,
         )
 
         cmd = container.exec_run.call_args.args[0]

@@ -71,7 +71,7 @@ class SpellInitRegressionTest(unittest.TestCase):
     def test_fix_loop_variant_uses_bound_prompt_symbol(self):
         init = bench._make_spell_init(
             "Repository: demo/repo\n\n## Issue to Fix\n\nHandle newline-sensitive input.",
-            bench.SWEBENCH_VARIANTS["fix-loop"]["trailing"],
+            "'(patterns/fix-loop prompt)",
         )
 
         self.assertIn("(quine prompt \"Repository: demo/repo\\n\\n## Issue to Fix\\n\\nHandle newline-sensitive input.\")", init)

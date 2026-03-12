@@ -3,10 +3,26 @@
 from decimal import Decimal, InvalidOperation
 import re
 import string
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 
 from .datasets import BenchmarkItem
-from .runners import RunResult
+
+
+@dataclass
+class RunResult:
+    """Result of a single benchmark run."""
+    item_id: str
+    condition: str
+    model: str
+    response: str
+    answer_extracted: str | None
+    correct: bool | None  # None if extraction failed
+    latency_ms: float
+    tokens_in: int | None
+    tokens_out: int | None
+    cost: float | None
+    error: str | None = None
+    metadata: dict | None = None  # For Spell: llm_calls, depth, etc.
 
 
 def extract_mcq_answer(response: str) -> str | None:

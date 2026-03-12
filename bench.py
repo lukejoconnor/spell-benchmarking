@@ -140,14 +140,7 @@ class ProEvalConfig:
     redo: bool = False
 
 
-OMNI_MATH_TRAILING = (
-    "'(do "
-    '(quine strategy "Solve the problem using a combination of the following strategies:\\n'
-    '- Pure reasoning via think blocks\\n'
-    '- Numerical computation using Spell (defn, loop/recur, map/reduce, math/)\\n'
-    '- Context pruning to manage your chain of thoughts (rethink + !extend)") '
-    "(!extend))"
-)
+MATH_TRAILING = "'(!describe math)"
 
 @dataclass(slots=True)
 class _SwePrediction:
@@ -311,12 +304,15 @@ def _make_spell_init(prompt: str, trailing: str | None = None) -> str:
     return build_spell_init(prompt, trailing)
 
 
+_MATH_DATASETS = frozenset({
+    "gsm8k", "math", "aime", "hmmt", "omni_math", "mathconstruct", "project_euler",
+})
+
+
 def _general_spell_trailing(dataset: str) -> str | None:
-    return {
-        "omni_math": OMNI_MATH_TRAILING,
-        "mathconstruct": OMNI_MATH_TRAILING,
-        "project_euler": OMNI_MATH_TRAILING,
-    }.get(dataset)
+    if dataset in _MATH_DATASETS:
+        return MATH_TRAILING
+    return None
 
 
 def _condition_label(condition: str, name: str | None = None) -> str:
@@ -422,6 +418,17 @@ TIPS:
 - When you need to find information about the codebase, use "grep" and "find" to search for relevant files and code with the bash tool
 - Use your bash tool to set up any necessary environment variables, such as those needed to run tests.
 """
+
+
+def _swebench_prompt_workspace(
+    workspace: str | Path,
+    *,
+    docker: bool,
+    unified: bool,
+) -> str | Path:
+    if docker or unified:
+        return Path("/workspace")
+    return workspace
 
 
 def _evaluate_general(item: BenchmarkItem, response_text: str | None) -> tuple[str | None, bool | None]:
@@ -1519,7 +1526,12 @@ def run_swebench(
             try:
                 wt = setup_swebench_workspace(cache, item, tag=worktree_tag)
                 ws_path = wt.path
-                prompt = _format_swebench_prompt(item, workspace=ws_path)
+                prompt_workspace = _swebench_prompt_workspace(
+                    ws_path,
+                    docker=docker,
+                    unified=unified,
+                )
+                prompt = _format_swebench_prompt(item, workspace=prompt_workspace)
 
                 req = RunRequest(
                     benchmark="swebench",

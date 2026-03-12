@@ -4,11 +4,25 @@ Generates JSONL files in the format expected by the SWE-bench evaluation harness
 """
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .runners import SWERunResult
+
+@dataclass
+class SWERunResult:
+    """Result of a SWE-bench run."""
+    instance_id: str
+    condition: str
+    model: str
+    patch: str  # Git diff patch (empty if no changes)
+    latency_ms: float
+    tokens_in: int | None
+    tokens_out: int | None
+    cost: float | None
+    error: str | None = None
+    metadata: dict | None = None
+    changed_files: list[str] | None = None
 
 
 def format_prediction(result: SWERunResult, model_name: str = None) -> dict:
