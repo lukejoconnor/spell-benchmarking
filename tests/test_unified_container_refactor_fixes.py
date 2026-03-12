@@ -5,7 +5,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from src.docker_agents import ExecOutput, container_exec, discover_spell_root
+from src.docker_agents import (
+    ExecOutput,
+    _resolve_agent_for_container,
+    container_exec,
+    discover_spell_root,
+)
 from src.unified_swebench import run_unified_swebench
 
 
@@ -55,6 +60,32 @@ class DiscoverSpellRootTest(unittest.TestCase):
                 found = discover_spell_root(search_from=search_from)
 
             self.assertEqual(found, sibling_spell.resolve())
+
+
+class ResolveAgentForContainerTest(unittest.TestCase):
+    def test_rewrites_agents_from_bundled_spell_root(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            spell_root = Path(tmp_dir) / "spell"
+            _make_spell_root(spell_root)
+            agent_file = spell_root / "config" / "agents" / "custom.agent.edn"
+            agent_file.write_text("{:name custom}", encoding="utf-8")
+
+            resolved = _resolve_agent_for_container(str(agent_file), spell_root=spell_root)
+
+            self.assertEqual(resolved, "/opt/spell/config/agents/custom.agent.edn")
+
+    def test_preserves_external_agent_override_with_same_suffix(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            spell_root = Path(tmp_dir) / "spell"
+            _make_spell_root(spell_root)
+            external_root = Path(tmp_dir) / "external" / "config" / "agents"
+            external_root.mkdir(parents=True, exist_ok=True)
+            agent_file = external_root / "custom.agent.edn"
+            agent_file.write_text("{:name external}", encoding="utf-8")
+
+            resolved = _resolve_agent_for_container(str(agent_file), spell_root=spell_root)
+
+            self.assertEqual(resolved, str(agent_file))
 
 
 class UnifiedSWEBenchRunnerTest(unittest.TestCase):

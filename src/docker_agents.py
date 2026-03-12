@@ -809,19 +809,27 @@ def spell_env_vars(
     return env
 
 
-def _resolve_agent_for_container(agent_file: str | None) -> str:
-    """Map a host-absolute agent path to its /opt/spell container equivalent."""
+def _resolve_agent_for_container(agent_file: str | None, *, spell_root: Path | None = None) -> str:
+    """Map bundled Spell agent paths to their /opt/spell container equivalent."""
     if agent_file is None:
         return SPELL_AGENT_IN_CONTAINER
     # If already a container path, pass through
     if agent_file.startswith("/opt/spell/"):
         return agent_file
-    # Match host paths ending with config/agents/... and remap
-    marker = "/config/agents/"
-    idx = agent_file.find(marker)
-    if idx >= 0:
-        return f"/opt/spell{agent_file[idx:]}"
-    return agent_file
+
+    resolved_root = spell_root or discover_spell_root()
+    if resolved_root is None:
+        return agent_file
+
+    resolved_agent = Path(agent_file).expanduser().resolve()
+    bundled_agents_dir = (resolved_root / "config" / "agents").resolve()
+    try:
+        resolved_agent.relative_to(bundled_agents_dir)
+    except ValueError:
+        return agent_file
+
+    relative_agent = resolved_agent.relative_to(resolved_root.resolve())
+    return str(PurePosixPath("/opt/spell") / PurePosixPath(relative_agent.as_posix()))
 
 
 def spell_run_command(
