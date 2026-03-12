@@ -660,6 +660,8 @@ def codex_run_command(
     parts = ['[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"', "&&", "codex"]
     if web_search:
         parts.append("--search")
+    else:
+        parts.extend(["-c", shlex.quote('web_search="disabled"')])
     parts.append("exec")
     parts.extend(["--json"])
     if ephemeral:
