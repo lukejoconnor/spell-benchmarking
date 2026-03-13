@@ -702,7 +702,7 @@ def codex_parse_usage(stdout: str) -> ParsedUsage | None:
 def resolve_spell_model(model_name: str | None) -> str:
     if model_name is None:
         return "anthropic-tc:opus46"
-    if any(model_name.startswith(prefix + ":") for prefix in ("anthropic-tc", "anthropic-pf", "openai", "codex-msg", "codex-tc")):
+    if any(model_name.startswith(prefix + ":") for prefix in ("anthropic-tc", "anthropic-pf", "fireworks", "openai", "codex-msg", "codex-tc")):
         return model_name
     if model_name in LITELLM_TO_SPELL_MODEL:
         return LITELLM_TO_SPELL_MODEL[model_name]
@@ -797,7 +797,7 @@ def spell_env_vars(
     env: dict[str, str] = {
         "SPELL_SH_TIMEOUT": str(sh_timeout),
     }
-    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "FIREWORKS_API_KEY"):
         value = os.environ.get(key)
         if value:
             env[key] = value
