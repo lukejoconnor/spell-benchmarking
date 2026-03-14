@@ -14,6 +14,7 @@ BenchKind = Literal["general", "swebench", "featurebench", "exercism"]
 GeneralFamily = Literal["general_math", "general_longcontext", "general_other"]
 AgentSource = Literal["default", "agent", "agent_msg", "agent_tc"]
 ProviderFamily = Literal["pf", "msg", "tc"]
+PREFILL_PROVIDER_PREFIXES = {"anthropic-pf", "fireworks"}
 
 MATH_DATASETS = {
     "gsm8k",
@@ -70,7 +71,7 @@ def _provider_prefix(model_spec: str | None) -> str | None:
 def classify_provider_family(model_spec: str | None, spell_mode: SpellMode) -> ProviderFamily:
     if spell_mode == "tc":
         return "tc"
-    return "pf" if _provider_prefix(model_spec) == "anthropic-pf" else "msg"
+    return "pf" if _provider_prefix(model_spec) in PREFILL_PROVIDER_PREFIXES else "msg"
 
 
 def _is_longcontext_dataset(dataset_name: str) -> bool:

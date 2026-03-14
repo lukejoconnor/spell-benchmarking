@@ -7,12 +7,15 @@ from pathlib import Path
 from src.agent_policy import (
     DEFAULT_AGENT_POLICY,
     classify_general_family,
+    classify_provider_family,
     detect_spell_mode,
     resolve_spell_agent,
 )
+from src.docker_agents import discover_spell_root
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = discover_spell_root(search_from=Path(__file__))
+assert PROJECT_ROOT is not None
 
 
 class AgentPolicyTests(unittest.TestCase):
@@ -29,6 +32,9 @@ class AgentPolicyTests(unittest.TestCase):
         self.assertEqual(classify_general_family({"longbench_short", "babilong_32k"}), "general_longcontext")
         self.assertEqual(classify_general_family({"longbench_short", "aime"}), "general_other")
         self.assertEqual(classify_general_family(set()), "general_other")
+
+    def test_classify_provider_family_treats_fireworks_as_prefill(self) -> None:
+        self.assertEqual(classify_provider_family("fireworks:glm-5", "msg"), "pf")
 
     def test_default_policy_paths_exist(self) -> None:
         for rel_path in DEFAULT_AGENT_POLICY.values():
@@ -47,6 +53,19 @@ class AgentPolicyTests(unittest.TestCase):
         self.assertEqual(resolved.source, "default")
         self.assertEqual(resolved.policy_key, "tc:tc")
         self.assertTrue(resolved.agent_file.endswith("config/agents/io-tc.agent.edn"))
+
+    def test_resolve_default_general_fireworks_uses_prefill_agent(self) -> None:
+        resolved = resolve_spell_agent(
+            project_root=PROJECT_ROOT,
+            bench_kind="general",
+            model_spec="fireworks:glm-5",
+            item_datasets={"longbench_short"},
+        )
+        self.assertEqual(resolved.spell_mode, "msg")
+        self.assertEqual(resolved.family, "general_longcontext")
+        self.assertEqual(resolved.source, "default")
+        self.assertEqual(resolved.policy_key, "pf:msg")
+        self.assertTrue(resolved.agent_file.endswith("config/agents/io-pf.agent.edn"))
 
     def test_override_precedence(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".agent.edn", delete=False) as tf:

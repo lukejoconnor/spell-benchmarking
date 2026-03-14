@@ -79,6 +79,10 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         cmd = run_mock.call_args.args[0]
         self.assertEqual(cmd[0], str(CODEX_NO_CUSTOM_SCRIPT))
         self.assertIn("exec", cmd)
+        disabled_idx = cmd.index('web_search="disabled"')
+        exec_idx = cmd.index("exec")
+        self.assertLess(disabled_idx, exec_idx)
+        self.assertNotIn("--search", cmd)
         self.assertTrue(response.metadata.get("no_custom_config"))
 
     @patch("src.unified_adapters.subprocess.run")
@@ -321,6 +325,23 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
 
         cmd = container.exec_run.call_args.args[0]
         self.assertIn("codex --search exec", cmd)
+
+    def test_run_codex_disables_search_when_not_requested(self):
+        container = MagicMock()
+        env = {"OPENAI_API_KEY": "test"}
+
+        run_codex(
+            container,
+            "Return 42.",
+            model="gpt-5-codex",
+            timeout=30,
+            env=env,
+            web_search=False,
+        )
+
+        cmd = container.exec_run.call_args.args[0]
+        self.assertIn("codex -c 'web_search=\"disabled\"' exec", cmd)
+        self.assertNotIn("codex --search exec", cmd)
 
 
 if __name__ == "__main__":

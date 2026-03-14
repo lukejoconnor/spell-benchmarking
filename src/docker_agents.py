@@ -660,6 +660,8 @@ def codex_run_command(
     parts = ['[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"', "&&", "codex"]
     if web_search:
         parts.append("--search")
+    else:
+        parts.extend(["-c", shlex.quote('web_search="disabled"')])
     parts.append("exec")
     parts.extend(["--json"])
     if ephemeral:
@@ -700,7 +702,7 @@ def codex_parse_usage(stdout: str) -> ParsedUsage | None:
 def resolve_spell_model(model_name: str | None) -> str:
     if model_name is None:
         return "anthropic-tc:opus46"
-    if any(model_name.startswith(prefix + ":") for prefix in ("anthropic-tc", "anthropic-pf", "openai", "codex-msg", "codex-tc")):
+    if any(model_name.startswith(prefix + ":") for prefix in ("anthropic-tc", "anthropic-pf", "fireworks", "openai", "codex-msg", "codex-tc")):
         return model_name
     if model_name in LITELLM_TO_SPELL_MODEL:
         return LITELLM_TO_SPELL_MODEL[model_name]
@@ -795,7 +797,7 @@ def spell_env_vars(
     env: dict[str, str] = {
         "SPELL_SH_TIMEOUT": str(sh_timeout),
     }
-    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "FIREWORKS_API_KEY"):
         value = os.environ.get(key)
         if value:
             env[key] = value
@@ -805,6 +807,29 @@ def spell_env_vars(
         if auth_b64:
             env["CODEX_AUTH_JSON_B64"] = auth_b64
     return env
+
+
+def _resolve_agent_for_container(agent_file: str | None, *, spell_root: Path | None = None) -> str:
+    """Map bundled Spell agent paths to their /opt/spell container equivalent."""
+    if agent_file is None:
+        return SPELL_AGENT_IN_CONTAINER
+    # If already a container path, pass through
+    if agent_file.startswith("/opt/spell/"):
+        return agent_file
+
+    resolved_root = spell_root or discover_spell_root()
+    if resolved_root is None:
+        return agent_file
+
+    resolved_agent = Path(agent_file).expanduser().resolve()
+    bundled_agents_dir = (resolved_root / "config" / "agents").resolve()
+    try:
+        resolved_agent.relative_to(bundled_agents_dir)
+    except ValueError:
+        return agent_file
+
+    relative_agent = resolved_agent.relative_to(resolved_root.resolve())
+    return str(PurePosixPath("/opt/spell") / PurePosixPath(relative_agent.as_posix()))
 
 
 def spell_run_command(
@@ -824,7 +849,7 @@ def spell_run_command(
         "mode": "spell",
         "model": model_name,
         "budget": budget,
-        "agent": agent_file or SPELL_AGENT_IN_CONTAINER,
+        "agent": _resolve_agent_for_container(agent_file),
         "depth": depth,
         "max_tokens": max_tokens,
         "reasoning_effort": reasoning_effort,

@@ -118,7 +118,7 @@ Run `docker system prune -af --volumes` between tasks to avoid disk exhaustion.
 --n N                                  # Limit to N items
 --model anthropic-tc:claude-opus-4-6         # Model override
 --name trial-label                     # Optional run label in JSONL/traces/predictions
---trailing "'(!extend)"               # Spell trailing override
+--trailing "'(!extend)"               # Spell trailing override  ⚠️ see note below
 --agent path/to/agent.edn             # Primary Spell configuration override
 --thinking --reasoning-effort high     # Extended thinking
 --suffix-grammar                       # Suffix grammar support
@@ -126,6 +126,8 @@ Run `docker system prune -af --volumes` between tasks to avoid disk exhaustion.
 ```
 
 `reasoning_effort` defaults to `high` in unified adapters unless explicitly overridden.
+
+**`--trailing` quoting — do not backslash-escape the leading quote.** The trailing expression starts with `'` (Clojure's quote reader macro). In shell, pass it inside double quotes with NO backslash: `--trailing "'(patterns/fix-loop prompt)"`. Using `"\'(...)"` produces a Clojure character literal `\'` instead of `(quote ...)`, silently breaking the trailing expression. The model recovers as a plain sequential agent and results look plausible — the only way to detect the bug is checking trace node 0 for the expected init structure.
 
 Condition semantics:
 - `one_shot`: single LLM call (text-only). Use any provider/model via `--model` (including Codex-backed single-call models).

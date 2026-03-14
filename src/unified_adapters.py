@@ -579,6 +579,8 @@ class CodexAdapter:
         ]
         if req.web_search:
             base_cmd.append("--search")
+        else:
+            base_cmd.extend(["-c", 'web_search="disabled"'])
         if add_dir:
             base_cmd.extend(["--add-dir", str(add_dir)])
 
