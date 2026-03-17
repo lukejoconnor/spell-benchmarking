@@ -157,32 +157,6 @@ def _default_output(run_id: str) -> Path:
     return Path("results") / "unified" / f"{run_id}.jsonl"
 
 
-def _relocate_swebench_eval_reports(
-    run_id: str,
-    *,
-    condition: str | None = None,
-    name: str | None = None,
-) -> list[Path]:
-    report_root = BENCHMARK_ROOT / "results" / "swebench_eval_reports"
-    if condition:
-        report_root = report_root / _sanitize_trace_segment(condition, "condition")
-    if name:
-        report_root = report_root / _sanitize_trace_segment(name, "name")
-    report_root.mkdir(parents=True, exist_ok=True)
-
-    moved: list[Path] = []
-    for src in sorted(BENCHMARK_ROOT.glob(f"*.{run_id}.json")):
-        if not src.is_file():
-            continue
-        dest = report_root / src.name
-        if dest.exists():
-            dest.unlink()
-        shutil.move(str(src), str(dest))
-        moved.append(dest)
-
-    return moved
-
-
 def _resolve_trace_dir(run_id: str, trace: bool) -> Path | None:
     if not trace:
         return None
@@ -794,6 +768,11 @@ def _build_swebench_eval_plan(
         is_last = idx == len(conditions) - 1
         cache_level = final_cache_level if is_last else "env"
         clean = final_clean if is_last else False
+        report_dir = BENCHMARK_ROOT / "results" / "swebench_eval_reports"
+        report_dir = report_dir / _sanitize_trace_segment(cond, "condition")
+        if name:
+            report_dir = report_dir / _sanitize_trace_segment(name, "name")
+        report_dir.mkdir(parents=True, exist_ok=True)
         cmd = [
             sys.executable,
             "-m",
@@ -822,6 +801,8 @@ def _build_swebench_eval_plan(
             cache_level,
             "--clean",
             "true" if clean else "false",
+            "--report_dir",
+            str(report_dir),
         ]
         plan.append(
             {
@@ -832,6 +813,7 @@ def _build_swebench_eval_plan(
                 "clean": clean,
                 "eval_run_id": eval_run_id,
                 "name": name,
+                "report_dir": str(report_dir),
                 "command": cmd,
             }
         )
@@ -962,14 +944,8 @@ def _run_swebench_eval_plan(plan: list[dict[str, Any]]) -> None:
             raise click.ClickException(
                 f"swebench evaluation failed for condition '{cond}' with exit code {exc.returncode}"
             ) from exc
-        eval_run_id = step.get("eval_run_id") or step["command"][step["command"].index("--run_id") + 1]
-        moved_reports = _relocate_swebench_eval_reports(
-            eval_run_id,
-            condition=cond,
-            name=step.get("name"),
-        )
-        for report_path in moved_reports:
-            click.echo(f"Moved SWE-bench eval report: {report_path}")
+        if step.get("report_dir"):
+            click.echo(f"SWE-bench eval reports written to: {step['report_dir']}")
 
 
 @click.group()
@@ -1256,13 +1232,13 @@ def run_general(
 @click.option("--items", "item_ids", default=None, help="Comma-separated SWE-bench instance IDs to run")
 @click.option("--seed", type=int, default=None, help="Random seed for sampling --n items")
 @click.option("--parallel", type=int, default=1, show_default=True)
-@click.option("--budget", type=float, default=10.0, show_default=True)
+@click.option("--budget", type=float, default=None, help="Spell budget (default: 10 for mini/lite/verified, 80 for pro)")
 @click.option("--agent", default=None, help="Spell agent override")
 @click.option("--agent-msg", default=None, help="Spell msg-mode agent override")
 @click.option("--agent-tc", default=None, help="Spell tc-mode agent override")
 @click.option("--depth", type=int, default=50, show_default=True)
 @click.option("--max-tokens", type=int, default=None)
-@click.option("--timeout", type=int, default=1800, show_default=True)
+@click.option("--timeout", type=int, default=None, help="Spell timeout seconds (default: 1800, 14400 for pro)")
 @click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
 @click.option("--workspace-root", default=None)
 @click.option("--keep-workspaces", is_flag=True, default=False)
@@ -1353,13 +1329,13 @@ def run_swebench(
     item_ids: str | None,
     seed: int | None,
     parallel: int,
-    budget: float,
+    budget: float | None,
     agent: str | None,
     agent_msg: str | None,
     agent_tc: str | None,
     depth: int,
     max_tokens: int,
-    timeout: int,
+    timeout: int | None,
     reasoning_effort: str | None,
     workspace_root: str | None,
     keep_workspaces: bool,
@@ -1395,6 +1371,19 @@ def run_swebench(
     run_id = run_id or _run_id("swebench")
     output_file = Path(output) if output else _default_output(run_id)
     conditions = _parse_swebench_conditions(condition)
+
+    # Pro-specific defaults: 4-hour timeout, proportional budget
+    if dataset == "pro":
+        if timeout is None:
+            timeout = 14400
+        if budget is None:
+            budget = 80.0
+    else:
+        if timeout is None:
+            timeout = 1800
+        if budget is None:
+            budget = 10.0
+
     if docker and unified:
         raise click.ClickException("--docker and --unified are mutually exclusive")
     if unified and dataset == "pro":

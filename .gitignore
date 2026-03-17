@@ -14,6 +14,9 @@ traces/
 scratch/
 uv.lock
 
+# SWE-bench harness eval reports (should go to results/ via --report_dir)
+*.swebench*.json
+
 # Nested local repos / local environment artifacts
 heurigym/
 notebook/

@@ -185,50 +185,21 @@ def test_run_swebench_eval_plan_low_disk_message_has_key_numbers(monkeypatch) ->
     assert "Colima disk" in message
 
 
-def test_relocate_swebench_eval_reports_moves_root_report(tmp_path, monkeypatch) -> None:
-    bench = _import_bench_with_stubbed_client()
-    monkeypatch.setattr(bench, "BENCHMARK_ROOT", tmp_path)
-
-    src = tmp_path / "codex-tc:gpt-5.3-codex.run123.json"
-    src.write_text("{}", encoding="utf-8")
-
-    moved = bench._relocate_swebench_eval_reports("run123")
-
-    assert moved == [tmp_path / "results" / "swebench_eval_reports" / src.name]
-    assert moved[0].read_text(encoding="utf-8") == "{}"
-    assert not src.exists()
-
-
-def test_relocate_swebench_eval_reports_namespaces_condition_and_name(tmp_path, monkeypatch) -> None:
-    bench = _import_bench_with_stubbed_client()
-    monkeypatch.setattr(bench, "BENCHMARK_ROOT", tmp_path)
-
-    src = tmp_path / "codex-tc:gpt-5.3-codex.run123__baseline_v1.json"
-    src.write_text("{}", encoding="utf-8")
-
-    moved = bench._relocate_swebench_eval_reports(
-        "run123__baseline_v1",
-        condition="codex",
-        name="baseline/v1",
-    )
-
-    assert moved == [tmp_path / "results" / "swebench_eval_reports" / "codex" / "baseline_v1" / src.name]
-    assert moved[0].read_text(encoding="utf-8") == "{}"
-    assert not src.exists()
-
-
-def test_run_swebench_eval_plan_moves_reports_after_standard_eval(tmp_path, monkeypatch) -> None:
+def test_run_swebench_eval_plan_passes_report_dir(tmp_path, monkeypatch) -> None:
     bench = _import_bench_with_stubbed_client()
     free_bytes = bench.SWEBENCH_MIN_FREE_DISK_GB * (1024**3)
     monkeypatch.setattr(bench.shutil, "disk_usage", lambda _path: (free_bytes * 2, free_bytes, free_bytes))
     monkeypatch.setattr(bench, "BENCHMARK_ROOT", tmp_path)
 
-    run_id = "run123__baseline_v1"
+    report_dir = tmp_path / "results" / "swebench_eval_reports" / "spell" / "baseline_v1"
+    report_dir.mkdir(parents=True, exist_ok=True)
 
     def fake_run(command, check, cwd, env):
         assert check is True
         assert cwd == tmp_path
-        (tmp_path / f"anthropic-tc:claude-opus-4-6.{run_id}.json").write_text("{}", encoding="utf-8")
+        assert "--report_dir" in command
+        idx = command.index("--report_dir")
+        assert command[idx + 1] == str(report_dir)
 
     seen = []
     monkeypatch.setattr(bench.subprocess, "run", fake_run)
@@ -241,13 +212,16 @@ def test_run_swebench_eval_plan_moves_reports_after_standard_eval(tmp_path, monk
                 "condition": "spell",
                 "cache_level": "env",
                 "clean": False,
-                "eval_run_id": run_id,
+                "eval_run_id": "run123__baseline_v1",
                 "name": "baseline/v1",
-                "command": ["python", "-m", "src.swebench_eval_wrapper", "--run_id", run_id],
+                "report_dir": str(report_dir),
+                "command": [
+                    "python", "-m", "src.swebench_eval_wrapper",
+                    "--run_id", "run123__baseline_v1",
+                    "--report_dir", str(report_dir),
+                ],
             }
         ]
     )
 
-    moved = tmp_path / "results" / "swebench_eval_reports" / "spell" / "baseline_v1" / f"anthropic-tc:claude-opus-4-6.{run_id}.json"
-    assert moved.exists()
-    assert any("Moved SWE-bench eval report" in line for line in seen)
+    assert any("SWE-bench eval reports written to" in line for line in seen)
