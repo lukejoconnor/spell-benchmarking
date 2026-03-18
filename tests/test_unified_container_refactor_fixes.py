@@ -1,9 +1,25 @@
 import os
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+stub = types.ModuleType("spell_benchmark_client")
+
+
+class _DummyClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def run(self, *args, **kwargs):
+        raise NotImplementedError
+
+
+stub.SpellBenchmarkClient = _DummyClient
+sys.modules.setdefault("spell_benchmark_client", stub)
 
 from src.docker_agents import (
     ExecOutput,

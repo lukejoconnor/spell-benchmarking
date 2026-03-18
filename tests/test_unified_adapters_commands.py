@@ -1,9 +1,25 @@
 import json
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+stub = types.ModuleType("spell_benchmark_client")
+
+
+class _DummyClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def run(self, *args, **kwargs):
+        raise NotImplementedError
+
+
+stub.SpellBenchmarkClient = _DummyClient
+sys.modules.setdefault("spell_benchmark_client", stub)
 
 from src.unified_adapters import (
     CODEX_NO_CUSTOM_SCRIPT,
@@ -13,11 +29,17 @@ from src.unified_adapters import (
     OneShotAdapter,
     RunRequest,
     SpellAdapter,
+    SweAgentAdapter,
 )
 from src.docker_agents import codex_run_command
 
 
-def _request(condition: str, model_spec: str | None = None, trace_dir: Path | None = None) -> RunRequest:
+def _request(
+    condition: str,
+    model_spec: str | None = None,
+    trace_dir: Path | None = None,
+    workspace: Path | None = None,
+) -> RunRequest:
     return RunRequest(
         benchmark="general",
         dataset="gsm8k",
@@ -27,6 +49,7 @@ def _request(condition: str, model_spec: str | None = None, trace_dir: Path | No
         model_spec=model_spec,
         timeout=5,
         trace_dir=trace_dir,
+        workspace=workspace,
     )
 
 
@@ -172,6 +195,52 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
             self.assertEqual(payload["condition"], "codex")
             self.assertEqual(payload["item_id"], "item-1")
             self.assertEqual(payload["non_json_lines"], ["not-json-line"])
+
+    @patch("src.unified_adapters.subprocess.run")
+    def test_swe_agent_adapter_reads_trajectory_and_writes_trace_file(self, run_mock):
+        def _fake_run(cmd, *, capture_output, text, timeout, cwd):
+            traj_path = Path(cwd) / ".mini.traj.json"
+            traj_path.write_text(
+                json.dumps(
+                    {
+                        "info": {
+                            "model_stats": {"instance_cost": 0.123},
+                            "submission": "final answer",
+                        },
+                        "messages": [
+                            {"role": "assistant", "content": "working"},
+                            {"role": "assistant", "content": "final answer"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return SimpleNamespace(returncode=0, stdout="mini stdout", stderr="")
+
+        run_mock.side_effect = _fake_run
+        adapter = SweAgentAdapter(model="anthropic/claude-sonnet-4-6", budget=1.5)
+        with tempfile.TemporaryDirectory() as workspace_dir, tempfile.TemporaryDirectory() as trace_dir:
+            response = adapter.run(
+                _request(
+                    "swe_agent",
+                    "anthropic/claude-sonnet-4-6",
+                    trace_dir=Path(trace_dir),
+                    workspace=Path(workspace_dir),
+                )
+            )
+
+            self.assertEqual(response.status, "ok")
+            self.assertEqual(response.response_text, "final answer")
+            self.assertEqual(response.cost_usd, 0.123)
+            cmd = run_mock.call_args.args[0]
+            self.assertIn("--exit-immediately", cmd)
+            self.assertIn("-o", cmd)
+            self.assertIn("-l", cmd)
+            trace_file = response.metadata.get("trace_file")
+            self.assertTrue(trace_file)
+            payload = json.loads(Path(trace_file).read_text(encoding="utf-8"))
+            self.assertEqual(payload["condition"], "swe_agent")
+            self.assertEqual(payload["trajectory"]["info"]["submission"], "final answer")
 
     @patch("src.unified_adapters.SpellBenchmarkClient.run")
     def test_spell_adapter_applies_default_format_for_nonsoftware(self, client_run_mock):
@@ -327,19 +396,11 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         self.assertIn("codex --search exec", cmd)
 
     def test_run_codex_disables_search_when_not_requested(self):
-        container = MagicMock()
-        env = {"OPENAI_API_KEY": "test"}
-
-        run_codex(
-            container,
+        cmd = codex_run_command(
             "Return 42.",
             model="gpt-5-codex",
-            timeout=30,
-            env=env,
             web_search=False,
         )
-
-        cmd = container.exec_run.call_args.args[0]
         self.assertIn("codex -c 'web_search=\"disabled\"' exec", cmd)
         self.assertNotIn("codex --search exec", cmd)
 

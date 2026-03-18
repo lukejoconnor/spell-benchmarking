@@ -118,6 +118,16 @@ def test_build_swebench_eval_plan_keeps_standard_pipeline_for_verified(tmp_path)
     assert "src.swebench_eval_wrapper" in " ".join(plan[0]["command"])
 
 
+def test_parse_swebench_conditions_all_includes_swe_agent() -> None:
+    bench = _import_bench_with_stubbed_client()
+    assert bench._parse_swebench_conditions("all") == [
+        "spell",
+        "claude_code",
+        "codex",
+        "swe_agent",
+    ]
+
+
 def test_build_swebench_eval_plan_namespaces_named_variants(tmp_path) -> None:
     bench = _import_bench_with_stubbed_client()
     run_id = "run123"

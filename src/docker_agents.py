@@ -699,6 +699,103 @@ def codex_parse_usage(stdout: str) -> ParsedUsage | None:
     )
 
 
+def swe_agent_install_script() -> str:
+    return r"""
+set -euo pipefail
+export PATH="$HOME/.local/bin:$PATH"
+if command -v uv >/dev/null 2>&1; then
+  uv pip install --system --quiet mini-swe-agent
+else
+  python -m pip install -q --disable-pip-version-check mini-swe-agent
+fi
+mini --help >/dev/null
+echo "mini-swe-agent installed"
+"""
+
+
+def swe_agent_env_vars(model: str | None = None) -> dict[str, str]:
+    del model
+    env: dict[str, str] = {}
+    for key in (
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "FIREWORKS_API_KEY",
+        "OPENROUTER_API_KEY",
+    ):
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    return env
+
+
+def swe_agent_run_command(
+    prompt: str,
+    *,
+    model: str,
+    budget: float | None,
+    output_path: str,
+) -> str:
+    parts = [
+        'export PATH="$HOME/.local/bin:$PATH"',
+        "&&",
+        "rm",
+        "-f",
+        shlex.quote(output_path),
+        "&&",
+        "mini",
+        "-t",
+        shlex.quote(prompt),
+        "-m",
+        shlex.quote(model),
+        "-y",
+        "--exit-immediately",
+        "-o",
+        shlex.quote(output_path),
+    ]
+    if budget is not None:
+        parts.extend(["-l", shlex.quote(str(budget))])
+    return " ".join(parts)
+
+
+def swe_agent_parse_usage(traj: dict[str, Any] | None) -> ParsedUsage | None:
+    if not isinstance(traj, dict):
+        return None
+    info = traj.get("info")
+    if not isinstance(info, dict):
+        return None
+    model_stats = info.get("model_stats")
+    if not isinstance(model_stats, dict):
+        return None
+    cost = model_stats.get("instance_cost")
+    return ParsedUsage(cost_usd=float(cost)) if isinstance(cost, (int, float)) else None
+
+
+def swe_agent_extract_response(traj: dict[str, Any] | None) -> str | None:
+    if not isinstance(traj, dict):
+        return None
+    info = traj.get("info")
+    if isinstance(info, dict):
+        submission = info.get("submission")
+        if isinstance(submission, str) and submission.strip():
+            return submission.strip()
+    messages = traj.get("messages")
+    if not isinstance(messages, list):
+        return None
+    for message in reversed(messages):
+        if not isinstance(message, dict):
+            continue
+        extra = message.get("extra")
+        if isinstance(extra, dict):
+            submission = extra.get("submission")
+            if isinstance(submission, str) and submission.strip():
+                return submission.strip()
+        if message.get("role") == "assistant":
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+    return None
+
+
 def resolve_spell_model(model_name: str | None) -> str:
     if model_name is None:
         return "anthropic-tc:opus46"
@@ -940,6 +1037,22 @@ def copy_spell_traces_to_host(
     return None
 
 
+def persist_json_trace_to_host(
+    host_trace_dir: Path | None,
+    *,
+    filename: str,
+    payload: dict[str, Any],
+) -> str | None:
+    if host_trace_dir is None:
+        return None
+    host_trace_dir.mkdir(parents=True, exist_ok=True)
+    (host_trace_dir / filename).write_text(
+        json.dumps(payload, indent=2, default=str),
+        encoding="utf-8",
+    )
+    return str(host_trace_dir)
+
+
 def spell_parse_usage(stdout: str) -> ParsedUsage | None:
     parsed = spell_parse_benchmark_response(stdout)
     if not parsed:
@@ -966,7 +1079,7 @@ def spell_parse_usage(stdout: str) -> ParsedUsage | None:
 def _install_agent_runtime(
     container: DockerWorkspaceContainer,
     *,
-    condition: Literal["spell", "claude_code", "codex"],
+    condition: Literal["spell", "claude_code", "codex", "swe_agent"],
     version: str | None = None,
     model_spec: str | None = None,
 ) -> bool:
@@ -977,6 +1090,15 @@ def _install_agent_runtime(
         return run_install_script(container, cc_install_script(version=version), env=cc_env_vars(model=model_spec))
     if condition == "codex":
         return run_install_script(container, codex_install_script(version=version), env=codex_env_vars())
+    if condition == "swe_agent":
+        if not ensure_uv(container):
+            return False
+        return run_install_script(
+            container,
+            swe_agent_install_script(),
+            env=swe_agent_env_vars(model_spec),
+            timeout=600,
+        )
     if condition == "spell":
         spell_root = discover_spell_root()
         bundle = spell_build_bundle(spell_root)
@@ -994,7 +1116,7 @@ def _install_agent_runtime(
 def run_agent_in_container(
     container: DockerWorkspaceContainer,
     *,
-    condition: Literal["spell", "claude_code", "codex"],
+    condition: Literal["spell", "claude_code", "codex", "swe_agent"],
     prompt: str,
     timeout: int,
     model_spec: str | None,
@@ -1058,6 +1180,52 @@ def run_agent_in_container(
             usage=usage,
             error_message=output.stderr[:2000] if output.exit_code != 0 else None,
             error_type="codex_cli_error" if output.exit_code != 0 else None,
+        )
+
+    if condition == "swe_agent":
+        output = container.exec_run(
+            swe_agent_run_command(
+                prompt,
+                model=model_spec or "",
+                budget=budget,
+                output_path=".mini.traj.json",
+            ),
+            timeout=timeout,
+            env=swe_agent_env_vars(model_spec),
+            workdir=container.container_workdir,
+        )
+        traj_text = container.read_text(f"{container.container_workdir}/.mini.traj.json")
+        traj: dict[str, Any] | None = None
+        if traj_text.strip():
+            try:
+                loaded = json.loads(traj_text)
+            except json.JSONDecodeError:
+                loaded = None
+            if isinstance(loaded, dict):
+                traj = loaded
+        persisted_trace_dir = None
+        if trace_dir is not None and traj is not None:
+            persisted_trace_dir = persist_json_trace_to_host(
+                trace_dir,
+                filename="trajectory.json",
+                payload={
+                    "condition": "swe_agent",
+                    "prompt": prompt,
+                    "model": model_spec,
+                    "trajectory": traj,
+                    "stdout": output.stdout,
+                    "stderr": output.stderr,
+                    "exit_code": output.exit_code,
+                },
+            )
+        return AgentRunResult(
+            output=output,
+            usage=swe_agent_parse_usage(traj),
+            response_text=swe_agent_extract_response(traj),
+            error_message=output.stderr[:2000] if output.exit_code != 0 else None,
+            error_type="mini_cli_error" if output.exit_code != 0 else None,
+            raw=traj,
+            trace_dir=persisted_trace_dir,
         )
 
     resolved_model = resolve_spell_model(model_spec)

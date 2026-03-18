@@ -60,7 +60,7 @@ Unified software-benchmark container infra:
 - ScienceAgentBench is intentionally not on the shared software-benchmark container infra in this pass.
 
 SWE-bench harness defaults and workflow:
-- `bench.py swebench` now defaults to `--condition all` (`spell`, `claude_code`, `codex`) and evaluates by default (`--evaluate`).
+- `bench.py swebench` now defaults to `--condition all` (`spell`, `claude_code`, `codex`, `swe_agent`) and evaluates by default (`--evaluate`).
 - Use `--name <label>` to tag a run variant across JSONL records, traces, and SWE-bench prediction filenames.
 - Use `--trailing <expr>` on Spell runs to override the default trailing policy directly instead of relying on preset variants.
 - Use `--no-evaluate` to run generation only (write predictions and unified JSONL without running `swebench.harness`).
@@ -114,9 +114,10 @@ Run `docker system prune -af --volumes` between tasks to avoid disk exhaustion.
 ### Common flags (Python harness)
 
 ```bash
---condition {one_shot,spell,claude_code,codex,all}   # Which system to run
+--condition {one_shot,spell,claude_code,codex,swe_agent,all}   # Which system to run
 --n N                                  # Limit to N items
 --model anthropic-tc:claude-opus-4-6         # Model override
+--swe-agent-model anthropic/claude-sonnet-4-6 # mini-swe-agent LiteLLM model
 --name trial-label                     # Optional run label in JSONL/traces/predictions
 --trailing "'(!extend)"               # Spell trailing override  ⚠️ see note below
 --agent path/to/agent.edn             # Primary Spell configuration override
@@ -133,6 +134,7 @@ Condition semantics:
 - `one_shot`: single LLM call (text-only). Use any provider/model via `--model` (including Codex-backed single-call models).
 - `codex`: Codex CLI harness (agent loop). Default model is `codex` via `--codex-model codex`.
   - In the harness adapter, `codex` resolves to `gpt-5-codex` for stable Codex CLI compatibility.
+- `swe_agent`: mini-SWE-agent comparator (`mini -t ...`) using LiteLLM model names via `--swe-agent-model`.
 - `spell` (including SWE-bench workspaces): adapter injects local `-Sdeps` so `spell.benchmark-api` resolves even when `cwd` is a cloned repo workspace.
 
 Spell `--model` specs (provider prefix + model name from `.provider.edn`):

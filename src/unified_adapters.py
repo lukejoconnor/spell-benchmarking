@@ -412,6 +412,176 @@ class ClaudeCodeAdapter:
         )
 
 
+def _load_json_file(path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _find_swe_agent_trajectory(search_dir: Path) -> tuple[Path | None, dict[str, Any] | None]:
+    candidates = sorted(
+        search_dir.rglob("*.traj.json"),
+        key=lambda candidate: candidate.stat().st_mtime,
+        reverse=True,
+    )
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        parsed = _load_json_file(candidate)
+        if parsed is not None:
+            return candidate, parsed
+    return None, None
+
+
+def _extract_swe_agent_cost(traj: dict[str, Any]) -> float | None:
+    info = traj.get("info")
+    if not isinstance(info, dict):
+        return None
+    model_stats = info.get("model_stats")
+    if not isinstance(model_stats, dict):
+        return None
+    cost = model_stats.get("instance_cost")
+    return float(cost) if isinstance(cost, (int, float)) else None
+
+
+def _extract_swe_agent_response(traj: dict[str, Any]) -> str:
+    info = traj.get("info")
+    if isinstance(info, dict):
+        submission = info.get("submission")
+        if isinstance(submission, str) and submission.strip():
+            return submission.strip()
+
+    messages = traj.get("messages")
+    if not isinstance(messages, list):
+        return ""
+    for message in reversed(messages):
+        if not isinstance(message, dict):
+            continue
+        extra = message.get("extra")
+        if isinstance(extra, dict):
+            submission = extra.get("submission")
+            if isinstance(submission, str) and submission.strip():
+                return submission.strip()
+        if message.get("role") == "assistant":
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+    return ""
+
+
+class SweAgentAdapter:
+    condition = "swe_agent"
+
+    def __init__(self, model: str, budget: float):
+        self.model = model
+        self.budget = budget
+
+    def run(self, req: RunRequest) -> RunResponse:
+        model = req.model_spec or self.model
+        budget = req.budget if req.budget is not None else self.budget
+        start = time.time()
+
+        try:
+            with _benchmark_run_cwd(req.workspace) as run_cwd:
+                traj_path = run_cwd / ".mini.traj.json"
+                traj_path.unlink(missing_ok=True)
+                cmd = [
+                    "mini",
+                    "-t",
+                    req.prompt,
+                    "-m",
+                    model,
+                    "-y",
+                    "--exit-immediately",
+                    "-o",
+                    str(traj_path),
+                ]
+                if budget is not None:
+                    cmd.extend(["-l", str(budget)])
+
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=req.timeout,
+                    cwd=str(run_cwd),
+                )
+
+                trajectory_path: Path | None = traj_path if traj_path.exists() else None
+                trajectory = _load_json_file(traj_path) if traj_path.exists() else None
+                if trajectory is None:
+                    trajectory_path, trajectory = _find_swe_agent_trajectory(run_cwd)
+        except subprocess.TimeoutExpired:
+            return RunResponse(
+                status="timeout",
+                response_text="",
+                tokens_in=None,
+                tokens_out=None,
+                cost_usd=None,
+                latency_ms=(time.time() - start) * 1000,
+                error_message=f"Timeout ({req.timeout}s)",
+                error_type="timeout",
+            )
+
+        latency_ms = (time.time() - start) * 1000
+        stdout = (proc.stdout or "").strip()
+        stderr = (proc.stderr or "").strip()
+        response_text = _extract_swe_agent_response(trajectory) if trajectory else ""
+        cost_usd = _extract_swe_agent_cost(trajectory) if trajectory else None
+
+        trace_file: Path | None = None
+        if req.trace_dir is not None:
+            trace_payload = {
+                "item_id": req.item_id,
+                "condition": self.condition,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "model": model,
+                "prompt": req.prompt,
+                "trajectory_path": str(trajectory_path) if trajectory_path else None,
+                "trajectory": trajectory,
+                "stdout": stdout,
+                "stderr": stderr,
+                "exit_code": proc.returncode,
+                "latency_ms": latency_ms,
+            }
+            trace_file = _write_trace(req.trace_dir, req.item_id, self.condition, trace_payload)
+
+        metadata = {
+            "stderr": stderr[:4000],
+            "trajectory_path": str(trajectory_path) if trajectory_path else None,
+            "trace_file": str(trace_file) if trace_file else None,
+        }
+        metadata = {k: v for k, v in metadata.items() if v is not None}
+
+        if proc.returncode == 0:
+            return RunResponse(
+                status="ok",
+                response_text=response_text,
+                tokens_in=None,
+                tokens_out=None,
+                cost_usd=cost_usd,
+                latency_ms=latency_ms,
+                metadata=metadata,
+            )
+
+        error_message = stderr or f"Exit code {proc.returncode}"
+        if not error_message and stdout:
+            error_message = stdout[:400]
+        return RunResponse(
+            status="error",
+            response_text=response_text,
+            tokens_in=None,
+            tokens_out=None,
+            cost_usd=cost_usd,
+            latency_ms=latency_ms,
+            error_message=error_message,
+            error_type="mini_cli_error",
+            metadata=metadata,
+        )
+
+
 def _normalize_codex_model(model_spec: str | None, fallback: str | None = None) -> str:
     raw = (model_spec or fallback or "codex").strip()
     if ":" in raw:
