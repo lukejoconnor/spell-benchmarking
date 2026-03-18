@@ -18,8 +18,9 @@ A **condition** is the system under test. Four are supported:
 | `one_shot` | `OneShotAdapter` | Single LLM call through the same Clojure bridge |
 | `claude_code` | `ClaudeCodeAdapter` | Claude Code CLI (`claude -p --output-format stream-json`) |
 | `codex` | `CodexAdapter` | Codex CLI (`codex --json`) |
+| `swe_agent` | `SweAgentAdapter` | mini-swe-agent CLI (`mini`) |
 
-Each adapter implements a `run(req: RunRequest) -> RunResponse` protocol. The adapters live in `src/unified_adapters.py`. Docker variants (`DockerSpellAdapter`, etc.) in `src/docker_adapters.py` wrap the same logic but execute inside containers.
+Each adapter implements a `run(req: RunRequest) -> RunResponse` protocol. The adapters live in `src/unified_adapters.py`. Docker variants (`DockerSpellAdapter`, `DockerSweAgentAdapter`, etc.) in `src/docker_adapters.py` wrap the same logic but execute inside containers.
 
 ### The init construction pipeline (Spell only)
 

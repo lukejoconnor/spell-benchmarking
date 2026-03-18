@@ -66,7 +66,7 @@ class _BaseDockerAdapter:
                 max_tokens=req.max_tokens,
                 reasoning_effort=req.reasoning_effort,
                 trace=req.trace,
-                trace_dir=req.trace_dir if self.condition == "spell" else None,
+                trace_dir=req.trace_dir,
                 agent_file=req.agent_file,
                 web_search=req.web_search,
                 init=req.init,
@@ -108,6 +108,16 @@ class DockerSpellAdapter(_BaseDockerAdapter):
 
     def __init__(self, project_root: Path, model_spec: str):
         super().__init__(project_root=project_root, model_spec=model_spec)
+
+    def run(self, req: RunRequest) -> RunResponse:
+        return self._execute(req)
+
+
+class DockerSweAgentAdapter(_BaseDockerAdapter):
+    condition = "swe_agent"
+
+    def __init__(self, model_spec: str, budget: float | None = None):
+        super().__init__(model_spec=model_spec, budget=budget)
 
     def run(self, req: RunRequest) -> RunResponse:
         return self._execute(req)

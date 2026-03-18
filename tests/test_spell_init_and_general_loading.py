@@ -98,6 +98,7 @@ class GeneralLoadingRegressionTest(unittest.TestCase):
                     model=None,
                     claude_model=None,
                     codex_model="codex",
+                    swe_agent_model=None,
                     n=None,
                     items="project_euler_1",
                     parallel=1,

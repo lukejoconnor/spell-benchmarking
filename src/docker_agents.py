@@ -16,6 +16,7 @@ import io
 import json
 import logging
 import os
+import re
 import shlex
 import subprocess
 import tarfile
@@ -699,6 +700,167 @@ def codex_parse_usage(stdout: str) -> ParsedUsage | None:
     )
 
 
+def swe_agent_install_script() -> str:
+    return r"""
+set -euo pipefail
+if command -v uv >/dev/null 2>&1; then
+  uv pip install --system -q mini-swe-agent
+elif command -v python3 >/dev/null 2>&1; then
+  python3 -m pip install -q mini-swe-agent
+else
+  python -m pip install -q mini-swe-agent
+fi
+echo "mini installed: $(mini --help >/dev/null 2>&1 && echo ok || echo missing)"
+"""
+
+
+def swe_agent_env_vars() -> dict[str, str]:
+    env: dict[str, str] = {}
+    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "FIREWORKS_API_KEY"):
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    return env
+
+
+def swe_agent_run_command(
+    prompt: str,
+    *,
+    model: str,
+    budget: float | None = None,
+    workdir: str | None = None,
+) -> str:
+    parts: list[str] = []
+    if workdir:
+        parts.extend(["cd", shlex.quote(workdir), "&&"])
+    parts.extend(["mini", "-t", shlex.quote(prompt), "-m", shlex.quote(model), "-y", "--exit-immediately"])
+    if budget is not None:
+        parts.extend(["-l", str(budget)])
+    return " ".join(parts)
+
+
+def _extract_swe_agent_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ("text", "value", "content", "result", "response", "output", "final_response", "final_message"):
+            text = _extract_swe_agent_text(value.get(key))
+            if text:
+                return text
+        if value.get("role") in {"assistant", "model"}:
+            for key in ("content", "text", "message"):
+                text = _extract_swe_agent_text(value.get(key))
+                if text:
+                    return text
+        return ""
+    if isinstance(value, list):
+        parts = [_extract_swe_agent_text(item) for item in value]
+        parts = [part for part in parts if part]
+        return "\n".join(parts).strip()
+    return ""
+
+
+def _lookup_path(value: Any, path: tuple[str, ...]) -> Any:
+    current = value
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return None
+        current = current[key]
+    return current
+
+
+def _extract_swe_agent_cost(traj: dict[str, Any]) -> float | None:
+    candidate_paths = (
+        ("info", "model_stats", "instance_cost"),
+        ("info", "model_stats", "cost"),
+        ("model_stats", "instance_cost"),
+        ("model_stats", "cost"),
+        ("info", "cost"),
+    )
+    for path in candidate_paths:
+        value = _lookup_path(traj, path)
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value)
+            except ValueError:
+                continue
+
+    for dict_value in iter_dicts(traj):
+        for key in ("instance_cost", "cost_usd", "cost"):
+            value = dict_value.get(key)
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, str):
+                try:
+                    return float(value)
+                except ValueError:
+                    continue
+    return None
+
+
+def _extract_swe_agent_response(traj: dict[str, Any]) -> str:
+    for key in ("final_response", "final_message", "response_text", "result", "answer", "output"):
+        text = _extract_swe_agent_text(traj.get(key))
+        if text:
+            return text
+
+    for key in ("trajectory", "messages", "history", "events", "steps"):
+        value = traj.get(key)
+        if isinstance(value, list):
+            for item in reversed(value):
+                text = _extract_swe_agent_text(item)
+                if text:
+                    return text
+    return _extract_swe_agent_text(traj)
+
+
+def _load_swe_agent_trajectory(container: DockerWorkspaceContainer, stdout: str) -> tuple[Path | None, dict[str, Any] | None]:
+    candidate_paths: list[str] = []
+
+    for line in stdout.splitlines():
+        match = re.search(r"([^\s'\"`]+\.traj\.json)", line)
+        if match:
+            candidate_paths.append(match.group(1))
+
+    find_result = container.exec_run(
+        f"find {shlex.quote(container.container_workdir)} -type f -name '*.traj.json' -print",
+        timeout=60,
+        workdir="/",
+    )
+    if find_result.exit_code == 0:
+        candidate_paths.extend([line.strip() for line in find_result.stdout.splitlines() if line.strip()])
+
+    seen: set[str] = set()
+    for path_str in candidate_paths:
+        if path_str in seen:
+            continue
+        seen.add(path_str)
+        raw = container.read_text(path_str)
+        if not raw.strip():
+            continue
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return Path(path_str), parsed
+
+    return None, None
+
+
+def swe_agent_parse_usage(stdout: str, container: DockerWorkspaceContainer) -> ParsedUsage | None:
+    _path, traj = _load_swe_agent_trajectory(container, stdout)
+    if not traj:
+        return None
+
+    cost_usd = _extract_swe_agent_cost(traj)
+    if cost_usd is None:
+        return None
+    return ParsedUsage(cost_usd=cost_usd)
+
+
 def resolve_spell_model(model_name: str | None) -> str:
     if model_name is None:
         return "anthropic-tc:opus46"
@@ -966,7 +1128,7 @@ def spell_parse_usage(stdout: str) -> ParsedUsage | None:
 def _install_agent_runtime(
     container: DockerWorkspaceContainer,
     *,
-    condition: Literal["spell", "claude_code", "codex"],
+    condition: Literal["spell", "claude_code", "codex", "swe_agent"],
     version: str | None = None,
     model_spec: str | None = None,
 ) -> bool:
@@ -977,6 +1139,8 @@ def _install_agent_runtime(
         return run_install_script(container, cc_install_script(version=version), env=cc_env_vars(model=model_spec))
     if condition == "codex":
         return run_install_script(container, codex_install_script(version=version), env=codex_env_vars())
+    if condition == "swe_agent":
+        return run_install_script(container, swe_agent_install_script(), env=swe_agent_env_vars())
     if condition == "spell":
         spell_root = discover_spell_root()
         bundle = spell_build_bundle(spell_root)
@@ -994,7 +1158,7 @@ def _install_agent_runtime(
 def run_agent_in_container(
     container: DockerWorkspaceContainer,
     *,
-    condition: Literal["spell", "claude_code", "codex"],
+    condition: Literal["spell", "claude_code", "codex", "swe_agent"],
     prompt: str,
     timeout: int,
     model_spec: str | None,
@@ -1058,6 +1222,45 @@ def run_agent_in_container(
             usage=usage,
             error_message=output.stderr[:2000] if output.exit_code != 0 else None,
             error_type="codex_cli_error" if output.exit_code != 0 else None,
+        )
+
+    if condition == "swe_agent":
+        resolved_model = model_spec or "anthropic/claude-opus-4-6"
+        env = swe_agent_env_vars()
+        output = container.exec_run(
+            swe_agent_run_command(
+                prompt,
+                model=resolved_model,
+                budget=budget,
+                workdir=container.container_workdir,
+            ),
+            timeout=timeout,
+            env=env,
+        )
+        traj_path, traj = _load_swe_agent_trajectory(container, output.stdout)
+        usage = swe_agent_parse_usage(output.stdout, container)
+        response_text = _extract_swe_agent_response(traj) if traj else output.stdout.strip()
+        trace_file: str | None = None
+        if trace_dir is not None and traj_path is not None:
+            dest = Path(trace_dir)
+            dest.mkdir(parents=True, exist_ok=True)
+            if container.copy_to_host(str(traj_path), dest):
+                trace_file = str(dest / traj_path.name)
+            else:
+                trace_file = str(dest)
+        raw = {
+            "trajectory_path": str(traj_path) if traj_path else None,
+            "trajectory": traj,
+        }
+        raw = {k: v for k, v in raw.items() if v is not None}
+        return AgentRunResult(
+            output=output,
+            usage=usage,
+            response_text=response_text or None,
+            error_message=output.stderr[:2000] if output.exit_code != 0 else (None if traj else "mini trajectory not found"),
+            error_type="mini_cli_error" if output.exit_code != 0 else ("parse_error" if traj is None else None),
+            raw=raw or None,
+            trace_dir=trace_file,
         )
 
     resolved_model = resolve_spell_model(model_spec)

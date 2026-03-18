@@ -15,6 +15,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+from .docker_agents import (
+    swe_agent_env_vars,
+    swe_agent_run_command,
+    _extract_swe_agent_cost,
+    _extract_swe_agent_response,
+)
+
 BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -278,6 +285,109 @@ class OneShotAdapter:
             error_type=response.error_type,
             metadata={"raw": response.raw},
         )
+
+
+class SweAgentAdapter:
+    condition = "swe_agent"
+
+    def __init__(self, model: str, budget: float):
+        self.model = model
+        self.budget = budget
+
+    def run(self, req: RunRequest) -> RunResponse:
+        model = req.model_spec or self.model
+        budget = req.budget if req.budget is not None else self.budget
+        env = os.environ.copy()
+        env.update(swe_agent_env_vars())
+
+        start = time.time()
+        try:
+            with _benchmark_run_cwd(req.workspace) as run_cwd:
+                cmd = swe_agent_run_command(
+                    req.prompt,
+                    model=model,
+                    budget=budget,
+                    workdir=str(run_cwd),
+                )
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=req.timeout,
+                    cwd=None,
+                    env=env,
+                    shell=True,
+                )
+                latency_ms = (time.time() - start) * 1000
+                stdout = (proc.stdout or "").strip()
+                stderr = (proc.stderr or "").strip()
+                traj_path, traj = _load_swe_agent_trajectory(run_cwd)
+                response_text = _extract_swe_agent_response(traj) if traj else stdout
+                cost_usd = _extract_swe_agent_cost(traj) if traj else None
+
+                trace_file: Path | None = None
+                if req.trace_dir is not None:
+                    trace_payload = {
+                        "item_id": req.item_id,
+                        "condition": self.condition,
+                        "timestamp": datetime.now(UTC).isoformat(),
+                        "model": model,
+                        "prompt": req.prompt,
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        "exit_code": proc.returncode,
+                        "latency_ms": latency_ms,
+                        "trajectory_path": str(traj_path) if traj_path else None,
+                        "trajectory": traj,
+                    }
+                    trace_file = _write_trace(req.trace_dir, req.item_id, self.condition, trace_payload)
+
+                metadata = {
+                    "trajectory_path": str(traj_path) if traj_path else None,
+                    "trace_file": str(trace_file) if trace_file else None,
+                    "stdout_tail": stdout[-4000:],
+                    "stderr_tail": stderr[-4000:],
+                }
+                metadata = {k: v for k, v in metadata.items() if v is not None}
+
+                if proc.returncode == 0 and traj is not None:
+                    return RunResponse(
+                        status="ok",
+                        response_text=response_text or None,
+                        tokens_in=None,
+                        tokens_out=None,
+                        cost_usd=cost_usd,
+                        latency_ms=latency_ms,
+                        metadata=metadata,
+                    )
+
+                error_message = stderr or f"Exit code {proc.returncode}"
+                error_type = "parse_error" if proc.returncode == 0 and traj is None else "mini_cli_error"
+                if proc.returncode == 0 and traj is None:
+                    error_message = f"No .traj.json file found under {run_cwd}"
+
+                return RunResponse(
+                    status="error",
+                    response_text=response_text or None,
+                    tokens_in=None,
+                    tokens_out=None,
+                    cost_usd=cost_usd,
+                    latency_ms=latency_ms,
+                    error_message=error_message,
+                    error_type=error_type,
+                    metadata=metadata,
+                )
+        except subprocess.TimeoutExpired:
+            return RunResponse(
+                status="timeout",
+                response_text="",
+                tokens_in=None,
+                tokens_out=None,
+                cost_usd=None,
+                latency_ms=(time.time() - start) * 1000,
+                error_message=f"Timeout ({req.timeout}s)",
+                error_type="timeout",
+            )
 
 
 class ClaudeCodeAdapter:
@@ -550,6 +660,28 @@ def _write_trace(trace_dir: Path, item_id: str, condition: str, data: dict[str, 
     path = trace_dir / f"{item_id}_{condition}.json"
     path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
     return path
+
+
+def _find_swe_agent_trajectory(search_dir: Path) -> Path | None:
+    candidates: list[Path] = []
+    for path in search_dir.rglob("*"):
+        if path.is_file() and path.name.endswith(".traj.json"):
+            candidates.append(path)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: p.stat().st_mtime)
+    return candidates[-1]
+
+
+def _load_swe_agent_trajectory(search_dir: Path) -> tuple[Path | None, dict[str, Any] | None]:
+    path = _find_swe_agent_trajectory(search_dir)
+    if path is None:
+        return None, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return path, None
+    return path, data if isinstance(data, dict) else None
 
 
 class CodexAdapter:

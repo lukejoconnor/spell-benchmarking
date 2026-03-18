@@ -13,6 +13,7 @@ from src.unified_adapters import (
     OneShotAdapter,
     RunRequest,
     SpellAdapter,
+    SweAgentAdapter,
 )
 from src.docker_agents import codex_run_command
 
@@ -173,6 +174,49 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
             self.assertEqual(payload["item_id"], "item-1")
             self.assertEqual(payload["non_json_lines"], ["not-json-line"])
 
+    @patch("src.unified_adapters.subprocess.run")
+    def test_swe_agent_adapter_reads_trajectory_and_writes_trace(self, run_mock):
+        run_mock.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+        adapter = SweAgentAdapter(model="anthropic/claude-opus-4-6", budget=2.5)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir) / "workspace"
+            workspace.mkdir()
+            trajectory = {
+                "info": {"model_stats": {"instance_cost": 0.42}},
+                "trajectory": [
+                    {"role": "assistant", "content": "final answer"},
+                ],
+            }
+            (workspace / "run.traj.json").write_text(json.dumps(trajectory), encoding="utf-8")
+
+            response = adapter.run(
+                RunRequest(
+                    benchmark="general",
+                    dataset="gsm8k",
+                    item_id="item-1",
+                    condition="swe_agent",
+                    prompt="Return 42.",
+                    model_spec="anthropic/claude-opus-4-6",
+                    timeout=5,
+                    workspace=workspace,
+                    trace_dir=Path(tmp_dir) / "traces",
+                )
+            )
+
+            self.assertEqual(response.status, "ok")
+            self.assertEqual(response.response_text, "final answer")
+            self.assertEqual(response.cost_usd, 0.42)
+            self.assertIn("mini -t", run_mock.call_args.args[0])
+            trace_file = response.metadata.get("trace_file")
+            self.assertTrue(trace_file)
+            trace_path = Path(trace_file)
+            self.assertTrue(trace_path.exists())
+            payload = json.loads(trace_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["condition"], "swe_agent")
+            self.assertEqual(payload["item_id"], "item-1")
+            self.assertEqual(payload["trajectory"]["info"]["model_stats"]["instance_cost"], 0.42)
+
     @patch("src.unified_adapters.SpellBenchmarkClient.run")
     def test_spell_adapter_applies_default_format_for_nonsoftware(self, client_run_mock):
         client_run_mock.return_value = SimpleNamespace(
@@ -330,13 +374,14 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         container = MagicMock()
         env = {"OPENAI_API_KEY": "test"}
 
-        run_codex(
-            container,
-            "Return 42.",
-            model="gpt-5-codex",
+        container.exec_run(
+            codex_run_command(
+                "Return 42.",
+                model="gpt-5-codex",
+                web_search=False,
+            ),
             timeout=30,
             env=env,
-            web_search=False,
         )
 
         cmd = container.exec_run.call_args.args[0]

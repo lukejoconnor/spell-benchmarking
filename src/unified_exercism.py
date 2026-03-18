@@ -123,8 +123,8 @@ def run_unified_exercism(
             reasoning_effort=reasoning_effort,
             web_search=web_search,
             trace=trace,
-            trace_dir=trace_dir / "attempt-1" if (condition == "spell" and trace_dir is not None) else None,
-            trace_subdir="attempt-1" if (condition == "spell" and trace_dir is not None) else None,
+            trace_dir=trace_dir / "attempt-1" if trace_dir is not None else None,
+            trace_subdir="attempt-1" if trace_dir is not None else None,
             init=init,
         )
 
@@ -151,8 +151,8 @@ def run_unified_exercism(
                 reasoning_effort=reasoning_effort,
                 web_search=web_search,
                 trace=trace,
-                trace_dir=trace_dir / "attempt-2" if (condition == "spell" and trace_dir is not None) else None,
-                trace_subdir="attempt-2" if (condition == "spell" and trace_dir is not None) else None,
+                trace_dir=trace_dir / "attempt-2" if trace_dir is not None else None,
+                trace_subdir="attempt-2" if trace_dir is not None else None,
                 init=None,
             )
             total_tokens_in += retry_result.usage.total_input_tokens if retry_result.usage else 0

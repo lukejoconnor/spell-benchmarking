@@ -7,9 +7,11 @@ from unittest.mock import MagicMock, patch
 
 from src.docker_agents import (
     ExecOutput,
+    ParsedUsage,
     _resolve_agent_for_container,
     container_exec,
     discover_spell_root,
+    run_agent_in_container,
 )
 from src.unified_swebench import run_unified_swebench
 
@@ -134,6 +136,59 @@ class UnifiedSWEBenchRunnerTest(unittest.TestCase):
         container.changed_files.assert_called_once_with("base-sha")
         self.assertEqual(response.metadata["trace_dir"], "/tmp/host-traces")
         self.assertEqual(response.metadata["patch"], "diff --git a/foo b/foo")
+
+
+class SweAgentContainerRunnerTest(unittest.TestCase):
+    @patch("src.docker_agents.run_install_script", return_value=True)
+    @patch("src.docker_agents.swe_agent_env_vars", return_value={})
+    @patch("src.docker_agents.swe_agent_run_command", return_value="mini -t 'prompt' -m 'anthropic/claude-opus-4-6' -y --exit-immediately")
+    @patch("src.docker_agents._load_swe_agent_trajectory")
+    @patch("src.docker_agents.swe_agent_parse_usage")
+    def test_runner_handles_swe_agent_trajectory_and_trace_copy(
+        self,
+        parse_usage_mock,
+        load_traj_mock,
+        run_command_mock,
+        env_vars_mock,
+        install_mock,
+    ):
+        container = MagicMock()
+        container.container_workdir = "/workspace"
+        container.initial_commit = "base-sha"
+        container.diff.return_value = "diff --git a/foo b/foo"
+        container.changed_files.return_value = ["foo.py"]
+        container.copy_to_host.return_value = True
+        container.exec_run.return_value = ExecOutput(exit_code=0, stdout="", stderr="")
+        load_traj_mock.return_value = (
+            Path("/workspace/run.traj.json"),
+            {
+                "info": {"model_stats": {"instance_cost": 0.25}},
+                "trajectory": [{"role": "assistant", "content": "done"}],
+            },
+        )
+        parse_usage_mock.return_value = ParsedUsage(cost_usd=0.25)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            result = run_agent_in_container(
+                container,
+                condition="swe_agent",
+                prompt="prompt",
+                timeout=30,
+                model_spec="anthropic/claude-opus-4-6",
+                budget=2.0,
+                trace=True,
+                trace_dir=Path(tmp_dir),
+            )
+
+        install_mock.assert_called_once()
+        self.assertGreaterEqual(env_vars_mock.call_count, 2)
+        run_command_mock.assert_called_once()
+        container.exec_run.assert_called_once()
+        container.copy_to_host.assert_called_once_with("/workspace/run.traj.json", Path(tmp_dir))
+        self.assertEqual(result.response_text, "done")
+        self.assertEqual(result.usage.cost_usd, 0.25)
+        self.assertEqual(result.trace_dir, str(Path(tmp_dir) / "run.traj.json"))
+        self.assertEqual(result.raw["trajectory_path"], "/workspace/run.traj.json")
 
 
 if __name__ == "__main__":

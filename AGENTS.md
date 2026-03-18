@@ -60,7 +60,7 @@ Unified software-benchmark container infra:
 - ScienceAgentBench is intentionally not on the shared software-benchmark container infra in this pass.
 
 SWE-bench harness defaults and workflow:
-- `bench.py swebench` now defaults to `--condition all` (`spell`, `claude_code`, `codex`) and evaluates by default (`--evaluate`).
+- `bench.py swebench` now defaults to `--condition all` (`spell`, `claude_code`, `codex`, `swe_agent`) and evaluates by default (`--evaluate`).
 - Use `--name <label>` to tag a run variant across JSONL records, traces, and SWE-bench prediction filenames.
 - Use `--trailing <expr>` on Spell runs to override the default trailing policy directly instead of relying on preset variants.
 - Use `--no-evaluate` to run generation only (write predictions and unified JSONL without running `swebench.harness`).
@@ -114,7 +114,7 @@ Run `docker system prune -af --volumes` between tasks to avoid disk exhaustion.
 ### Common flags (Python harness)
 
 ```bash
---condition {one_shot,spell,claude_code,codex,all}   # Which system to run
+--condition {one_shot,spell,claude_code,codex,swe_agent,all}   # Which system to run
 --n N                                  # Limit to N items
 --model anthropic-tc:claude-opus-4-6         # Model override
 --name trial-label                     # Optional run label in JSONL/traces/predictions

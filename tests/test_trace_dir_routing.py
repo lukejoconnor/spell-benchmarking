@@ -57,9 +57,16 @@ class TraceDirRoutingTest(unittest.TestCase):
         tag = bench._swebench_worktree_tag(
             "spell",
             "swebench_20260304_120000_deadbeef",
-            variant="fix-loop/v1",
+            name="fix-loop/v1",
         )
         self.assertEqual(tag, "spell.fix-loop_v1.swebench_20260304_120000_deadbeef")
+
+    def test_parse_swebench_conditions_all_includes_swe_agent(self):
+        self.assertEqual(
+            bench._parse_swebench_conditions("all"),
+            ["spell", "claude_code", "codex", "swe_agent"],
+        )
+        self.assertEqual(bench._parse_swebench_conditions("both"), ["spell", "claude_code"])
 
 
 if __name__ == "__main__":
