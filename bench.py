@@ -1246,7 +1246,6 @@ def run_general(
 @click.option("--unified", is_flag=True, default=False, help="Run on shared in-container software benchmark infra")
 @click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--trace/--no-trace", default=True, show_default=True, help="Record execution traces")
-@click.option("--evaluate/--no-evaluate", default=True, show_default=True, help="Run swebench.harness evaluation after generating predictions")
 @click.option("--eval-predictions-dir", default="results/swebench", show_default=True)
 @click.option("--eval-dataset-name", default=None, help="Override swebench.harness dataset_name")
 @click.option("--eval-split", default="test", show_default=True)
@@ -1343,7 +1342,6 @@ def run_swebench(
     unified: bool,
     web_search: bool,
     trace: bool,
-    evaluate: bool,
     eval_predictions_dir: str,
     eval_dataset_name: str | None,
     eval_split: str,
@@ -1464,7 +1462,6 @@ def run_swebench(
                     "agent_policy_key": spell_resolution.policy_key if spell_resolution else None,
                     "parallel": parallel,
                     "unified": unified,
-                    "evaluate": evaluate,
                     "eval_predictions_dir": eval_predictions_dir,
                     "eval_dataset_name": eval_dataset_name,
                     "eval_split": eval_split,
@@ -1721,50 +1718,49 @@ def run_swebench(
         write_predictions_jsonl(swe_results, pred_path, model_name=pred_model_name)
         click.echo(f"Predictions: {pred_path}")
 
-    if evaluate:
-        click.echo("\n=== Running SWE-bench evaluation ===")
-        pro_config = ProEvalConfig(
-            eval_repo=pro_eval_repo,
-            raw_sample_path=pro_raw_sample_path,
-            output_dir=pro_output_dir,
-            dockerhub_username=pro_dockerhub_username,
-            strip_trace_artifacts=pro_strip_trace_artifacts,
-            use_local_docker=pro_use_local_docker,
-            block_network=pro_block_network,
-            redo=pro_redo,
+    click.echo("\n=== Running SWE-bench evaluation ===")
+    pro_config = ProEvalConfig(
+        eval_repo=pro_eval_repo,
+        raw_sample_path=pro_raw_sample_path,
+        output_dir=pro_output_dir,
+        dockerhub_username=pro_dockerhub_username,
+        strip_trace_artifacts=pro_strip_trace_artifacts,
+        use_local_docker=pro_use_local_docker,
+        block_network=pro_block_network,
+        redo=pro_redo,
+    )
+    resolved_dataset_name, eval_conditions, plan = _build_swebench_eval_plan(
+        dataset=dataset,
+        condition=condition,
+        run_id=run_id,
+        name=name,
+        predictions_dir=eval_predictions_dir,
+        dataset_name=eval_dataset_name,
+        split=eval_split,
+        max_workers=eval_max_workers,
+        timeout=eval_timeout,
+        namespace=eval_namespace,
+        instance_image_tag=eval_instance_image_tag,
+        env_image_tag=eval_env_image_tag,
+        final_cache_level=eval_final_cache_level,
+        final_clean=eval_final_clean,
+        verify_predictions=True,
+        pro=pro_config,
+    )
+    click.echo(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "dataset": dataset,
+                "dataset_name": resolved_dataset_name,
+                "conditions": eval_conditions,
+                "namespace": eval_namespace,
+                "plan": plan,
+            },
+            indent=2,
         )
-        resolved_dataset_name, eval_conditions, plan = _build_swebench_eval_plan(
-            dataset=dataset,
-            condition=condition,
-            run_id=run_id,
-            name=name,
-            predictions_dir=eval_predictions_dir,
-            dataset_name=eval_dataset_name,
-            split=eval_split,
-            max_workers=eval_max_workers,
-            timeout=eval_timeout,
-            namespace=eval_namespace,
-            instance_image_tag=eval_instance_image_tag,
-            env_image_tag=eval_env_image_tag,
-            final_cache_level=eval_final_cache_level,
-            final_clean=eval_final_clean,
-            verify_predictions=True,
-            pro=pro_config,
-        )
-        click.echo(
-            json.dumps(
-                {
-                    "run_id": run_id,
-                    "dataset": dataset,
-                    "dataset_name": resolved_dataset_name,
-                    "conditions": eval_conditions,
-                    "namespace": eval_namespace,
-                    "plan": plan,
-                },
-                indent=2,
-            )
-        )
-        _run_swebench_eval_plan(plan)
+    )
+    _run_swebench_eval_plan(plan)
 
 
 @cli.command("swebench-eval")

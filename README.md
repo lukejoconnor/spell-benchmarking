@@ -93,7 +93,6 @@ uv run python benchmarking/bench.py swebench [OPTIONS]
 | `--keep-workspaces` | off | Don't delete workspaces after run |
 | `--docker` | off | Run agents inside copied Docker workspaces |
 | `--unified` | off | Use the shared software-benchmark container infra |
-| `--evaluate / --no-evaluate` | on | Run `swebench.harness.run_evaluation` after predictions are written |
 | `--eval-max-workers` | 4 | Max concurrent evaluation workers |
 | `--eval-final-cache-level` | `base` | Cache level used on final condition only |
 | `--eval-final-clean / --no-eval-final-clean` | on | Whether final condition performs cleanup |

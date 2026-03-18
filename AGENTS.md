@@ -60,10 +60,9 @@ Unified software-benchmark container infra:
 - ScienceAgentBench is intentionally not on the shared software-benchmark container infra in this pass.
 
 SWE-bench harness defaults and workflow:
-- `bench.py swebench` now defaults to `--condition all` (`spell`, `claude_code`, `codex`) and evaluates by default (`--evaluate`).
+- `bench.py swebench` now defaults to `--condition all` (`spell`, `claude_code`, `codex`) and always runs evaluation after generation.
 - Use `--name <label>` to tag a run variant across JSONL records, traces, and SWE-bench prediction filenames.
 - Use `--trailing <expr>` on Spell runs to override the default trailing policy directly instead of relying on preset variants.
-- Use `--no-evaluate` to run generation only (write predictions and unified JSONL without running `swebench.harness`).
 - `bench.py swebench --unified` uses the shared `src/docker_agents.py` container-agent layer for `mini`/`lite`/`verified`; `pro` remains on the existing path.
 - Evaluation runs conditions in series with staged cleanup:
   - non-final conditions: `cache_level=env`, `clean=false`
@@ -300,7 +299,7 @@ Results go to `data/exercism-results/` (timestamped directories) and `notebook/e
 
 **Result-map unwrapping:** When format-constrained runs return maps like `{:result ...}`, `spell.benchmark-api` unwraps that value before writing JSON `result`, so existing answer extractors continue to consume plain answer text.
 
-**SWE-bench evaluation defaults:** `bench.py swebench` now runs official harness evaluation by default after prediction generation. Disable via `--no-evaluate` when iterating quickly.
+**SWE-bench evaluation:** `bench.py swebench` always runs official harness evaluation after prediction generation. For eval-only runs, use `bench.py swebench-eval`.
 
 **SWE-bench Docker socket on Colima:** evaluation uses Docker SDK (`docker.from_env`), which depends on `DOCKER_HOST` instead of Docker CLI context. `bench.py` now auto-falls back to `unix://~/.colima/default/docker.sock` when `DOCKER_HOST` is unset and `/var/run/docker.sock` is missing.
 
