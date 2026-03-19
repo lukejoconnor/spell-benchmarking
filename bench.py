@@ -285,14 +285,22 @@ _MATH_DATASETS = frozenset({
 # Per-dataset default timeouts (seconds).  Datasets not listed use _DEFAULT_TIMEOUT.
 _DEFAULT_TIMEOUT = 300
 _DATASET_TIMEOUTS: dict[str, int] = {
-    "omni_math":      3600,
-    "omni_math_hard": 3600,
-    "aime_2025":       600,
-    "aime_2026":       600,
-    "hmmt_feb_2025":   600,
-    "hmmt_nov_2025":   600,
-    "project_euler":   600,
-    "mathconstruct":   600,
+    # General benchmarks
+    "omni_math":        3600,
+    "omni_math_hard":   3600,
+    "aime_2025":         600,
+    "aime_2026":         600,
+    "hmmt_feb_2025":     600,
+    "hmmt_nov_2025":     600,
+    "project_euler":     600,
+    "mathconstruct":     600,
+    # Coding benchmarks
+    "swebench":         1800,
+    "swebench_pro":    14400,
+    "swebench_eval":    1800,
+    "featurebench":     1800,
+    "exercism":          300,
+    "scienceagentbench": 900,
 }
 
 
@@ -1238,7 +1246,7 @@ def run_general(
 @click.option("--agent-tc", default=None, help="Spell tc-mode agent override")
 @click.option("--depth", type=int, default=50, show_default=True)
 @click.option("--max-tokens", type=int, default=None)
-@click.option("--timeout", type=int, default=None, help="Spell timeout seconds (default: 1800, 14400 for pro)")
+@click.option("--timeout", type=int, default=None, help="Per-item timeout seconds (default: from _DATASET_TIMEOUTS)")
 @click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
 @click.option("--workspace-root", default=None)
 @click.option("--keep-workspaces", is_flag=True, default=False)
@@ -1370,15 +1378,15 @@ def run_swebench(
     output_file = Path(output) if output else _default_output(run_id)
     conditions = _parse_swebench_conditions(condition)
 
-    # Pro-specific defaults: 4-hour timeout, proportional budget
+    # Resolve timeout from central map
+    if timeout is None:
+        key = f"swebench_{dataset}"
+        timeout = _DATASET_TIMEOUTS.get(key, _DATASET_TIMEOUTS.get("swebench", _DEFAULT_TIMEOUT))
+    # Pro-specific budget default
     if dataset == "pro":
-        if timeout is None:
-            timeout = 14400
         if budget is None:
             budget = 80.0
     else:
-        if timeout is None:
-            timeout = 1800
         if budget is None:
             budget = 10.0
 
@@ -1772,7 +1780,7 @@ def run_swebench(
 @click.option("--dataset-name", default=None, help="Override swebench.harness dataset_name")
 @click.option("--split", default="test", show_default=True)
 @click.option("--max-workers", type=int, default=4, show_default=True)
-@click.option("--timeout", type=int, default=1800, show_default=True)
+@click.option("--timeout", type=int, default=None, help="Eval timeout seconds (default: from _DATASET_TIMEOUTS)")
 @click.option(
     "--namespace",
     default="none",
@@ -1840,7 +1848,7 @@ def run_swebench_eval(
     dataset_name: str | None = None,
     split: str = "test",
     max_workers: int = 4,
-    timeout: int = 1800,
+    timeout: int | None = None,
     namespace: str = "none",
     instance_image_tag: str = "latest",
     env_image_tag: str = "latest",
@@ -1856,6 +1864,8 @@ def run_swebench_eval(
     pro_redo: bool = False,
     dry_run: bool = False,
 ) -> None:
+    if timeout is None:
+        timeout = _DATASET_TIMEOUTS.get("swebench_eval", _DEFAULT_TIMEOUT)
     pro_config = ProEvalConfig(
         eval_repo=pro_eval_repo,
         raw_sample_path=pro_raw_sample_path,
@@ -1918,7 +1928,7 @@ def run_swebench_eval(
 @click.option("--agent-tc", default=None, help="Spell tc-mode agent override")
 @click.option("--depth", type=int, default=50, show_default=True)
 @click.option("--max-tokens", type=int, default=None)
-@click.option("--timeout", type=int, default=1800, show_default=True)
+@click.option("--timeout", type=int, default=None, help="Per-item timeout seconds (default: from _DATASET_TIMEOUTS)")
 @click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
 @click.option("--workspace-root", default="/tmp/fb_ws")
 @click.option("--skip-install", is_flag=True, default=False)
@@ -1944,7 +1954,7 @@ def run_featurebench(
     agent_tc: str | None,
     depth: int,
     max_tokens: int,
-    timeout: int,
+    timeout: int | None,
     reasoning_effort: str | None,
     workspace_root: str,
     skip_install: bool,
@@ -1957,6 +1967,8 @@ def run_featurebench(
     run_id: str | None = None,
     output: str | None = None,
 ) -> None:
+    if timeout is None:
+        timeout = _DATASET_TIMEOUTS.get("featurebench", _DEFAULT_TIMEOUT)
     run_id = run_id or _run_id("featurebench")
     output_file = Path(output) if output else _default_output(run_id)
 
@@ -2266,7 +2278,7 @@ def _validate_python_syntax(code: str) -> tuple[bool, str | None]:
 @click.option("--agent-tc", default=None)
 @click.option("--depth", type=int, default=50, show_default=True)
 @click.option("--max-tokens", type=int, default=None)
-@click.option("--timeout", type=int, default=900, show_default=True)
+@click.option("--timeout", type=int, default=None, help="Per-item timeout seconds (default: from _DATASET_TIMEOUTS)")
 @click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
 @click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--use-knowledge/--no-knowledge", default=False, show_default=True, help="Include domain knowledge in prompt")
@@ -2290,7 +2302,7 @@ def run_scienceagentbench(
     agent_tc: str | None,
     depth: int,
     max_tokens: int,
-    timeout: int,
+    timeout: int | None,
     reasoning_effort: str | None,
     web_search: bool,
     use_knowledge: bool,
@@ -2304,6 +2316,8 @@ def run_scienceagentbench(
     import re
     import shutil
 
+    if timeout is None:
+        timeout = _DATASET_TIMEOUTS.get("scienceagentbench", _DEFAULT_TIMEOUT)
     run_id = run_id or _run_id("sab")
     output_file = Path(output) if output else _default_output(run_id)
 
@@ -2639,7 +2653,7 @@ def _run_exercism_pytest(test_path: Path, timeout: int = EXERCISM_PYTEST_TIMEOUT
 @click.option("--agent-tc", default=None, help="Spell tc-mode agent override")
 @click.option("--depth", type=int, default=8, show_default=True)
 @click.option("--max-tokens", type=int, default=None)
-@click.option("--timeout", type=int, default=300, show_default=True)
+@click.option("--timeout", type=int, default=None, help="Per-item timeout seconds (default: from _DATASET_TIMEOUTS)")
 @click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
 @click.option("--no-retry", is_flag=True, default=False, help="Skip retry on test failure")
 @click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
@@ -2665,7 +2679,7 @@ def run_exercism(
     agent_tc: str | None,
     depth: int,
     max_tokens: int | None,
-    timeout: int,
+    timeout: int | None,
     reasoning_effort: str | None,
     no_retry: bool,
     web_search: bool,
@@ -2678,6 +2692,8 @@ def run_exercism(
     output: str | None = None,
 ) -> None:
     """Run Exercism Python benchmark with two-attempt protocol."""
+    if timeout is None:
+        timeout = _DATASET_TIMEOUTS.get("exercism", _DEFAULT_TIMEOUT)
     run_id = run_id or _run_id("exercism")
     output_file = Path(output) if output else _default_output(run_id)
     conditions = _parse_conditions(condition, ("one_shot", "spell", "claude_code", "codex", "all"))
