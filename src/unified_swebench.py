@@ -9,6 +9,16 @@ from .swebench_container import SWEBenchContainer
 from .datasets import SWEBenchItem
 from .unified_adapters import RunResponse
 
+_SINGULARITY_CONTAINER = None
+
+
+def _get_singularity_container_class():
+    global _SINGULARITY_CONTAINER
+    if _SINGULARITY_CONTAINER is None:
+        from .singularity_container import SingularitySWEBenchContainer
+        _SINGULARITY_CONTAINER = SingularitySWEBenchContainer
+    return _SINGULARITY_CONTAINER
+
 
 def run_unified_swebench(
     *,
@@ -31,15 +41,24 @@ def run_unified_swebench(
     pro_dockerhub_username: str = "jefzda",
     instance_image_tag: str = "latest",
     env_image_tag: str = "latest",
+    backend: str = "docker",
 ) -> RunResponse:
     eval_log_path: str | None = None
-    with SWEBenchContainer(
-        item,
-        pro_eval_repo=pro_eval_repo,
-        dockerhub_username=pro_dockerhub_username,
-        instance_image_tag=instance_image_tag,
-        env_image_tag=env_image_tag,
-    ) as container:
+    if backend == "singularity":
+        ContainerClass = _get_singularity_container_class()
+        container_kwargs = dict(
+            instance_image_tag=instance_image_tag,
+            env_image_tag=env_image_tag,
+        )
+    else:
+        ContainerClass = SWEBenchContainer
+        container_kwargs = dict(
+            pro_eval_repo=pro_eval_repo,
+            dockerhub_username=pro_dockerhub_username,
+            instance_image_tag=instance_image_tag,
+            env_image_tag=env_image_tag,
+        )
+    with ContainerClass(item, **container_kwargs) as container:
         result = run_agent_in_container(
             container,
             condition=condition,  # type: ignore[arg-type]

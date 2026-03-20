@@ -1325,6 +1325,13 @@ def run_general(
 )
 @click.option("--name", default=None, help="Label for this run variant (flows into traces, predictions, and JSONL records)")
 @click.option("--trailing", default=None, help="Custom Spell trailing expression (overrides default '(!extend))")
+@click.option(
+    "--backend",
+    type=click.Choice(["docker", "singularity"]),
+    default="docker",
+    show_default=True,
+    help="Container backend: 'docker' (default) or 'singularity' (for HPC clusters without Docker)",
+)
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
 @click.option("--output", default=None)
@@ -1370,6 +1377,7 @@ def run_swebench(
     pro_redo: bool,
     name: str | None = None,
     trailing: str | None = None,
+    backend: str = "docker",
     dry_run: bool = False,
     run_id: str | None = None,
     output: str | None = None,
@@ -1560,6 +1568,7 @@ def run_swebench(
                     pro_dockerhub_username=pro_dockerhub_username,
                     instance_image_tag=eval_instance_image_tag,
                     env_image_tag=eval_env_image_tag,
+                    backend=backend,
                 )
                 patch = resp.metadata.get("patch", "")
                 changed_files = resp.metadata.get("changed_files", [])
