@@ -68,14 +68,72 @@ def _parse_string_list(value: Any) -> list[str]:
     raise ValueError(f"Expected list-like value, got {type(value).__name__}")
 
 
+def _shell_quote_legacy_env_value(value: str) -> str:
+    if not any(char.isspace() for char in value):
+        return value
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`")
+    return f'"{escaped}"'
+
+
+def _docker_env_line_to_export(line: str) -> str | None:
+    stripped = line.strip()
+    if not stripped.startswith("ENV "):
+        return None
+
+    payload = stripped[4:].strip()
+    if not payload:
+        return None
+
+    first_token = payload.split(None, 1)[0]
+    if "=" not in first_token:
+        parts = payload.split(None, 1)
+        if len(parts) != 2:
+            return None
+        key, value = parts
+        return f"export {key}={_shell_quote_legacy_env_value(value)}"
+
+    return f"export {payload}"
+
+
 def _env_exports_from_dockerfiles(*dockerfiles: Path) -> str:
     exports: list[str] = []
     for dockerfile in dockerfiles:
         for line in dockerfile.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if stripped.startswith("ENV "):
-                exports.append(stripped.replace("ENV", "export", 1))
+            export_line = _docker_env_line_to_export(line)
+            if export_line:
+                exports.append(export_line)
     return "\n".join(exports)
+
+
+def _build_pro_eval_entryscript(
+    *,
+    container_workdir: str,
+    env_exports: str,
+    before_repo_set_cmd: str,
+    selected_tests: list[str],
+) -> str:
+    selected_arg = ",".join(selected_tests)
+    entry_lines = []
+    if env_exports:
+        entry_lines.append(env_exports)
+    entry_lines.extend(
+        [
+            "set -e",
+            f"cd {container_workdir}",
+        ]
+    )
+    if before_repo_set_cmd:
+        entry_lines.append(before_repo_set_cmd)
+    run_cmd = "bash /tmp/run_script.sh"
+    if selected_arg:
+        run_cmd = f"{run_cmd} {shlex.quote(selected_arg)}"
+    entry_lines.extend(
+        [
+            f"{run_cmd} > /tmp/stdout.log 2> /tmp/stderr.log",
+            "python /tmp/parser.py /tmp/stdout.log /tmp/stderr.log /tmp/output.json",
+        ]
+    )
+    return "\n".join(entry_lines) + "\n"
 
 
 class SWEBenchContainer:
@@ -373,36 +431,19 @@ class SWEBenchContainer:
         env_exports = _env_exports_from_dockerfiles(base_dockerfile, instance_dockerfile)
         before_repo_set_cmd = str(
             (self.item.raw_instance or {}).get("before_repo_set_cmd", "")
-        ).strip().split("\n")[-1]
+        ).strip()
         selected_tests = _parse_string_list(
             (self.item.raw_instance or {}).get("selected_test_files_to_run", "[]")
-        )
-        selected_arg = ",".join(selected_tests)
-
-        entry_lines = []
-        if env_exports:
-            entry_lines.append(env_exports)
-        entry_lines.extend(
-            [
-                "set -e",
-                f"cd {self.container_workdir}",
-            ]
-        )
-        if before_repo_set_cmd:
-            entry_lines.append(before_repo_set_cmd)
-        run_cmd = "bash /tmp/run_script.sh"
-        if selected_arg:
-            run_cmd = f"{run_cmd} {shlex.quote(selected_arg)}"
-        entry_lines.extend(
-            [
-                f"{run_cmd} > /tmp/stdout.log 2> /tmp/stderr.log",
-                "python /tmp/parser.py /tmp/stdout.log /tmp/stderr.log /tmp/output.json",
-            ]
         )
         files = {
             "run_script.sh": (scripts_dir / "run_script.sh").read_text(encoding="utf-8"),
             "parser.py": (scripts_dir / "parser.py").read_text(encoding="utf-8"),
-            "entryscript.sh": "\n".join(entry_lines) + "\n",
+            "entryscript.sh": _build_pro_eval_entryscript(
+                container_workdir=self.container_workdir,
+                env_exports=env_exports,
+                before_repo_set_cmd=before_repo_set_cmd,
+                selected_tests=selected_tests,
+            ),
         }
         if not self.put_tar_archive("/tmp", _archive_bytes_for_files(files)):
             raise RuntimeError("Failed to copy SWE-bench Pro eval assets into container")
