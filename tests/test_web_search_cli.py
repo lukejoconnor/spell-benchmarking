@@ -382,7 +382,7 @@ class WebSearchCliRegressionTest(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn('"dataset": "pro"', result.output)
-        self.assertNotIn('"unified"', result.output)
+        self.assertIn('"clean_eval": false', result.output)
 
     def test_software_benchmark_help_omits_legacy_container_flags(self):
         swebench_help = self.runner.invoke(self.bench.cli, ["swebench", "--help"])
@@ -394,6 +394,9 @@ class WebSearchCliRegressionTest(unittest.TestCase):
         self.assertEqual(exercism_help.exit_code, 0, exercism_help.output)
         self.assertNotIn("--docker", swebench_help.output)
         self.assertNotIn("--unified", swebench_help.output)
+        self.assertNotIn("--workspace-root", swebench_help.output)
+        self.assertNotIn("--keep-workspaces", swebench_help.output)
+        self.assertIn("--clean-eval / --no-clean-eval", swebench_help.output)
         self.assertNotIn("--unified", featurebench_help.output)
         self.assertNotIn("--unified", exercism_help.output)
 

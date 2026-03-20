@@ -59,7 +59,6 @@ from src.featurebench_lib import (
     setup_workspace,
 )
 from src.swebench_output import write_predictions_jsonl
-from src.swebench_prep import setup_swebench_workspace, get_default_workspace_root
 from src.workspace import RepoCache
 from src.unified_exercism import format_unified_exercism_prompt, run_unified_exercism
 from src.unified_featurebench import run_unified_featurebench
@@ -197,14 +196,6 @@ def _trace_dir_for_request(
         path = path / f"attempt-{attempt}"
     path.mkdir(parents=True, exist_ok=True)
     return path
-
-
-def _swebench_worktree_tag(condition: str, run_id: str, *, name: str | None = None) -> str:
-    parts = [_sanitize_trace_segment(condition, "condition")]
-    if name:
-        parts.append(_sanitize_trace_segment(name, "name"))
-    parts.append(_sanitize_trace_segment(run_id, "run"))
-    return ".".join(parts)
 
 
 def _parse_conditions(value: str, allowed: tuple[str, ...]) -> list[str]:
@@ -406,6 +397,12 @@ TIPS:
 - When you need to find information about the codebase, use "grep" and "find" to search for relevant files and code with the bash tool
 - Use your bash tool to set up any necessary environment variables, such as those needed to run tests.
 """
+
+
+def _swebench_prompt_workspace(item: SWEBenchItem) -> Path:
+    if (item.raw_instance or {}).get("dockerhub_tag"):
+        return Path("/app")
+    return Path("/testbed")
 
 
 def _evaluate_general(item: BenchmarkItem, response_text: str | None) -> tuple[str | None, bool | None]:
@@ -1215,10 +1212,9 @@ def run_general(
 @click.option("--max-tokens", type=int, default=None)
 @click.option("--timeout", type=int, default=None, help="Per-item timeout seconds (default: from _DATASET_TIMEOUTS)")
 @click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
-@click.option("--workspace-root", default=None)
-@click.option("--keep-workspaces", is_flag=True, default=False)
 @click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--trace/--no-trace", default=True, show_default=True, help="Record execution traces")
+@click.option("--clean-eval/--no-clean-eval", default=False, show_default=True, help="Re-run patches in a fresh official eval container after generation")
 @click.option("--eval-predictions-dir", default="results/swebench", show_default=True)
 @click.option("--eval-dataset-name", default=None, help="Override swebench.harness dataset_name")
 @click.option("--eval-split", default="test", show_default=True)
@@ -1309,10 +1305,9 @@ def run_swebench(
     max_tokens: int,
     timeout: int | None,
     reasoning_effort: str | None,
-    workspace_root: str | None,
-    keep_workspaces: bool,
     web_search: bool,
     trace: bool,
+    clean_eval: bool,
     eval_predictions_dir: str,
     eval_dataset_name: str | None,
     eval_split: str,
@@ -1386,15 +1381,11 @@ def run_swebench(
             all_items = all_items[:n]
     items = all_items
 
-    root = Path(workspace_root) if workspace_root else get_default_workspace_root()
-    root.mkdir(parents=True, exist_ok=True)
-
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
     if name:
         click.echo(f"Name: {name}")
-    click.echo(f"Workspace root: {root}")
-    click.echo("Container mode: shared software benchmark container infra")
+    click.echo("Container mode: official SWE-bench instance images")
     click.echo(f"Loaded {len(items)} items")
     if dry_run:
         spell_resolution = None
@@ -1424,6 +1415,7 @@ def run_swebench(
                     "agent_source": spell_resolution.source if spell_resolution else None,
                     "agent_policy_key": spell_resolution.policy_key if spell_resolution else None,
                     "parallel": parallel,
+                    "clean_eval": clean_eval,
                     "eval_predictions_dir": eval_predictions_dir,
                     "eval_dataset_name": eval_dataset_name,
                     "eval_split": eval_split,
@@ -1456,11 +1448,8 @@ def run_swebench(
     if trace_dir:
         click.echo(f"Trace dir: {trace_dir}")
 
-    cache = RepoCache(root)
-
     for cond in conditions:
         click.echo(f"\n--- Running {cond} ---")
-        worktree_tag = _swebench_worktree_tag(cond, run_id, name=name)
         spell_resolution = None
         if cond == "spell":
             spell_resolution = _resolve_spell_agent_or_die(
@@ -1476,12 +1465,9 @@ def run_swebench(
             )
 
         def process(item) -> UnifiedRunRecord:
-            wt = None
             try:
-                wt = setup_swebench_workspace(cache, item, tag=worktree_tag)
-                ws_path = wt.path
-                prompt_workspace = Path("/workspace")
-                prompt = _format_swebench_prompt(item, workspace=prompt_workspace)
+                prompt = _format_swebench_prompt(item, workspace=_swebench_prompt_workspace(item))
+                request_trace_dir = _trace_dir_for_request(trace_dir, cond, item.instance_id, name=name)
 
                 req = RunRequest(
                     benchmark="swebench",
@@ -1499,12 +1485,7 @@ def run_swebench(
                     reasoning_effort=reasoning_effort,
                     web_search=web_search if cond == "codex" else False,
                     trace=trace,
-                    trace_dir=(
-                        _trace_dir_for_request(trace_dir, cond, item.instance_id, name=name)
-                        if cond == "spell"
-                        else _trace_dir_for_condition(trace_dir, cond, name=name)
-                    ),
-                    workspace=ws_path,
+                    trace_dir=request_trace_dir,
                 )
                 resp = run_unified_swebench(
                     condition=cond,
@@ -1520,7 +1501,12 @@ def run_swebench(
                     web_search=req.web_search,
                     trace=trace,
                     trace_dir=req.trace_dir,
-                    workspace=ws_path,
+                    eval_timeout=eval_timeout,
+                    item=item,
+                    pro_eval_repo=pro_eval_repo if dataset == "pro" else None,
+                    pro_dockerhub_username=pro_dockerhub_username,
+                    instance_image_tag=eval_instance_image_tag,
+                    env_image_tag=eval_env_image_tag,
                 )
                 patch = resp.metadata.get("patch", "")
                 changed_files = resp.metadata.get("changed_files", [])
@@ -1572,8 +1558,8 @@ def run_swebench(
                     },
                 )
             except Exception as exc:
-                # Keep long swebench runs alive even when one instance has an
-                # unreachable base commit or workspace setup failure.
+                # Keep long SWE-bench runs alive even when one instance fails
+                # during container setup or same-container evaluation.
                 err_text = str(exc)
                 return _mk_record(
                     run_id=run_id,
@@ -1593,7 +1579,7 @@ def run_swebench(
                         cost_usd=None,
                         latency_ms=None,
                         error_message=err_text,
-                        error_type="workspace_error",
+                        error_type="container_error",
                         metadata={},
                     ),
                     response_text="",
@@ -1615,9 +1601,6 @@ def run_swebench(
                         ),
                     },
                 )
-            finally:
-                if wt is not None and not keep_workspaces:
-                    wt.remove()
 
         if parallel <= 1:
             records = []
@@ -1651,49 +1634,50 @@ def run_swebench(
         write_predictions_jsonl(swe_results, pred_path, model_name=pred_model_name)
         click.echo(f"Predictions: {pred_path}")
 
-    click.echo("\n=== Running SWE-bench evaluation ===")
-    pro_config = ProEvalConfig(
-        eval_repo=pro_eval_repo,
-        raw_sample_path=pro_raw_sample_path,
-        output_dir=pro_output_dir,
-        dockerhub_username=pro_dockerhub_username,
-        strip_trace_artifacts=pro_strip_trace_artifacts,
-        use_local_docker=pro_use_local_docker,
-        block_network=pro_block_network,
-        redo=pro_redo,
-    )
-    resolved_dataset_name, eval_conditions, plan = _build_swebench_eval_plan(
-        dataset=dataset,
-        condition=condition,
-        run_id=run_id,
-        name=name,
-        predictions_dir=eval_predictions_dir,
-        dataset_name=eval_dataset_name,
-        split=eval_split,
-        max_workers=eval_max_workers,
-        timeout=eval_timeout,
-        namespace=eval_namespace,
-        instance_image_tag=eval_instance_image_tag,
-        env_image_tag=eval_env_image_tag,
-        final_cache_level=eval_final_cache_level,
-        final_clean=eval_final_clean,
-        verify_predictions=True,
-        pro=pro_config,
-    )
-    click.echo(
-        json.dumps(
-            {
-                "run_id": run_id,
-                "dataset": dataset,
-                "dataset_name": resolved_dataset_name,
-                "conditions": eval_conditions,
-                "namespace": eval_namespace,
-                "plan": plan,
-            },
-            indent=2,
+    if clean_eval:
+        click.echo("\n=== Running clean SWE-bench evaluation ===")
+        pro_config = ProEvalConfig(
+            eval_repo=pro_eval_repo,
+            raw_sample_path=pro_raw_sample_path,
+            output_dir=pro_output_dir,
+            dockerhub_username=pro_dockerhub_username,
+            strip_trace_artifacts=pro_strip_trace_artifacts,
+            use_local_docker=pro_use_local_docker,
+            block_network=pro_block_network,
+            redo=pro_redo,
         )
-    )
-    _run_swebench_eval_plan(plan)
+        resolved_dataset_name, eval_conditions, plan = _build_swebench_eval_plan(
+            dataset=dataset,
+            condition=condition,
+            run_id=run_id,
+            name=name,
+            predictions_dir=eval_predictions_dir,
+            dataset_name=eval_dataset_name,
+            split=eval_split,
+            max_workers=eval_max_workers,
+            timeout=eval_timeout,
+            namespace=eval_namespace,
+            instance_image_tag=eval_instance_image_tag,
+            env_image_tag=eval_env_image_tag,
+            final_cache_level=eval_final_cache_level,
+            final_clean=eval_final_clean,
+            verify_predictions=True,
+            pro=pro_config,
+        )
+        click.echo(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "dataset": dataset,
+                    "dataset_name": resolved_dataset_name,
+                    "conditions": eval_conditions,
+                    "namespace": eval_namespace,
+                    "plan": plan,
+                },
+                indent=2,
+            )
+        )
+        _run_swebench_eval_plan(plan)
 
 
 @cli.command("swebench-eval")

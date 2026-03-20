@@ -56,16 +56,18 @@ Maintain a neutral, skeptical stance. Present unfavorable and inconclusive resul
 
 Software-benchmark container infra:
 - `bench.py swebench`, `bench.py featurebench`, and `bench.py exercism` now run on the shared in-container agent layer by default.
-- SWE-bench Pro generation uses the same container path as `mini`/`lite`/`verified`; Pro evaluation still runs through the separate ScaleAI Docker pipeline.
+- SWE-bench generation now uses official per-instance images: `/testbed` for `mini`/`lite`/`verified`, `/app` for `pro`.
+- SWE-bench Pro clean eval still runs through the separate ScaleAI Docker pipeline when `--clean-eval` is requested.
 - Exercism `one_shot` is the lone exception: it stays on the local single-call path because generation does not need a mutable workspace.
 - ScienceAgentBench is intentionally not on the shared software-benchmark container infra in this pass.
 
 SWE-bench harness defaults and workflow:
-- `bench.py swebench` now defaults to `--condition all` (`spell`, `claude_code`, `codex`) and always runs evaluation after generation.
+- `bench.py swebench` now defaults to `--condition all` (`spell`, `claude_code`, `codex`) and always runs same-container evaluation after generation.
 - Use `--name <label>` to tag a run variant across JSONL records, traces, and SWE-bench prediction filenames.
 - Use `--trailing <expr>` on Spell runs to override the default trailing policy directly instead of relying on preset variants.
-- `bench.py swebench` uses the shared `src/docker_agents.py` container-agent layer for every dataset, including `pro`.
-- Evaluation runs conditions in series with staged cleanup:
+- `bench.py swebench` uses `src/swebench_container.py` to start official instance images, then runs agents through the shared `src/docker_agents.py` runtime layer.
+- Use `--clean-eval` to rerun generated patches in a fresh official evaluation container.
+- Clean eval runs conditions in series with staged cleanup:
   - non-final conditions: `cache_level=env`, `clean=false`
   - final condition: configurable final cleanup (`--eval-final-cache-level`, `--eval-final-clean`)
 - For explicit eval-only runs, use `bench.py swebench-eval` and pass the same `--name` you used for generation when predictions were label-tagged.
@@ -214,10 +216,10 @@ benchmarking/
 ├── src/
 │   ├── datasets.py        # Dataset loading
 │   ├── docker_agents.py   # Shared in-container agent execution
+│   ├── swebench_container.py # Official-image SWE-bench container backend
 │   ├── unified_adapters.py # Condition adapters (Spell/OneShot/Claude/Codex)
 │   ├── unified_results.py  # Unified JSONL schema + summaries
 │   ├── evaluation.py      # Scoring (exact match, regex extraction)
-│   ├── swebench_prep.py   # SWE-bench workspace setup
 │   └── swebench_output.py # Results formatting
 ├── results/               # JSON output files (gitignored)
 ├── traces/                # Execution traces (gitignored)

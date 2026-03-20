@@ -1,9 +1,12 @@
 import os
 import tempfile
 import unittest
+import importlib
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+import sys
+import types
 
 from src.docker_agents import (
     ExecOutput,
@@ -11,7 +14,30 @@ from src.docker_agents import (
     container_exec,
     discover_spell_root,
 )
-from src.unified_swebench import run_unified_swebench
+
+
+def _import_unified_swebench():
+    stub = types.ModuleType("spell_benchmark_client")
+
+    class _DummyClient:  # pragma: no cover - import wiring only
+        def __init__(self, *args, **kwargs):
+            pass
+
+    stub.SpellBenchmarkClient = _DummyClient
+    prior_client = sys.modules.get("spell_benchmark_client")
+    sys.modules["spell_benchmark_client"] = stub
+    try:
+        module = importlib.import_module("src.unified_swebench")
+    finally:
+        if prior_client is None:
+            sys.modules.pop("spell_benchmark_client", None)
+        else:
+            sys.modules["spell_benchmark_client"] = prior_client
+        sys.modules.pop("src.unified_adapters", None)
+    return module
+
+
+run_unified_swebench = _import_unified_swebench().run_unified_swebench
 
 
 def _make_spell_root(path: Path) -> None:
@@ -90,12 +116,17 @@ class ResolveAgentForContainerTest(unittest.TestCase):
 
 class UnifiedSWEBenchRunnerTest(unittest.TestCase):
     @patch("src.unified_swebench.run_agent_in_container")
-    @patch("src.unified_swebench.DockerWorkspaceContainer")
-    def test_runner_uses_initial_commit_and_persists_traces(self, container_cls, run_agent_mock):
+    @patch("src.unified_swebench.SWEBenchContainer")
+    def test_runner_uses_initial_commit_and_records_same_container_eval(self, container_cls, run_agent_mock):
         container = MagicMock()
         container.initial_commit = "base-sha"
         container.diff.return_value = "diff --git a/foo b/foo"
         container.changed_files.return_value = ["foo.py"]
+        container.run_eval.return_value = SimpleNamespace(
+            resolved=True,
+            test_output="eval ok",
+            raw_report={"instance-1": {"resolved": True}},
+        )
 
         container_cm = MagicMock()
         container_cm.__enter__.return_value = container
@@ -126,14 +157,20 @@ class UnifiedSWEBenchRunnerTest(unittest.TestCase):
             web_search=False,
             trace=True,
             trace_dir=Path("/tmp/host-traces"),
-            workspace=Path("/tmp/workspace"),
+            eval_timeout=90,
+            item=SimpleNamespace(
+                instance_id="instance-1",
+                raw_instance={},
+            ),
         )
 
         self.assertEqual(run_agent_mock.call_args.kwargs["trace_dir"], Path("/tmp/host-traces"))
         container.diff.assert_called_once_with("base-sha")
         container.changed_files.assert_called_once_with("base-sha")
+        container.run_eval.assert_called_once_with(timeout=90)
         self.assertEqual(response.metadata["trace_dir"], "/tmp/host-traces")
         self.assertEqual(response.metadata["patch"], "diff --git a/foo b/foo")
+        self.assertTrue(response.metadata["same_container_resolved"])
 
 
 if __name__ == "__main__":

@@ -44,6 +44,7 @@ def test_load_swebench_pro_maps_optional_fields(monkeypatch) -> None:
     item = items[0]
     assert item.instance_id == "repo__repo-1"
     assert item.repo == "org/repo"
+    assert item.raw_instance["instance_id"] == "repo__repo-1"
     assert item.metadata["requirements"] == ["must pass tests", "no API changes"]
     assert item.metadata["interface"] == {"entrypoint": "solve()"}
     assert item.metadata["difficulty"] == "medium"
@@ -67,3 +68,4 @@ def test_load_swebench_lite_omits_empty_optional_metadata(monkeypatch) -> None:
 
     assert len(items) == 1
     assert items[0].metadata == {}
+    assert items[0].raw_instance["instance_id"] == "repo__repo-1"
