@@ -61,7 +61,6 @@ def run_unified_swebench(
         error_type=result.error_type,
         metadata={
             "docker": True,
-            "unified": True,
             "patch": patch,
             "changed_files": changed_files,
             "trace_dir": result.trace_dir,

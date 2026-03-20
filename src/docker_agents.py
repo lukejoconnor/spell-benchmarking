@@ -1,7 +1,7 @@
 """Shared container-agent helpers for software benchmarks.
 
 This module holds benchmark-agnostic pieces shared by Terminal-Bench and the
-bench.py unified software benchmark paths:
+bench.py software benchmark container paths:
 
 - container lifecycle / exec helpers for copied workspaces
 - agent install/env/command construction
