@@ -470,7 +470,7 @@ class WebSearchCliRegressionTest(unittest.TestCase):
         self.assertEqual(events[1][0], "run")
         self.assertIn("Pro eval repo ready", result.output)
 
-    def test_swebench_keep_images_disables_container_cleanup(self):
+    def test_swebench_keep_images_skips_final_image_cleanup(self):
         lite_item = SimpleNamespace(
             instance_id="django__django-1",
             repo="django/django",
@@ -480,10 +480,8 @@ class WebSearchCliRegressionTest(unittest.TestCase):
             metadata={},
             raw_instance={},
         )
-        cleanup_values = []
 
         def fake_run_unified_swebench(**kwargs):
-            cleanup_values.append(kwargs["cleanup"])
             return self.bench.RunResponse(
                 status="ok",
                 response_text="done",
@@ -497,12 +495,14 @@ class WebSearchCliRegressionTest(unittest.TestCase):
                     "docker": True,
                     "patch": "",
                     "changed_files": [],
+                    "instance_image_name": "sweb.eval.x86_64.django__django-1:latest",
                 },
             )
 
         with tempfile.TemporaryDirectory() as tmp_dir, \
              patch.object(self.bench, "load_swebench_lite", return_value=[lite_item]), \
              patch.object(self.bench, "run_unified_swebench", side_effect=fake_run_unified_swebench), \
+             patch.object(self.bench, "_cleanup_swebench_instance_images") as cleanup_mock, \
              patch.object(self.bench, "append_jsonl"), \
              patch.object(self.bench, "_print_summary"), \
              patch.object(self.bench, "write_predictions_jsonl"), \
@@ -526,7 +526,162 @@ class WebSearchCliRegressionTest(unittest.TestCase):
             )
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertEqual(cleanup_values, [False])
+        cleanup_mock.assert_not_called()
+
+    def test_swebench_multi_condition_defers_image_cleanup_until_after_generation(self):
+        lite_item = SimpleNamespace(
+            instance_id="django__django-1",
+            repo="django/django",
+            base_commit="abc123",
+            problem_statement="Fix it",
+            hints_text="",
+            metadata={},
+            raw_instance={},
+        )
+        events = []
+
+        def fake_run_unified_swebench(**kwargs):
+            events.append(("run", kwargs["condition"]))
+            return self.bench.RunResponse(
+                status="ok",
+                response_text="done",
+                tokens_in=None,
+                tokens_out=None,
+                cost_usd=None,
+                latency_ms=None,
+                error_message=None,
+                error_type=None,
+                metadata={
+                    "docker": True,
+                    "patch": "",
+                    "changed_files": [],
+                    "instance_image_name": "sweb.eval.x86_64.django__django-1:latest",
+                },
+            )
+
+        def fake_cleanup(image_names):
+            events.append(("cleanup", sorted(image_names)))
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.object(self.bench, "load_swebench_lite", return_value=[lite_item]), \
+             patch.object(self.bench, "_resolve_spell_agent_or_die", return_value=SimpleNamespace(
+                 agent_file="config/agents/cli.agent.edn",
+                 spell_mode="tc",
+                 source="test",
+                 policy_key="swebench",
+             )), \
+             patch.object(self.bench, "run_unified_swebench", side_effect=fake_run_unified_swebench), \
+             patch.object(self.bench, "_cleanup_swebench_instance_images", side_effect=fake_cleanup), \
+             patch.object(self.bench, "append_jsonl"), \
+             patch.object(self.bench, "_print_summary"), \
+             patch.object(self.bench, "write_predictions_jsonl"), \
+             patch.object(self.bench, "_resolve_trace_dir", return_value=None):
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "swebench",
+                    "--dataset",
+                    "lite",
+                    "--condition",
+                    "both",
+                    "--model",
+                    "anthropic-tc:claude-opus-4-6",
+                    "--claude-model",
+                    "claude-opus-4-6",
+                    "--n",
+                    "1",
+                    "--output",
+                    str(Path(tmp_dir) / "out.jsonl"),
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(
+            events,
+            [
+                ("run", "spell"),
+                ("run", "claude_code"),
+                ("cleanup", ["sweb.eval.x86_64.django__django-1:latest"]),
+            ],
+        )
+
+    def test_swebench_clean_eval_defers_image_cleanup_until_after_eval(self):
+        lite_item = SimpleNamespace(
+            instance_id="django__django-1",
+            repo="django/django",
+            base_commit="abc123",
+            problem_statement="Fix it",
+            hints_text="",
+            metadata={},
+            raw_instance={},
+        )
+        events = []
+
+        def fake_run_unified_swebench(**kwargs):
+            events.append(("run", kwargs["condition"]))
+            return self.bench.RunResponse(
+                status="ok",
+                response_text="done",
+                tokens_in=None,
+                tokens_out=None,
+                cost_usd=None,
+                latency_ms=None,
+                error_message=None,
+                error_type=None,
+                metadata={
+                    "docker": True,
+                    "patch": "",
+                    "changed_files": [],
+                    "instance_image_name": "sweb.eval.x86_64.django__django-1:latest",
+                },
+            )
+
+        def fake_build_eval_plan(**_kwargs):
+            return "princeton-nlp/SWE-bench_Lite", ["codex"], [{"condition": "codex"}]
+
+        def fake_run_eval_plan(plan):
+            events.append(("eval", [step["condition"] for step in plan]))
+
+        def fake_cleanup(image_names):
+            events.append(("cleanup", sorted(image_names)))
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.object(self.bench, "load_swebench_lite", return_value=[lite_item]), \
+             patch.object(self.bench, "run_unified_swebench", side_effect=fake_run_unified_swebench), \
+             patch.object(self.bench, "_build_swebench_eval_plan", side_effect=fake_build_eval_plan), \
+             patch.object(self.bench, "_run_swebench_eval_plan", side_effect=fake_run_eval_plan), \
+             patch.object(self.bench, "_cleanup_swebench_instance_images", side_effect=fake_cleanup), \
+             patch.object(self.bench, "append_jsonl"), \
+             patch.object(self.bench, "_print_summary"), \
+             patch.object(self.bench, "write_predictions_jsonl"), \
+             patch.object(self.bench, "_resolve_trace_dir", return_value=None):
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "swebench",
+                    "--dataset",
+                    "lite",
+                    "--condition",
+                    "codex",
+                    "--codex-model",
+                    "codex",
+                    "--n",
+                    "1",
+                    "--clean-eval",
+                    "--output",
+                    str(Path(tmp_dir) / "out.jsonl"),
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(
+            events,
+            [
+                ("run", "codex"),
+                ("eval", ["codex"]),
+                ("cleanup", ["sweb.eval.x86_64.django__django-1:latest"]),
+            ],
+        )
 
     def test_software_benchmark_help_omits_legacy_container_flags(self):
         swebench_help = self.runner.invoke(self.bench.cli, ["swebench", "--help"])

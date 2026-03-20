@@ -59,6 +59,7 @@ from src.featurebench_lib import (
     setup_workspace,
 )
 from src.swebench_output import write_predictions_jsonl
+from src.swebench_container import remove_swebench_instance_image
 from src.workspace import RepoCache
 from src.unified_exercism import format_unified_exercism_prompt, run_unified_exercism
 from src.unified_featurebench import run_unified_featurebench
@@ -211,6 +212,16 @@ def _parse_swebench_conditions(value: str) -> list[str]:
     if value == "all":
         return ["spell", "claude_code", "codex", "swe_agent"]
     return [value]
+
+
+def _cleanup_swebench_instance_images(image_names: set[str]) -> None:
+    if not image_names:
+        return
+
+    click.echo(f"Cleaning up {len(image_names)} SWE-bench instance image(s)")
+    for image_name in sorted(image_names):
+        if not remove_swebench_instance_image(image_name):
+            click.echo(f"Warning: failed to remove SWE-bench instance image {image_name}")
 
 
 def _swebench_dataset_name(dataset: str) -> str:
@@ -1511,251 +1522,258 @@ def run_swebench(
     if trace_dir:
         click.echo(f"Trace dir: {trace_dir}")
 
-    for cond in conditions:
-        click.echo(f"\n--- Running {cond} ---")
-        spell_resolution = None
-        if cond == "spell":
-            spell_resolution = _resolve_spell_agent_or_die(
-                bench_kind="swebench",
-                model_spec=model,
-                agent=agent,
-                agent_msg=agent_msg,
-                agent_tc=agent_tc,
-            )
-            click.echo(
-                f"  spell_mode={spell_resolution.spell_mode} "
-                f"agent={spell_resolution.agent_file} source={spell_resolution.source}"
-            )
-
-        def process(item) -> UnifiedRunRecord:
-            try:
-                prompt = _format_swebench_prompt(item, workspace=_swebench_prompt_workspace(item))
-                request_trace_dir = _trace_dir_for_request(trace_dir, cond, item.instance_id, name=name)
-
-                req = RunRequest(
-                    benchmark="swebench",
-                    dataset=dataset,
-                    item_id=item.instance_id,
-                    condition=cond,
-                    prompt=prompt,
-                    model_spec=_condition_model_spec(
-                        cond,
-                        model=model,
-                        claude_model=claude_model,
-                        codex_model=codex_model,
-                        swe_agent_model=swe_agent_model,
-                    ),
-                    timeout=timeout,
-                    init=(_make_spell_init(prompt, trailing) if cond == "spell" else None),
-                    agent_file=spell_resolution.agent_file if spell_resolution else None,
-                    budget=budget,
-                    depth=depth,
-                    max_tokens=max_tokens,
-                    reasoning_effort=reasoning_effort,
-                    web_search=web_search if cond == "codex" else False,
-                    trace=trace,
-                    trace_dir=request_trace_dir,
+    images_to_cleanup: set[str] = set()
+    try:
+        for cond in conditions:
+            click.echo(f"\n--- Running {cond} ---")
+            spell_resolution = None
+            if cond == "spell":
+                spell_resolution = _resolve_spell_agent_or_die(
+                    bench_kind="swebench",
+                    model_spec=model,
+                    agent=agent,
+                    agent_msg=agent_msg,
+                    agent_tc=agent_tc,
                 )
-                resp = run_unified_swebench(
-                    condition=cond,
-                    prompt=prompt,
-                    model_spec=req.model_spec,
-                    timeout=timeout,
-                    init=req.init,
-                    agent_file=req.agent_file,
-                    budget=budget,
-                    depth=depth,
-                    max_tokens=max_tokens,
-                    reasoning_effort=reasoning_effort,
-                    web_search=req.web_search,
-                    trace=trace,
-                    trace_dir=req.trace_dir,
-                    eval_timeout=eval_timeout,
-                    item=item,
+                click.echo(
+                    f"  spell_mode={spell_resolution.spell_mode} "
+                    f"agent={spell_resolution.agent_file} source={spell_resolution.source}"
+                )
+
+            def process(item) -> UnifiedRunRecord:
+                try:
+                    prompt = _format_swebench_prompt(item, workspace=_swebench_prompt_workspace(item))
+                    request_trace_dir = _trace_dir_for_request(trace_dir, cond, item.instance_id, name=name)
+
+                    req = RunRequest(
+                        benchmark="swebench",
+                        dataset=dataset,
+                        item_id=item.instance_id,
+                        condition=cond,
+                        prompt=prompt,
+                        model_spec=_condition_model_spec(
+                            cond,
+                            model=model,
+                            claude_model=claude_model,
+                            codex_model=codex_model,
+                            swe_agent_model=swe_agent_model,
+                        ),
+                        timeout=timeout,
+                        init=(_make_spell_init(prompt, trailing) if cond == "spell" else None),
+                        agent_file=spell_resolution.agent_file if spell_resolution else None,
+                        budget=budget,
+                        depth=depth,
+                        max_tokens=max_tokens,
+                        reasoning_effort=reasoning_effort,
+                        web_search=web_search if cond == "codex" else False,
+                        trace=trace,
+                        trace_dir=request_trace_dir,
+                    )
+                    resp = run_unified_swebench(
+                        condition=cond,
+                        prompt=prompt,
+                        model_spec=req.model_spec,
+                        timeout=timeout,
+                        init=req.init,
+                        agent_file=req.agent_file,
+                        budget=budget,
+                        depth=depth,
+                        max_tokens=max_tokens,
+                        reasoning_effort=reasoning_effort,
+                        web_search=req.web_search,
+                        trace=trace,
+                        trace_dir=req.trace_dir,
+                        eval_timeout=eval_timeout,
+                        item=item,
                     pro_eval_repo=pro_eval_repo if dataset == "pro" else None,
                     pro_dockerhub_username=pro_dockerhub_username,
                     instance_image_tag=eval_instance_image_tag,
                     env_image_tag=eval_env_image_tag,
                     backend=backend,
-                    cleanup=not keep_images,
                 )
-                patch = resp.metadata.get("patch", "")
-                changed_files = resp.metadata.get("changed_files", [])
+                    patch = resp.metadata.get("patch", "")
+                    changed_files = resp.metadata.get("changed_files", [])
 
-                status = resp.status
-                if status == "ok":
-                    status = "patch_generated" if patch.strip() else "no_patch"
-                resp = RunResponse(
-                    status=status,
-                    response_text=resp.response_text,
-                    tokens_in=resp.tokens_in,
-                    tokens_out=resp.tokens_out,
-                    cost_usd=resp.cost_usd,
-                    latency_ms=resp.latency_ms,
-                    error_message=resp.error_message,
-                    error_type=resp.error_type,
-                    metadata={**resp.metadata, "changed_files": changed_files},
-                )
+                    status = resp.status
+                    if status == "ok":
+                        status = "patch_generated" if patch.strip() else "no_patch"
+                    resp = RunResponse(
+                        status=status,
+                        response_text=resp.response_text,
+                        tokens_in=resp.tokens_in,
+                        tokens_out=resp.tokens_out,
+                        cost_usd=resp.cost_usd,
+                        latency_ms=resp.latency_ms,
+                        error_message=resp.error_message,
+                        error_type=resp.error_type,
+                        metadata={**resp.metadata, "changed_files": changed_files},
+                    )
 
-                return _mk_record(
-                    run_id=run_id,
-                    benchmark="swebench",
-                    dataset=dataset,
-                    split=dataset,
-                    item_id=item.instance_id,
-                    condition=cond,
-                    name=name,
-                    model_spec=req.model_spec,
-                    agent_file=req.agent_file,
-                    response=resp,
-                    response_text=resp.response_text,
-                    patch=patch,
-                    answer_extracted=None,
-                    correct=None,
-                    metadata={
-                        "repo": item.repo,
-                        "base_commit": item.base_commit,
-                        "web_search": web_search,
-                        **(
-                            {
-                                "spell_mode": spell_resolution.spell_mode,
-                                "resolved_agent_file": spell_resolution.agent_file,
-                                "agent_source": spell_resolution.source,
-                                "agent_policy_key": spell_resolution.policy_key,
-                            }
-                            if (cond == "spell" and spell_resolution)
-                            else {}
+                    return _mk_record(
+                        run_id=run_id,
+                        benchmark="swebench",
+                        dataset=dataset,
+                        split=dataset,
+                        item_id=item.instance_id,
+                        condition=cond,
+                        name=name,
+                        model_spec=req.model_spec,
+                        agent_file=req.agent_file,
+                        response=resp,
+                        response_text=resp.response_text,
+                        patch=patch,
+                        answer_extracted=None,
+                        correct=None,
+                        metadata={
+                            "repo": item.repo,
+                            "base_commit": item.base_commit,
+                            "web_search": web_search,
+                            **(
+                                {
+                                    "spell_mode": spell_resolution.spell_mode,
+                                    "resolved_agent_file": spell_resolution.agent_file,
+                                    "agent_source": spell_resolution.source,
+                                    "agent_policy_key": spell_resolution.policy_key,
+                                }
+                                if (cond == "spell" and spell_resolution)
+                                else {}
+                            ),
+                        },
+                    )
+                except Exception as exc:
+                    # Keep long SWE-bench runs alive even when one instance fails
+                    # during container setup or same-container evaluation.
+                    err_text = str(exc)
+                    return _mk_record(
+                        run_id=run_id,
+                        benchmark="swebench",
+                        dataset=dataset,
+                        split=dataset,
+                        item_id=item.instance_id,
+                        condition=cond,
+                        name=name,
+                        model_spec=_condition_model_spec(
+                            cond,
+                            model=model,
+                            claude_model=claude_model,
+                            codex_model=codex_model,
+                            swe_agent_model=swe_agent_model,
                         ),
-                    },
-                )
-            except Exception as exc:
-                # Keep long SWE-bench runs alive even when one instance fails
-                # during container setup or same-container evaluation.
-                err_text = str(exc)
-                return _mk_record(
-                    run_id=run_id,
-                    benchmark="swebench",
-                    dataset=dataset,
-                    split=dataset,
-                    item_id=item.instance_id,
-                    condition=cond,
-                    name=name,
-                    model_spec=_condition_model_spec(
-                        cond,
-                        model=model,
-                        claude_model=claude_model,
-                        codex_model=codex_model,
-                        swe_agent_model=swe_agent_model,
-                    ),
-                    agent_file=spell_resolution.agent_file if spell_resolution else None,
-                    response=RunResponse(
-                        status="error",
+                        agent_file=spell_resolution.agent_file if spell_resolution else None,
+                        response=RunResponse(
+                            status="error",
+                            response_text="",
+                            tokens_in=None,
+                            tokens_out=None,
+                            cost_usd=None,
+                            latency_ms=None,
+                            error_message=err_text,
+                            error_type="container_error",
+                            metadata={},
+                        ),
                         response_text="",
-                        tokens_in=None,
-                        tokens_out=None,
-                        cost_usd=None,
-                        latency_ms=None,
-                        error_message=err_text,
-                        error_type="container_error",
-                        metadata={},
-                    ),
-                    response_text="",
-                    patch=None,
-                    answer_extracted=None,
-                    correct=None,
-                    metadata={
-                        "repo": item.repo,
-                        "base_commit": item.base_commit,
-                        **(
-                            {
-                                "spell_mode": spell_resolution.spell_mode,
-                                "resolved_agent_file": spell_resolution.agent_file,
-                                "agent_source": spell_resolution.source,
-                                "agent_policy_key": spell_resolution.policy_key,
-                            }
-                            if (cond == "spell" and spell_resolution)
-                            else {}
-                        ),
-                    },
-                )
+                        patch=None,
+                        answer_extracted=None,
+                        correct=None,
+                        metadata={
+                            "repo": item.repo,
+                            "base_commit": item.base_commit,
+                            **(
+                                {
+                                    "spell_mode": spell_resolution.spell_mode,
+                                    "resolved_agent_file": spell_resolution.agent_file,
+                                    "agent_source": spell_resolution.source,
+                                    "agent_policy_key": spell_resolution.policy_key,
+                                }
+                                if (cond == "spell" and spell_resolution)
+                                else {}
+                            ),
+                        },
+                    )
 
-        if parallel <= 1:
-            records = []
-            for i, item in enumerate(items):
-                click.echo(f"  [{i+1}/{len(items)}] {item.instance_id}")
-                records.append(process(item))
-        else:
-            records = [None] * len(items)
-            with ThreadPoolExecutor(max_workers=parallel) as pool:
-                futures = {pool.submit(process, item): idx for idx, item in enumerate(items)}
-                done = 0
-                for fut in as_completed(futures):
-                    idx = futures[fut]
-                    done += 1
-                    records[idx] = fut.result()
-                    click.echo(f"  [{done}/{len(items)}] {items[idx].instance_id}")
-            records = [r for r in records if r is not None]
+            if parallel <= 1:
+                records = []
+                for i, item in enumerate(items):
+                    click.echo(f"  [{i+1}/{len(items)}] {item.instance_id}")
+                    records.append(process(item))
+            else:
+                records = [None] * len(items)
+                with ThreadPoolExecutor(max_workers=parallel) as pool:
+                    futures = {pool.submit(process, item): idx for idx, item in enumerate(items)}
+                    done = 0
+                    for fut in as_completed(futures):
+                        idx = futures[fut]
+                        done += 1
+                        records[idx] = fut.result()
+                        click.echo(f"  [{done}/{len(items)}] {items[idx].instance_id}")
+                records = [r for r in records if r is not None]
 
-        for record in records:
-            append_jsonl(output_file, record)
+            for record in records:
+                image_name = record.metadata.get("instance_image_name")
+                if isinstance(image_name, str) and image_name:
+                    images_to_cleanup.add(image_name)
+                append_jsonl(output_file, record)
 
-        _print_summary(output_file, run_id, cond, name=name)
+            _print_summary(output_file, run_id, cond, name=name)
 
-        pred_path = Path("results") / "swebench" / _swebench_predictions_filename(cond, dataset, run_id, name=name)
-        swe_results = [_SwePrediction(instance_id=record.item_id, patch=record.patch or "") for record in records]
-        pred_model_name = {
-            "spell": model or "unknown",
-            "claude_code": f"claude_code:{claude_model or 'unknown'}",
-            "codex": codex_model,
-            "swe_agent": f"swe_agent:{swe_agent_model or 'unknown'}",
-        }[cond]
-        write_predictions_jsonl(swe_results, pred_path, model_name=pred_model_name)
-        click.echo(f"Predictions: {pred_path}")
+            pred_path = Path("results") / "swebench" / _swebench_predictions_filename(cond, dataset, run_id, name=name)
+            swe_results = [_SwePrediction(instance_id=record.item_id, patch=record.patch or "") for record in records]
+            pred_model_name = {
+                "spell": model or "unknown",
+                "claude_code": f"claude_code:{claude_model or 'unknown'}",
+                "codex": codex_model,
+                "swe_agent": f"swe_agent:{swe_agent_model or 'unknown'}",
+            }[cond]
+            write_predictions_jsonl(swe_results, pred_path, model_name=pred_model_name)
+            click.echo(f"Predictions: {pred_path}")
 
-    if clean_eval:
-        click.echo("\n=== Running clean SWE-bench evaluation ===")
-        pro_config = ProEvalConfig(
-            eval_repo=pro_eval_repo,
-            raw_sample_path=pro_raw_sample_path,
-            output_dir=pro_output_dir,
-            dockerhub_username=pro_dockerhub_username,
-            strip_trace_artifacts=pro_strip_trace_artifacts,
-            use_local_docker=pro_use_local_docker,
-            block_network=pro_block_network,
-            redo=pro_redo,
-        )
-        resolved_dataset_name, eval_conditions, plan = _build_swebench_eval_plan(
-            dataset=dataset,
-            condition=condition,
-            run_id=run_id,
-            name=name,
-            predictions_dir=eval_predictions_dir,
-            dataset_name=eval_dataset_name,
-            split=eval_split,
-            max_workers=eval_max_workers,
-            timeout=eval_timeout,
-            namespace=eval_namespace,
-            instance_image_tag=eval_instance_image_tag,
-            env_image_tag=eval_env_image_tag,
-            final_cache_level=eval_final_cache_level,
-            final_clean=eval_final_clean,
-            verify_predictions=True,
-            pro=pro_config,
-        )
-        click.echo(
-            json.dumps(
-                {
-                    "run_id": run_id,
-                    "dataset": dataset,
-                    "dataset_name": resolved_dataset_name,
-                    "conditions": eval_conditions,
-                    "namespace": eval_namespace,
-                    "plan": plan,
-                },
-                indent=2,
+        if clean_eval:
+            click.echo("\n=== Running clean SWE-bench evaluation ===")
+            pro_config = ProEvalConfig(
+                eval_repo=pro_eval_repo,
+                raw_sample_path=pro_raw_sample_path,
+                output_dir=pro_output_dir,
+                dockerhub_username=pro_dockerhub_username,
+                strip_trace_artifacts=pro_strip_trace_artifacts,
+                use_local_docker=pro_use_local_docker,
+                block_network=pro_block_network,
+                redo=pro_redo,
             )
-        )
-        _run_swebench_eval_plan(plan)
+            resolved_dataset_name, eval_conditions, plan = _build_swebench_eval_plan(
+                dataset=dataset,
+                condition=condition,
+                run_id=run_id,
+                name=name,
+                predictions_dir=eval_predictions_dir,
+                dataset_name=eval_dataset_name,
+                split=eval_split,
+                max_workers=eval_max_workers,
+                timeout=eval_timeout,
+                namespace=eval_namespace,
+                instance_image_tag=eval_instance_image_tag,
+                env_image_tag=eval_env_image_tag,
+                final_cache_level=eval_final_cache_level,
+                final_clean=eval_final_clean,
+                verify_predictions=True,
+                pro=pro_config,
+            )
+            click.echo(
+                json.dumps(
+                    {
+                        "run_id": run_id,
+                        "dataset": dataset,
+                        "dataset_name": resolved_dataset_name,
+                        "conditions": eval_conditions,
+                        "namespace": eval_namespace,
+                        "plan": plan,
+                    },
+                    indent=2,
+                )
+            )
+            _run_swebench_eval_plan(plan)
+    finally:
+        if not keep_images and backend == "docker":
+            _cleanup_swebench_instance_images(images_to_cleanup)
 
 
 @cli.command("swebench-eval")

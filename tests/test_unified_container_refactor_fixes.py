@@ -124,6 +124,7 @@ class UnifiedSWEBenchRunnerTest(unittest.TestCase):
         container.initial_commit = "base-sha"
         container.diff.return_value = "diff --git a/foo b/foo"
         container.changed_files.return_value = ["foo.py"]
+        container.image_name = "sweb.eval.x86_64.instance-1:latest"
         container.run_eval.return_value = SimpleNamespace(
             resolved=True,
             test_output="eval ok",
@@ -164,16 +165,15 @@ class UnifiedSWEBenchRunnerTest(unittest.TestCase):
                 instance_id="instance-1",
                 raw_instance={},
             ),
-            cleanup=False,
         )
 
-        self.assertFalse(container_cls.call_args.kwargs["cleanup"])
         self.assertEqual(run_agent_mock.call_args.kwargs["trace_dir"], Path("/tmp/host-traces"))
         container.diff.assert_called_once_with("base-sha")
         container.changed_files.assert_called_once_with("base-sha")
         container.run_eval.assert_called_once_with(timeout=90)
         self.assertEqual(response.metadata["trace_dir"], "/tmp/host-traces")
         self.assertEqual(response.metadata["patch"], "diff --git a/foo b/foo")
+        self.assertEqual(response.metadata["instance_image_name"], "sweb.eval.x86_64.instance-1:latest")
         self.assertTrue(response.metadata["same_container_resolved"])
 
 

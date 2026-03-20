@@ -42,7 +42,6 @@ def run_unified_swebench(
     instance_image_tag: str = "latest",
     env_image_tag: str = "latest",
     backend: str = "docker",
-    cleanup: bool = True,
 ) -> RunResponse:
     eval_log_path: str | None = None
     if backend == "singularity":
@@ -58,7 +57,6 @@ def run_unified_swebench(
             dockerhub_username=pro_dockerhub_username,
             instance_image_tag=instance_image_tag,
             env_image_tag=env_image_tag,
-            cleanup=cleanup,
         )
     with ContainerClass(item, **container_kwargs) as container:
         result = run_agent_in_container(
@@ -81,6 +79,7 @@ def run_unified_swebench(
         patch = container.diff(base_ref)
         changed_files = container.changed_files(base_ref)
         eval_result = container.run_eval(timeout=eval_timeout)
+        image_name = getattr(container, "image_name", None)
 
     if trace_dir is not None:
         trace_dir.mkdir(parents=True, exist_ok=True)
@@ -102,9 +101,10 @@ def run_unified_swebench(
         error_message=result.error_message,
         error_type=result.error_type,
         metadata={
-            "docker": True,
+            "docker": backend == "docker",
             "patch": patch,
             "changed_files": changed_files,
+            "instance_image_name": image_name,
             "trace_dir": result.trace_dir,
             "raw": result.raw,
             "same_container_resolved": eval_result.resolved,

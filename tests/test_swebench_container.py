@@ -86,20 +86,8 @@ def test_resolve_image_name_pro() -> None:
         assert container._resolve_image_name() == "testuser/repo:tag"
 
 
-def test_exit_calls_cleanup_when_enabled() -> None:
-    container = SWEBenchContainer(_make_item(), cleanup=True)
-
-    with patch.object(container, "stop") as stop_mock, patch.object(
-        container, "cleanup_image"
-    ) as cleanup_mock:
-        container.__exit__(None, None, None)
-
-    stop_mock.assert_called_once_with()
-    cleanup_mock.assert_called_once_with()
-
-
-def test_exit_skips_cleanup_when_disabled() -> None:
-    container = SWEBenchContainer(_make_item(), cleanup=False)
+def test_exit_only_stops_container() -> None:
+    container = SWEBenchContainer(_make_item())
 
     with patch.object(container, "stop") as stop_mock, patch.object(
         container, "cleanup_image"
