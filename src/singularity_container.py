@@ -45,14 +45,14 @@ def _singularity_bin() -> str:
     explicit = os.environ.get("SINGULARITY_BIN")
     if explicit:
         return explicit
-    for candidate in ("singularity", "apptainer"):
+    for candidate in ("apptainer", "singularity"):
         if shutil.which(candidate):
             return candidate
     # O2/HPC fallback: check common installation paths not in PATH
-    for full_path in ("/opt/singularity/bin/singularity", "/usr/local/bin/singularity", "/usr/bin/apptainer"):
+    for full_path in ("/usr/bin/apptainer", "/usr/local/bin/apptainer", "/opt/singularity/bin/singularity", "/usr/local/bin/singularity"):
         if os.path.isfile(full_path) and os.access(full_path, os.X_OK):
             return full_path
-    return "singularity"
+    return "apptainer"
 
 
 def _sif_cache_dir() -> Path:
