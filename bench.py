@@ -1323,6 +1323,12 @@ def run_general(
     show_default=True,
     help="Re-run SWE-bench Pro eval even if output files already exist",
 )
+@click.option(
+    "--keep-images/--no-keep-images",
+    default=False,
+    show_default=True,
+    help="Retain per-item SWE-bench instance images after generation for debugging",
+)
 @click.option("--name", default=None, help="Label for this run variant (flows into traces, predictions, and JSONL records)")
 @click.option("--trailing", default=None, help="Custom Spell trailing expression (overrides default '(!extend))")
 @click.option(
@@ -1375,6 +1381,7 @@ def run_swebench(
     pro_use_local_docker: bool,
     pro_block_network: bool,
     pro_redo: bool,
+    keep_images: bool,
     name: str | None = None,
     trailing: str | None = None,
     backend: str = "docker",
@@ -1461,6 +1468,7 @@ def run_swebench(
                     "depth": depth,
                     "web_search": web_search,
                     "trace": trace,
+                    "keep_images": keep_images,
                     "agent": spell_resolution.agent_file if spell_resolution else None,
                     "spell_mode": spell_resolution.spell_mode if spell_resolution else None,
                     "agent_source": spell_resolution.source if spell_resolution else None,
@@ -1569,6 +1577,7 @@ def run_swebench(
                     instance_image_tag=eval_instance_image_tag,
                     env_image_tag=eval_env_image_tag,
                     backend=backend,
+                    cleanup=not keep_images,
                 )
                 patch = resp.metadata.get("patch", "")
                 changed_files = resp.metadata.get("changed_files", [])

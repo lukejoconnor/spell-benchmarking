@@ -470,6 +470,64 @@ class WebSearchCliRegressionTest(unittest.TestCase):
         self.assertEqual(events[1][0], "run")
         self.assertIn("Pro eval repo ready", result.output)
 
+    def test_swebench_keep_images_disables_container_cleanup(self):
+        lite_item = SimpleNamespace(
+            instance_id="django__django-1",
+            repo="django/django",
+            base_commit="abc123",
+            problem_statement="Fix it",
+            hints_text="",
+            metadata={},
+            raw_instance={},
+        )
+        cleanup_values = []
+
+        def fake_run_unified_swebench(**kwargs):
+            cleanup_values.append(kwargs["cleanup"])
+            return self.bench.RunResponse(
+                status="ok",
+                response_text="done",
+                tokens_in=None,
+                tokens_out=None,
+                cost_usd=None,
+                latency_ms=None,
+                error_message=None,
+                error_type=None,
+                metadata={
+                    "docker": True,
+                    "patch": "",
+                    "changed_files": [],
+                },
+            )
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.object(self.bench, "load_swebench_lite", return_value=[lite_item]), \
+             patch.object(self.bench, "run_unified_swebench", side_effect=fake_run_unified_swebench), \
+             patch.object(self.bench, "append_jsonl"), \
+             patch.object(self.bench, "_print_summary"), \
+             patch.object(self.bench, "write_predictions_jsonl"), \
+             patch.object(self.bench, "_resolve_trace_dir", return_value=None):
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "swebench",
+                    "--dataset",
+                    "lite",
+                    "--condition",
+                    "codex",
+                    "--codex-model",
+                    "codex",
+                    "--n",
+                    "1",
+                    "--keep-images",
+                    "--output",
+                    str(Path(tmp_dir) / "out.jsonl"),
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(cleanup_values, [False])
+
     def test_software_benchmark_help_omits_legacy_container_flags(self):
         swebench_help = self.runner.invoke(self.bench.cli, ["swebench", "--help"])
         featurebench_help = self.runner.invoke(self.bench.cli, ["featurebench", "--help"])
@@ -483,6 +541,7 @@ class WebSearchCliRegressionTest(unittest.TestCase):
         self.assertNotIn("--workspace-root", swebench_help.output)
         self.assertNotIn("--keep-workspaces", swebench_help.output)
         self.assertIn("--clean-eval / --no-clean-eval", swebench_help.output)
+        self.assertIn("--keep-images / --no-keep-images", swebench_help.output)
         self.assertNotIn("--unified", featurebench_help.output)
         self.assertNotIn("--unified", exercism_help.output)
 

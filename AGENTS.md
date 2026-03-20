@@ -304,6 +304,8 @@ Results go to `data/exercism-results/` (timestamped directories) and `notebook/e
 
 **SWE-bench Docker socket on Colima:** evaluation uses Docker SDK (`docker.from_env`), which depends on `DOCKER_HOST` instead of Docker CLI context. `bench.py` now auto-falls back to `unix://~/.colima/default/docker.sock` when `DOCKER_HOST` is unset and `/var/run/docker.sock` is missing.
 
+**SWE-bench disk cleanup:** generation now removes the per-item `sweb.eval.*` image and stopped container automatically after each run. Shared `sweb.env.*` images remain cached. Pass `--keep-images` when you need to inspect a specific instance image after generation.
+
 **SWE-bench ARM reality check:** x86_64 eval images can run on Apple Silicon via emulation but are slower and may be less stable on heavy builds. Prefer small pilots first, then scale with caching.
 
 **(stored ...) problem:** Values too large to inline in the completion become opaque `(stored ...)` refs that the LLM can't read back. Affects ~15% of LongBench items. See `longbench-regression-v2`.

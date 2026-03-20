@@ -147,12 +147,14 @@ class SWEBenchContainer:
         dockerhub_username: str = "jefzda",
         instance_image_tag: str = "latest",
         env_image_tag: str = "latest",
+        cleanup: bool = True,
     ):
         self.item = item
         self.pro_eval_repo = pro_eval_repo
         self.dockerhub_username = dockerhub_username
         self.instance_image_tag = instance_image_tag
         self.env_image_tag = env_image_tag
+        self.cleanup = cleanup
 
         self.container_workdir = PRO_WORKDIR if self.is_pro else DOCKER_WORKDIR
         self.container_id: str | None = None
@@ -162,6 +164,7 @@ class SWEBenchContainer:
         self._container_obj: Any | None = None
         self._logger: Any | None = None
         self._test_spec: TestSpec | None = None
+        self._image_name: str | None = None
 
     @property
     def is_pro(self) -> bool:
@@ -212,15 +215,14 @@ class SWEBenchContainer:
             self._logger = None
             raise
 
+        self._image_name = self._test_spec.instance_image_key
         self._container_obj = container
         self.container_id = container.id
 
     def _start_pro_container(self) -> None:
-        image_uri = dockerhub_image_for_instance(
-            {self.item.instance_id: self.item.raw_instance},
-            self.item.instance_id,
-            dockerhub_username=self.dockerhub_username,
-        )
+        image_uri = self._resolve_image_name()
+        if image_uri is None:
+            raise RuntimeError(f"Could not resolve Docker image for {self.item.instance_id}")
 
         pull = subprocess.run(
             ["docker", "pull", "--platform", "linux/amd64", image_uri],
@@ -255,6 +257,17 @@ class SWEBenchContainer:
             raise RuntimeError(f"Docker run failed: {run.stderr.strip()}")
 
         self.container_id = run.stdout.strip()
+
+    def _resolve_image_name(self) -> str | None:
+        if self.is_pro:
+            return dockerhub_image_for_instance(
+                {self.item.instance_id: self.item.raw_instance},
+                self.item.instance_id,
+                dockerhub_username=self.dockerhub_username,
+            )
+        if self._test_spec is None:
+            return None
+        return self._test_spec.instance_image_key
 
     def exec_run(
         self,
@@ -501,13 +514,29 @@ class SWEBenchContainer:
         )
 
     def stop(self) -> None:
-        if self.container_id:
+        container_id = self.container_id
+        if container_id:
             subprocess.run(
-                ["docker", "stop", self.container_id],
+                ["docker", "stop", container_id],
                 capture_output=True,
                 text=True,
                 timeout=30,
             )
+            try:
+                remove = subprocess.run(
+                    ["docker", "rm", container_id],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if remove.returncode != 0:
+                    logger.debug(
+                        "docker rm skipped for %s: %s",
+                        container_id,
+                        remove.stderr.strip(),
+                    )
+            except Exception:
+                logger.debug("docker rm failed for %s", container_id, exc_info=True)
         self.container_id = None
         self.initial_commit = None
         self._container_obj = None
@@ -515,9 +544,52 @@ class SWEBenchContainer:
             close_logger(self._logger)
             self._logger = None
 
+    def cleanup_image(self) -> None:
+        image_name = self._image_name
+        if image_name is None:
+            try:
+                image_name = self._resolve_image_name()
+            except Exception:
+                logger.warning(
+                    "Failed to resolve SWE-bench instance image during cleanup: %s",
+                    self.item.instance_id,
+                    exc_info=True,
+                )
+                image_name = None
+        if image_name is None:
+            return
+
+        try:
+            result = subprocess.run(
+                ["docker", "rmi", image_name],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                logger.info("Removed SWE-bench instance image %s", image_name)
+            else:
+                logger.warning(
+                    "Failed to remove SWE-bench instance image %s: %s",
+                    image_name,
+                    result.stderr.strip(),
+                )
+        except Exception:
+            logger.warning(
+                "Error removing SWE-bench instance image %s",
+                image_name,
+                exc_info=True,
+            )
+        finally:
+            self._image_name = None
+
     def __enter__(self):
         self.start()
         return self
 
     def __exit__(self, *_args):
-        self.stop()
+        try:
+            self.stop()
+        finally:
+            if self.cleanup:
+                self.cleanup_image()

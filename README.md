@@ -68,7 +68,7 @@ uv run python benchmarking/bench.py general [OPTIONS]
 
 ### `swebench` — Bug Fixing in Real Repositories
 
-Runs the agent inside the official SWE-bench instance image, captures the resulting patch, and records a same-container evaluation result. Use `--clean-eval` when you also want a fresh official evaluation rerun after generation.
+ Runs the agent inside the official SWE-bench instance image, captures the resulting patch, and records a same-container evaluation result. Per-item `sweb.eval.*` images and stopped containers are cleaned up automatically after generation, while shared `sweb.env.*` images stay cached. Use `--keep-images` if you want to retain a specific instance image for debugging, or `--clean-eval` when you also want a fresh official evaluation rerun after generation.
 
 ```bash
 uv run python benchmarking/bench.py swebench [OPTIONS]
@@ -91,6 +91,7 @@ uv run python benchmarking/bench.py swebench [OPTIONS]
 | `--max-tokens` | unlimited | Max output tokens per LLM call |
 | `--timeout` | 1800 | Per-item timeout in seconds (30 min) |
 | `--reasoning-effort` | `high` | `low`, `medium`, or `high` |
+| `--keep-images / --no-keep-images` | off | Keep per-item SWE-bench instance images after generation |
 | `--clean-eval / --no-clean-eval` | off | Re-run patches in a fresh official eval container after generation |
 | `--eval-max-workers` | 4 | Max concurrent evaluation workers |
 | `--eval-final-cache-level` | `base` | Cache level used on final condition only |

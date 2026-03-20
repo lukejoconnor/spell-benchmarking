@@ -42,6 +42,7 @@ def run_unified_swebench(
     instance_image_tag: str = "latest",
     env_image_tag: str = "latest",
     backend: str = "docker",
+    cleanup: bool = True,
 ) -> RunResponse:
     eval_log_path: str | None = None
     if backend == "singularity":
@@ -57,6 +58,7 @@ def run_unified_swebench(
             dockerhub_username=pro_dockerhub_username,
             instance_image_tag=instance_image_tag,
             env_image_tag=env_image_tag,
+            cleanup=cleanup,
         )
     with ContainerClass(item, **container_kwargs) as container:
         result = run_agent_in_container(

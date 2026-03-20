@@ -164,8 +164,10 @@ class UnifiedSWEBenchRunnerTest(unittest.TestCase):
                 instance_id="instance-1",
                 raw_instance={},
             ),
+            cleanup=False,
         )
 
+        self.assertFalse(container_cls.call_args.kwargs["cleanup"])
         self.assertEqual(run_agent_mock.call_args.kwargs["trace_dir"], Path("/tmp/host-traces"))
         container.diff.assert_called_once_with("base-sha")
         container.changed_files.assert_called_once_with("base-sha")
