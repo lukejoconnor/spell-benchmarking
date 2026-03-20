@@ -103,7 +103,7 @@ class SingularitySWEBenchContainer:
     def start(self) -> str:
         self._test_spec = make_test_spec(
             self.item.raw_instance,
-            namespace=None,
+            namespace="swebench",
             env_image_tag=self.env_image_tag,
             instance_image_tag=self.instance_image_tag,
             arch="x86_64",
