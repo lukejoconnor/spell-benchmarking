@@ -89,6 +89,13 @@ class TraceDirRoutingTest(unittest.TestCase):
         self.assertEqual(bench._swebench_prompt_workspace(pro_item), Path("/app"))
         self.assertEqual(bench._swebench_prompt_workspace(standard_item), Path("/testbed"))
 
+    def test_parse_swebench_conditions_all_includes_swe_agent(self):
+        self.assertEqual(
+            bench._parse_swebench_conditions("all"),
+            ["spell", "claude_code", "codex", "swe_agent"],
+        )
+        self.assertEqual(bench._parse_swebench_conditions("both"), ["spell", "claude_code"])
+
 
 if __name__ == "__main__":
     unittest.main()

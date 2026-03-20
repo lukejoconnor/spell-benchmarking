@@ -1,6 +1,6 @@
 # Spell Benchmarking
 
-Benchmark infrastructure for evaluating Spell against one-shot LLM calls, Claude Code, and Codex CLI across math, long-context, and coding tasks.
+Benchmark infrastructure for evaluating Spell against one-shot LLM calls, Claude Code, Codex CLI, and mini-swe-agent across math, long-context, and coding tasks.
 
 All commands run from the repository root using `uv run`.
 
@@ -40,10 +40,11 @@ uv run python benchmarking/bench.py general [OPTIONS]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--dataset` | `longbench_short` | Dataset to run (see [Datasets](#datasets)) |
-| `--condition` | `one_shot` | `one_shot`, `spell`, `claude_code`, `codex`, or `all` |
+| `--condition` | `one_shot` | `one_shot`, `spell`, `claude_code`, `codex`, `swe_agent`, or `all` |
 | `--model` | *(none, required)* | `provider:model` spec for one_shot/spell (see [Model Specs](#model-specs)) |
 | `--claude-model` | *(none, required)* | Model name for Claude Code condition |
 | `--codex-model` | `codex` | Model name for Codex CLI condition |
+| `--swe-agent-model` | *(none, required)* | LiteLLM model name for mini-swe-agent condition |
 | `--n` | all | Limit to first N items |
 | `--items` | — | Comma-separated item IDs to run |
 | `--parallel` | 5 | Max concurrent runs |
@@ -76,10 +77,11 @@ uv run python benchmarking/bench.py swebench [OPTIONS]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--dataset` | `mini` | `mini` (50), `lite` (300), `verified` (500), or `pro` (~250) |
-| `--condition` | `all` | `spell`, `claude_code`, `codex`, `both`, or `all` |
+| `--condition` | `all` | `spell`, `claude_code`, `codex`, `swe_agent`, `both`, or `all` |
 | `--model` | *(none, required)* | `provider:model` spec for Spell |
 | `--claude-model` | *(none, required)* | Model name for Claude Code |
 | `--codex-model` | `codex` | Model for Codex CLI |
+| `--swe-agent-model` | *(none, required)* | LiteLLM model for mini-swe-agent |
 | `--n` | all | Limit to first N items |
 | `--items` | — | Comma-separated SWE-bench instance IDs to run |
 | `--seed` | — | Random seed for sampling when using `--n` |
@@ -122,7 +124,7 @@ uv run python benchmarking/bench.py swebench-eval [OPTIONS]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--dataset` | `mini` | `mini`, `lite`, `verified`, or `pro` |
-| `--condition` | `all` | `spell`, `claude_code`, `codex`, `both`, or `all` |
+| `--condition` | `all` | `spell`, `claude_code`, `codex`, `swe_agent`, `both`, or `all` |
 | `--run-id` | *(required)* | Run ID produced by `bench.py swebench` |
 | `--predictions-dir` | `results/swebench` | Directory containing `<condition>_<dataset>_<run-id>.jsonl` |
 | `--namespace` | `none` | Harness namespace (`none` builds/uses local images) |
@@ -144,12 +146,13 @@ uv run python benchmarking/bench.py featurebench [OPTIONS]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--condition` | `claude_code` | `spell`, `claude_code`, `codex`, `both`, or `all` |
+| `--condition` | `claude_code` | `spell`, `claude_code`, `codex`, `swe_agent`, `both`, or `all` |
 | `--split` | `lite` | Task split |
 | `--task-ids` | all | Specific task indices (repeatable) |
 | `--model` | *(none, required)* | `provider:model` spec for Spell |
 | `--claude-model` | *(none, required)* | Model name for Claude Code |
 | `--codex-model` | `codex` | Model for Codex CLI |
+| `--swe-agent-model` | *(none, required)* | LiteLLM model for mini-swe-agent |
 | `--parallel` | 1 | Max concurrent runs |
 | `--budget` | 10.0 | Spell budget in USD |
 | `--depth` | 50 | Max LLM recursion depth |
@@ -230,6 +233,7 @@ Selected via `--split` and `--task-ids`. Tasks are loaded from the FeatureBench 
 | `spell` | Spell agent with self-orchestration | `--model` |
 | `claude_code` | Claude Code CLI (`claude -p`) | `--claude-model` |
 | `codex` | Codex CLI (`codex exec`) | `--codex-model` (default: `codex`) |
+| `swe_agent` | mini-swe-agent CLI (`mini`) | `--swe-agent-model` |
 | `all` | Run all conditions | all of the above |
 
 ## One-Off Files
@@ -275,7 +279,9 @@ bench.py (Python CLI)
     │
     ├── ClaudeCodeAdapter ──→ claude CLI (subprocess)
     │
-    └── CodexAdapter ──→ codex CLI (subprocess)
+    ├── CodexAdapter ──→ codex CLI (subprocess)
+    │
+    └── SweAgentAdapter ──→ mini CLI (subprocess)
 ```
 
 ### Spell Adapter Flow
@@ -398,7 +404,7 @@ benchmarking/
 ├── bench.py                  # Unified CLI (general / swebench / featurebench / summarize)
 ├── src/
 │   ├── datasets.py           # Dataset loading (HuggingFace, local)
-│   ├── unified_adapters.py   # Spell / OneShot / ClaudeCode / Codex adapters
+│   ├── unified_adapters.py   # Spell / OneShot / ClaudeCode / Codex / SweAgent adapters
 │   ├── unified_results.py    # JSONL schema, summarization
 │   ├── evaluation.py         # Scoring (exact match, math equivalence, regex extraction)
 │   ├── agent_policy.py       # Agent selection from model/provider transport

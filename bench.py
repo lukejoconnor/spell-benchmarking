@@ -67,6 +67,7 @@ from src.unified_adapters import (
     OneShotAdapter,
     ClaudeCodeAdapter,
     CodexAdapter,
+    SweAgentAdapter,
     RunRequest,
     RunResponse,
     SpellAdapter,
@@ -208,7 +209,7 @@ def _parse_swebench_conditions(value: str) -> list[str]:
     if value == "both":
         return ["spell", "claude_code"]
     if value == "all":
-        return ["spell", "claude_code", "codex"]
+        return ["spell", "claude_code", "codex", "swe_agent"]
     return [value]
 
 
@@ -558,7 +559,32 @@ def _require_model(condition: str, model: str | None, flag_name: str = "--model"
     return model
 
 
-def _build_adapter(condition: str, *, model: str | None, claude_model: str | None, codex_model: str, budget: float):
+def _condition_model_spec(
+    condition: str,
+    *,
+    model: str | None,
+    claude_model: str | None,
+    codex_model: str,
+    swe_agent_model: str | None,
+) -> str | None:
+    return {
+        "spell": model,
+        "one_shot": model,
+        "claude_code": claude_model,
+        "codex": codex_model,
+        "swe_agent": swe_agent_model,
+    }.get(condition)
+
+
+def _build_adapter(
+    condition: str,
+    *,
+    model: str | None,
+    claude_model: str | None,
+    codex_model: str,
+    swe_agent_model: str | None,
+    budget: float,
+):
     if condition == "spell":
         return SpellAdapter(project_root=SPELL_ROOT, model_spec=_require_model(condition, model))
     if condition == "one_shot":
@@ -567,6 +593,8 @@ def _build_adapter(condition: str, *, model: str | None, claude_model: str | Non
         return ClaudeCodeAdapter(model=_require_model(condition, claude_model, "--claude-model"), budget=budget)
     if condition == "codex":
         return CodexAdapter(project_root=SPELL_ROOT, model_spec=codex_model)
+    if condition == "swe_agent":
+        return SweAgentAdapter(model=_require_model(condition, swe_agent_model, "--swe-agent-model"), budget=budget)
     raise ValueError(f"Unknown condition: {condition}")
 
 
@@ -927,10 +955,11 @@ def cli() -> None:
 
 @cli.command("general")
 @click.option("--dataset", default="longbench_short", type=click.Choice(list(DATASETS.keys()) + ["all"]))
-@click.option("--condition", default="one_shot", type=click.Choice(["one_shot", "spell", "claude_code", "codex", "all"]))
+@click.option("--condition", default="one_shot", type=click.Choice(["one_shot", "spell", "claude_code", "codex", "swe_agent", "all"]))
 @click.option("--model", default=None, help="provider:model for one_shot/spell (required for those conditions)")
 @click.option("--claude-model", default=None, help="Model for Claude Code comparator (required for claude_code condition)")
 @click.option("--codex-model", default="codex", help="Model for Codex harness comparator")
+@click.option("--swe-agent-model", default=None, help="LiteLLM model for mini-swe-agent comparator")
 @click.option("--n", type=int, default=None)
 @click.option("--items", default=None, help="Comma-separated item ids")
 @click.option("--parallel", type=int, default=5, show_default=True)
@@ -964,6 +993,7 @@ def run_general(
     model: str | None,
     claude_model: str | None,
     codex_model: str,
+    swe_agent_model: str | None,
     n: int | None,
     items: str | None,
     parallel: int,
@@ -992,7 +1022,7 @@ def run_general(
     output_file = Path(output) if output else _default_output(run_id)
     if timeout is None:
         timeout = _DATASET_TIMEOUTS.get(dataset, _DEFAULT_TIMEOUT)
-    conditions = _parse_conditions(condition, ("one_shot", "spell", "claude_code", "codex", "all"))
+    conditions = _parse_conditions(condition, ("one_shot", "spell", "claude_code", "codex", "swe_agent", "all"))
 
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
@@ -1071,6 +1101,7 @@ def run_general(
                     "model": model,
                     "claude_model": claude_model,
                     "codex_model": codex_model,
+                    "swe_agent_model": swe_agent_model,
                     "parallel": parallel,
                     "budget": budget,
                     "name": name,
@@ -1097,7 +1128,14 @@ def run_general(
 
     for cond in conditions:
         click.echo(f"\n--- Running {cond} ---")
-        adapter = _build_adapter(cond, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget)
+        adapter = _build_adapter(
+            cond,
+            model=model,
+            claude_model=claude_model,
+            codex_model=codex_model,
+            swe_agent_model=swe_agent_model,
+            budget=budget,
+        )
         spell_resolution = None
         if cond == "spell":
             spell_resolution = _resolve_spell_agent_or_die(
@@ -1124,7 +1162,13 @@ def run_general(
                     item_id=item.id,
                     condition=cond,
                     prompt=prompt,
-                    model_spec={"spell": model, "one_shot": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
+                    model_spec=_condition_model_spec(
+                        cond,
+                        model=model,
+                        claude_model=claude_model,
+                        codex_model=codex_model,
+                        swe_agent_model=swe_agent_model,
+                    ),
                     timeout=timeout,
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
                     budget=budget,
@@ -1138,11 +1182,7 @@ def run_general(
                     web_search=condition_web_search,
                     trace=trace,
                     init=_make_spell_init(prompt, trailing if trailing is not None else _general_spell_trailing(item.dataset)) if cond == "spell" else None,
-                    trace_dir=(
-                        _trace_dir_for_request(trace_dir, cond, item.id, name=name)
-                        if cond == "spell"
-                        else _trace_dir_for_condition(trace_dir, cond, name=name)
-                    ),
+                    trace_dir=_trace_dir_for_request(trace_dir, cond, item.id, name=name),
                     metadata={"add_dir": CONTEXT_DIR},
                 )
             )
@@ -1196,10 +1236,11 @@ def run_general(
 
 @cli.command("swebench")
 @click.option("--dataset", default="mini", type=click.Choice(["mini", "lite", "verified", "pro"]))
-@click.option("--condition", default="all", type=click.Choice(["spell", "claude_code", "codex", "both", "all"]))
+@click.option("--condition", default="all", type=click.Choice(["spell", "claude_code", "codex", "swe_agent", "both", "all"]))
 @click.option("--model", default=None, help="provider:model for Spell (required for spell condition)")
 @click.option("--claude-model", default=None, help="Model for Claude Code comparator (required for claude_code condition)")
 @click.option("--codex-model", default="codex")
+@click.option("--swe-agent-model", default=None, help="LiteLLM model for mini-swe-agent comparator")
 @click.option("--n", type=int, default=None)
 @click.option("--items", "item_ids", default=None, help="Comma-separated SWE-bench instance IDs to run")
 @click.option("--seed", type=int, default=None, help="Random seed for sampling --n items")
@@ -1293,6 +1334,7 @@ def run_swebench(
     model: str | None,
     claude_model: str | None,
     codex_model: str,
+    swe_agent_model: str | None,
     n: int | None,
     item_ids: str | None,
     seed: int | None,
@@ -1405,6 +1447,7 @@ def run_swebench(
                     "model": model,
                     "claude_model": claude_model,
                     "codex_model": codex_model,
+                    "swe_agent_model": swe_agent_model,
                     "items": sorted(requested_ids) if requested_ids else None,
                     "budget": budget,
                     "depth": depth,
@@ -1479,7 +1522,13 @@ def run_swebench(
                     item_id=item.instance_id,
                     condition=cond,
                     prompt=prompt,
-                    model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
+                    model_spec=_condition_model_spec(
+                        cond,
+                        model=model,
+                        claude_model=claude_model,
+                        codex_model=codex_model,
+                        swe_agent_model=swe_agent_model,
+                    ),
                     timeout=timeout,
                     init=(_make_spell_init(prompt, trailing) if cond == "spell" else None),
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
@@ -1573,7 +1622,13 @@ def run_swebench(
                     item_id=item.instance_id,
                     condition=cond,
                     name=name,
-                    model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
+                    model_spec=_condition_model_spec(
+                        cond,
+                        model=model,
+                        claude_model=claude_model,
+                        codex_model=codex_model,
+                        swe_agent_model=swe_agent_model,
+                    ),
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
                     response=RunResponse(
                         status="error",
@@ -1634,6 +1689,7 @@ def run_swebench(
             "spell": model or "unknown",
             "claude_code": f"claude_code:{claude_model or 'unknown'}",
             "codex": codex_model,
+            "swe_agent": f"swe_agent:{swe_agent_model or 'unknown'}",
         }[cond]
         write_predictions_jsonl(swe_results, pred_path, model_name=pred_model_name)
         click.echo(f"Predictions: {pred_path}")
@@ -1686,7 +1742,7 @@ def run_swebench(
 
 @cli.command("swebench-eval")
 @click.option("--dataset", default="mini", type=click.Choice(["mini", "lite", "verified", "pro"]))
-@click.option("--condition", default="all", type=click.Choice(["spell", "claude_code", "codex", "both", "all"]))
+@click.option("--condition", default="all", type=click.Choice(["spell", "claude_code", "codex", "swe_agent", "both", "all"]))
 @click.option("--run-id", required=True, help="Run ID used in results/swebench/<condition>[_<name>]_<dataset>_<run-id>.jsonl")
 @click.option("--name", default=None, help="Optional run label used in predictions filenames")
 @click.option("--predictions-dir", default="results/swebench", show_default=True)
@@ -1828,12 +1884,13 @@ def run_swebench_eval(
 
 
 @cli.command("featurebench")
-@click.option("--condition", default="claude_code", type=click.Choice(["spell", "claude_code", "codex", "both", "all"]))
+@click.option("--condition", default="claude_code", type=click.Choice(["spell", "claude_code", "codex", "swe_agent", "both", "all"]))
 @click.option("--split", default="lite")
 @click.option("--task-ids", type=int, multiple=True)
 @click.option("--model", default=None, help="provider:model for Spell (required for spell condition)")
 @click.option("--claude-model", default=None, help="Model for Claude Code comparator (required for claude_code condition)")
 @click.option("--codex-model", default="codex")
+@click.option("--swe-agent-model", default=None, help="LiteLLM model for mini-swe-agent comparator")
 @click.option("--parallel", type=int, default=1, show_default=True)
 @click.option("--budget", type=float, default=10.0, show_default=True)
 @click.option("--agent", default=None)
@@ -1859,6 +1916,7 @@ def run_featurebench(
     model: str | None,
     claude_model: str | None,
     codex_model: str,
+    swe_agent_model: str | None,
     parallel: int,
     budget: float,
     agent: str | None,
@@ -1886,7 +1944,7 @@ def run_featurebench(
     if condition == "both":
         conditions = ["spell", "claude_code"]
     elif condition == "all":
-        conditions = ["spell", "claude_code", "codex"]
+        conditions = ["spell", "claude_code", "codex", "swe_agent"]
     else:
         conditions = [condition]
 
@@ -1935,7 +1993,13 @@ def run_featurebench(
                     item_id=item["instance_id"],
                     condition=cond,
                     prompt=prompt,
-                    model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
+                    model_spec=_condition_model_spec(
+                        cond,
+                        model=model,
+                        claude_model=claude_model,
+                        codex_model=codex_model,
+                        swe_agent_model=swe_agent_model,
+                    ),
                     timeout=timeout,
                     init=_make_spell_init(prompt, trailing) if cond == "spell" else None,
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
@@ -1945,11 +2009,7 @@ def run_featurebench(
                     reasoning_effort=reasoning_effort,
                     web_search=web_search if cond == "codex" else False,
                     trace=trace,
-                    trace_dir=(
-                        _trace_dir_for_request(trace_dir, cond, item["instance_id"], name=name)
-                        if cond == "spell"
-                        else _trace_dir_for_condition(trace_dir, cond, name=name)
-                    ),
+                    trace_dir=_trace_dir_for_request(trace_dir, cond, item["instance_id"], name=name),
                     workspace=wt.path,
                 )
                 test_results = []
@@ -2152,13 +2212,14 @@ def _validate_python_syntax(code: str) -> tuple[bool, str | None]:
 
 
 @cli.command("scienceagentbench")
-@click.option("--condition", default="claude_code", type=click.Choice(["spell", "claude_code", "codex", "both", "all"]))
+@click.option("--condition", default="claude_code", type=click.Choice(["spell", "claude_code", "codex", "swe_agent", "both", "all"]))
 @click.option("--n", type=int, default=None, help="Limit to N items")
 @click.option("--instance-ids", default=None, help="Comma-separated instance IDs")
 @click.option("--domain", default=None, help="Filter by domain (partial match)")
 @click.option("--model", default=None, help="provider:model for Spell (required for spell condition)")
 @click.option("--claude-model", default=None, help="Model for Claude Code comparator")
 @click.option("--codex-model", default="codex")
+@click.option("--swe-agent-model", default=None, help="LiteLLM model for mini-swe-agent comparator")
 @click.option("--parallel", type=int, default=1, show_default=True)
 @click.option("--budget", type=float, default=5.0, show_default=True)
 @click.option("--agent", default=None)
@@ -2183,6 +2244,7 @@ def run_scienceagentbench(
     model: str | None,
     claude_model: str | None,
     codex_model: str,
+    swe_agent_model: str | None,
     parallel: int,
     budget: float,
     agent: str | None,
@@ -2212,7 +2274,7 @@ def run_scienceagentbench(
     if condition == "both":
         conditions = ["spell", "claude_code"]
     elif condition == "all":
-        conditions = ["spell", "claude_code", "codex"]
+        conditions = ["spell", "claude_code", "codex", "swe_agent"]
     else:
         conditions = [condition]
 
@@ -2271,7 +2333,14 @@ def run_scienceagentbench(
 
     for cond in conditions:
         click.echo(f"\n--- Running {cond} ---")
-        adapter = _build_adapter(cond, model=model, claude_model=claude_model, codex_model=codex_model, budget=budget)
+        adapter = _build_adapter(
+            cond,
+            model=model,
+            claude_model=claude_model,
+            codex_model=codex_model,
+            swe_agent_model=swe_agent_model,
+            budget=budget,
+        )
         spell_resolution = None
         if cond == "spell":
             spell_resolution = _resolve_spell_agent_or_die(
@@ -2298,7 +2367,13 @@ def run_scienceagentbench(
                     item_id=item.instance_id,
                     condition=cond,
                     prompt=prompt,
-                    model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
+                    model_spec=_condition_model_spec(
+                        cond,
+                        model=model,
+                        claude_model=claude_model,
+                        codex_model=codex_model,
+                        swe_agent_model=swe_agent_model,
+                    ),
                     timeout=timeout,
                     init=(_make_spell_init(prompt, trailing) if cond == "spell" else None),
                     agent_file=spell_resolution.agent_file if spell_resolution else None,
@@ -2527,13 +2602,14 @@ def _run_exercism_pytest(test_path: Path, timeout: int = EXERCISM_PYTEST_TIMEOUT
 
 
 @cli.command("exercism")
-@click.option("--condition", default="spell", type=click.Choice(["one_shot", "spell", "claude_code", "codex", "all"]))
+@click.option("--condition", default="spell", type=click.Choice(["one_shot", "spell", "claude_code", "codex", "swe_agent", "all"]))
 @click.option("--difficulty", default=None, help="Difficulty range, e.g. '1-3' or '5'")
 @click.option("--slugs", default=None, help="Comma-separated exercise slugs")
 @click.option("--n", type=int, default=None, help="Limit to N exercises")
 @click.option("--model", default=None, help="provider:model for one_shot/spell (required for those conditions)")
 @click.option("--claude-model", default=None, help="Model for Claude Code comparator (required for claude_code condition)")
 @click.option("--codex-model", default="codex", help="Model for Codex harness comparator")
+@click.option("--swe-agent-model", default=None, help="LiteLLM model for mini-swe-agent comparator")
 @click.option("--parallel", type=int, default=1, show_default=True)
 @click.option("--budget", type=float, default=2.0, show_default=True)
 @click.option("--agent", default=None, help="Spell agent override")
@@ -2559,6 +2635,7 @@ def run_exercism(
     model: str | None,
     claude_model: str | None,
     codex_model: str,
+    swe_agent_model: str | None,
     parallel: int,
     budget: float,
     agent: str | None,
@@ -2582,7 +2659,7 @@ def run_exercism(
         timeout = _DATASET_TIMEOUTS.get("exercism", _DEFAULT_TIMEOUT)
     run_id = run_id or _run_id("exercism")
     output_file = Path(output) if output else _default_output(run_id)
-    conditions = _parse_conditions(condition, ("one_shot", "spell", "claude_code", "codex", "all"))
+    conditions = _parse_conditions(condition, ("one_shot", "spell", "claude_code", "codex", "swe_agent", "all"))
 
     # Parse difficulty
     diff_min, diff_max = None, None
@@ -2627,6 +2704,7 @@ def run_exercism(
                     "model": model,
                     "claude_model": claude_model,
                     "codex_model": codex_model,
+                    "swe_agent_model": swe_agent_model,
                     "budget": budget,
                     "depth": depth,
                     "no_retry": no_retry,
@@ -2654,6 +2732,7 @@ def run_exercism(
             model=model,
             claude_model=claude_model,
             codex_model=codex_model,
+            swe_agent_model=swe_agent_model,
             budget=budget,
         ) if cond == "one_shot" else None
         spell_resolution = None
@@ -2679,7 +2758,13 @@ def run_exercism(
                         condition=cond,
                         item=item,
                         workspace=ws,
-                        model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
+                        model_spec=_condition_model_spec(
+                            cond,
+                            model=model,
+                            claude_model=claude_model,
+                            codex_model=codex_model,
+                            swe_agent_model=swe_agent_model,
+                        ),
                         timeout=timeout,
                         init=_make_spell_init(format_unified_exercism_prompt(item), trailing) if cond == "spell" else None,
                         agent_file=spell_resolution.agent_file if (spell_resolution and cond == "spell") else None,
@@ -2688,8 +2773,8 @@ def run_exercism(
                         max_tokens=max_tokens,
                         reasoning_effort=reasoning_effort,
                         web_search=web_search if cond == "codex" else False,
-                        trace=trace if cond == "spell" else False,
-                        trace_dir=(_trace_dir_for_request(trace_dir, cond, item.slug, name=name) if (cond == "spell" and trace_dir is not None) else None),
+                        trace=trace,
+                        trace_dir=_trace_dir_for_request(trace_dir, cond, item.slug, name=name, attempt=1),
                         no_retry=no_retry,
                     )
                     last_resp = outcome.response
@@ -2704,7 +2789,13 @@ def run_exercism(
                         item_id=item.slug,
                         condition=cond,
                         name=name,
-                        model_spec={"spell": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
+                        model_spec=_condition_model_spec(
+                            cond,
+                            model=model,
+                            claude_model=claude_model,
+                            codex_model=codex_model,
+                            swe_agent_model=swe_agent_model,
+                        ),
                         agent_file=spell_resolution.agent_file if (spell_resolution and cond == "spell") else None,
                         response=RunResponse(
                             status=status,
@@ -2757,7 +2848,13 @@ def run_exercism(
                     item_id=item.slug,
                     condition=cond,
                     prompt=prompt,
-                    model_spec={"spell": model, "one_shot": model, "claude_code": claude_model, "codex": codex_model}.get(cond),
+                    model_spec=_condition_model_spec(
+                        cond,
+                        model=model,
+                        claude_model=claude_model,
+                        codex_model=codex_model,
+                        swe_agent_model=swe_agent_model,
+                    ),
                     timeout=timeout,
                     init=_make_spell_init(prompt, trailing) if cond == "spell" else None,
                     agent_file=spell_resolution.agent_file if (spell_resolution and cond == "spell") else None,
@@ -2766,8 +2863,8 @@ def run_exercism(
                     max_tokens=max_tokens,
                     reasoning_effort=reasoning_effort,
                     web_search=web_search if cond == "codex" else False,
-                    trace=trace if cond == "spell" else False,
-                    trace_dir=(_trace_dir_for_request(trace_dir, cond, item.slug, name=name, attempt=1) if (cond == "spell" and trace_dir is not None) else None),
+                    trace=trace,
+                    trace_dir=_trace_dir_for_request(trace_dir, cond, item.slug, name=name, attempt=1),
                     workspace=ws if cond != "one_shot" else None,
                 )
                 assert adapter is not None
@@ -2806,8 +2903,8 @@ def run_exercism(
                         max_tokens=max_tokens,
                         reasoning_effort=reasoning_effort,
                         web_search=web_search if cond == "codex" else False,
-                        trace=trace if cond == "spell" else False,
-                        trace_dir=(_trace_dir_for_request(trace_dir, cond, item.slug, name=name, attempt=2) if (cond == "spell" and trace_dir is not None) else None),
+                        trace=trace,
+                        trace_dir=_trace_dir_for_request(trace_dir, cond, item.slug, name=name, attempt=2),
                         workspace=ws if cond != "one_shot" else None,
                     )
                     resp2 = adapter.run(req2)

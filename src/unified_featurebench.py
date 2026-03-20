@@ -49,7 +49,7 @@ def run_unified_featurebench(
             reasoning_effort=reasoning_effort,
             web_search=web_search,
             trace=trace,
-            trace_dir=trace_dir if condition == "spell" else None,
+            trace_dir=trace_dir,
             init=init,
         )
 
