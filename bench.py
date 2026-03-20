@@ -1444,6 +1444,10 @@ def run_swebench(
             click.echo(f"First item: {items[0].instance_id}")
         return
 
+    if dataset == "pro":
+        ensure_scale_pro_eval_repo(pro_eval_repo)
+        click.echo(f"Pro eval repo ready: {pro_eval_repo}")
+
     trace_dir = _resolve_trace_dir(run_id, trace)
     if trace_dir:
         click.echo(f"Trace dir: {trace_dir}")

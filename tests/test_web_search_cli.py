@@ -384,6 +384,92 @@ class WebSearchCliRegressionTest(unittest.TestCase):
         self.assertIn('"dataset": "pro"', result.output)
         self.assertIn('"clean_eval": false', result.output)
 
+    def test_swebench_pro_dry_run_skips_eager_eval_repo_bootstrap(self):
+        pro_item = SimpleNamespace(instance_id="django__django-1")
+
+        with patch.object(self.bench, "load_swebench_pro", return_value=[pro_item]), \
+             patch.object(self.bench, "ensure_scale_pro_eval_repo") as mock_ensure:
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "swebench",
+                    "--dataset",
+                    "pro",
+                    "--condition",
+                    "codex",
+                    "--codex-model",
+                    "codex",
+                    "--dry-run",
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        mock_ensure.assert_not_called()
+
+    def test_swebench_pro_run_eagerly_bootstraps_eval_repo_before_generation(self):
+        pro_item = SimpleNamespace(
+            instance_id="django__django-1",
+            repo="django/django",
+            base_commit="abc123",
+            problem_statement="Fix it",
+            hints_text="",
+            metadata={},
+            raw_instance={"dockerhub_tag": "django.1"},
+        )
+        events = []
+
+        def fake_ensure(repo_path):
+            events.append(("ensure", repo_path))
+            return Path(repo_path)
+
+        def fake_run_unified_swebench(**_kwargs):
+            events.append(("run", None))
+            return self.bench.RunResponse(
+                status="ok",
+                response_text="done",
+                tokens_in=None,
+                tokens_out=None,
+                cost_usd=None,
+                latency_ms=None,
+                error_message=None,
+                error_type=None,
+                metadata={
+                    "docker": True,
+                    "patch": "",
+                    "changed_files": [],
+                },
+            )
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.object(self.bench, "load_swebench_pro", return_value=[pro_item]), \
+             patch.object(self.bench, "ensure_scale_pro_eval_repo", side_effect=fake_ensure), \
+             patch.object(self.bench, "run_unified_swebench", side_effect=fake_run_unified_swebench), \
+             patch.object(self.bench, "append_jsonl"), \
+             patch.object(self.bench, "_print_summary"), \
+             patch.object(self.bench, "write_predictions_jsonl"), \
+             patch.object(self.bench, "_resolve_trace_dir", return_value=None):
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "swebench",
+                    "--dataset",
+                    "pro",
+                    "--condition",
+                    "codex",
+                    "--codex-model",
+                    "codex",
+                    "--n",
+                    "1",
+                    "--output",
+                    str(Path(tmp_dir) / "out.jsonl"),
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(events[0], ("ensure", self.bench.SCALE_PRO_EVAL_REPO_DEFAULT))
+        self.assertEqual(events[1][0], "run")
+        self.assertIn("Pro eval repo ready", result.output)
+
     def test_software_benchmark_help_omits_legacy_container_flags(self):
         swebench_help = self.runner.invoke(self.bench.cli, ["swebench", "--help"])
         featurebench_help = self.runner.invoke(self.bench.cli, ["featurebench", "--help"])
