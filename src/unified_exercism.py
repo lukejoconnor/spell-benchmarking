@@ -100,9 +100,10 @@ def run_unified_exercism(
 ) -> UnifiedExercismOutcome:
     _ensure_git_repo(workspace)
 
-    total_tokens_in = 0
-    total_tokens_out = 0
+    total_tokens_in: int | None = 0
+    total_tokens_out: int | None = 0
     total_cost = 0.0
+    cost_known = False
     attempts = 0
     test_output = ""
     passed = False
@@ -128,10 +129,13 @@ def run_unified_exercism(
             init=init,
         )
 
-        total_tokens_in += first_result.usage.total_input_tokens if first_result.usage else 0
-        total_tokens_out += first_result.usage.output_tokens if first_result.usage else 0
+        first_tokens_in = first_result.usage.total_input_tokens if first_result.usage else None
+        total_tokens_in = total_tokens_in + first_tokens_in if total_tokens_in is not None and first_tokens_in is not None else None
+        first_tokens_out = first_result.usage.output_tokens if first_result.usage else None
+        total_tokens_out = total_tokens_out + first_tokens_out if total_tokens_out is not None and first_tokens_out is not None else None
         if first_result.usage and first_result.usage.cost_usd is not None:
             total_cost += first_result.usage.cost_usd
+            cost_known = True
 
         passed, test_output = _run_pytest(container, item)
         current_result = first_result
@@ -155,10 +159,13 @@ def run_unified_exercism(
                 trace_subdir="attempt-2" if trace_dir is not None else None,
                 init=None,
             )
-            total_tokens_in += retry_result.usage.total_input_tokens if retry_result.usage else 0
-            total_tokens_out += retry_result.usage.output_tokens if retry_result.usage else 0
+            retry_tokens_in = retry_result.usage.total_input_tokens if retry_result.usage else None
+            total_tokens_in = total_tokens_in + retry_tokens_in if total_tokens_in is not None and retry_tokens_in is not None else None
+            retry_tokens_out = retry_result.usage.output_tokens if retry_result.usage else None
+            total_tokens_out = total_tokens_out + retry_tokens_out if total_tokens_out is not None and retry_tokens_out is not None else None
             if retry_result.usage and retry_result.usage.cost_usd is not None:
                 total_cost += retry_result.usage.cost_usd
+                cost_known = True
             passed, test_output = _run_pytest(container, item)
             current_result = retry_result
 
@@ -169,9 +176,9 @@ def run_unified_exercism(
         last_response = RunResponse(
             status=status,
             response_text=current_result.response_text,
-            tokens_in=total_tokens_in or None,
-            tokens_out=total_tokens_out or None,
-            cost_usd=total_cost or None,
+            tokens_in=total_tokens_in,
+            tokens_out=total_tokens_out,
+            cost_usd=total_cost if cost_known else None,
             latency_ms=None,
             error_message=current_result.error_message,
             error_type=current_result.error_type,

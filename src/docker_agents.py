@@ -147,13 +147,15 @@ class ExecOutput:
 
 @dataclass(slots=True)
 class ParsedUsage:
-    input_tokens: int = 0
+    input_tokens: int | None = None
     cached_input_tokens: int = 0
-    output_tokens: int = 0
+    output_tokens: int | None = None
     cost_usd: float | None = None
 
     @property
-    def total_input_tokens(self) -> int:
+    def total_input_tokens(self) -> int | None:
+        if self.input_tokens is None:
+            return None
         return self.input_tokens + self.cached_input_tokens
 
 
@@ -817,26 +819,37 @@ def _extract_swe_agent_response(traj: dict[str, Any]) -> str:
 
 
 def _load_swe_agent_trajectory(container: DockerWorkspaceContainer, stdout: str) -> tuple[Path | None, dict[str, Any] | None]:
-    candidate_paths: list[str] = []
+    candidate_paths: dict[str, float | None] = {}
 
     for line in stdout.splitlines():
         match = re.search(r"([^\s'\"`]+\.traj\.json)", line)
         if match:
-            candidate_paths.append(match.group(1))
+            candidate_paths.setdefault(match.group(1), None)
 
     find_result = container.exec_run(
-        f"find {shlex.quote(container.container_workdir)} -type f -name '*.traj.json' -print",
+        f"find {shlex.quote(container.container_workdir)} -type f -name '*.traj.json' -printf '%T@\\t%p\\n'",
         timeout=60,
         workdir="/",
     )
     if find_result.exit_code == 0:
-        candidate_paths.extend([line.strip() for line in find_result.stdout.splitlines() if line.strip()])
+        for line in find_result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            mtime_str, sep, path_str = line.partition("\t")
+            if not sep or not path_str:
+                continue
+            try:
+                candidate_paths[path_str] = float(mtime_str)
+            except ValueError:
+                candidate_paths.setdefault(path_str, None)
 
-    seen: set[str] = set()
-    for path_str in candidate_paths:
-        if path_str in seen:
-            continue
-        seen.add(path_str)
+    ordered_candidates = sorted(
+        candidate_paths.items(),
+        key=lambda item: (item[1] is None, -(item[1] or 0.0), item[0]),
+    )
+
+    for path_str, _mtime in ordered_candidates:
         raw = container.read_text(path_str)
         if not raw.strip():
             continue
