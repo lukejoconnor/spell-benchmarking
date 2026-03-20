@@ -54,18 +54,20 @@ Maintain a neutral, skeptical stance. Present unfavorable and inconclusive resul
 | FeatureBench | varies | Feature implementation | `uv run python benchmarking/bench.py featurebench --condition spell` |
 | ScienceAgentBench | 102 | Scientific code generation (data science) | `uv run python benchmarking/bench.py scienceagentbench --condition claude_code` |
 
-Unified software-benchmark container infra:
-- `bench.py swebench --unified` runs the shared in-container agent layer for `mini`, `lite`, and `verified`; `--dataset pro` remains on the existing Pro path for now.
-- `bench.py featurebench --unified` and `bench.py exercism --unified` use the same shared container-agent infrastructure as Terminal-Bench and unified SWE-bench.
+Software-benchmark container infra:
+- `bench.py swebench`, `bench.py featurebench`, and `bench.py exercism` now run on the shared in-container agent layer by default.
+- SWE-bench generation now uses official per-instance images: `/testbed` for `mini`/`lite`/`verified`, `/app` for `pro`.
+- SWE-bench Pro clean eval still runs through the separate ScaleAI Docker pipeline when `--clean-eval` is requested.
+- Exercism `one_shot` is the lone exception: it stays on the local single-call path because generation does not need a mutable workspace.
 - ScienceAgentBench is intentionally not on the shared software-benchmark container infra in this pass.
 
 SWE-bench harness defaults and workflow:
-- `bench.py swebench` now defaults to `--condition all` (`spell`, `claude_code`, `codex`, `swe_agent`) and evaluates by default (`--evaluate`).
+- `bench.py swebench` now defaults to `--condition all` (`spell`, `claude_code`, `codex`, `swe_agent`) and always runs same-container evaluation after generation.
 - Use `--name <label>` to tag a run variant across JSONL records, traces, and SWE-bench prediction filenames.
 - Use `--trailing <expr>` on Spell runs to override the default trailing policy directly instead of relying on preset variants.
-- Use `--no-evaluate` to run generation only (write predictions and unified JSONL without running `swebench.harness`).
-- `bench.py swebench --unified` uses the shared `src/docker_agents.py` container-agent layer for `mini`/`lite`/`verified`; `pro` remains on the existing path.
-- Evaluation runs conditions in series with staged cleanup:
+- `bench.py swebench` uses `src/swebench_container.py` to start official instance images, then runs agents through the shared `src/docker_agents.py` runtime layer.
+- Use `--clean-eval` to rerun generated patches in a fresh official evaluation container.
+- Clean eval runs conditions in series with staged cleanup:
   - non-final conditions: `cache_level=env`, `clean=false`
   - final condition: configurable final cleanup (`--eval-final-cache-level`, `--eval-final-clean`)
 - For explicit eval-only runs, use `bench.py swebench-eval` and pass the same `--name` you used for generation when predictions were label-tagged.
@@ -76,12 +78,10 @@ SWE-bench harness defaults and workflow:
 |-----------|-------|---------------|-------------|
 | Exercism Python | ~225 | Programming exercises, two-attempt with test feedback | `clj -M:dev -m exercism-bench run` |
 
-Unified software-benchmark infra:
-- `src/docker_agents.py` is the shared container-agent layer for Terminal-Bench plus `bench.py --unified` software runs.
-- `bench.py exercism --unified` and `bench.py featurebench --unified` keep edits and verification in the same copied container workspace.
-- Unified Exercism prompts use stable in-container paths instead of host temp paths.
-
-The Python harness also supports `uv run python benchmarking/bench.py exercism --unified` when you want Exercism on the shared software-benchmark container infra instead of the legacy host-workspace flow.
+Software-benchmark container infra:
+- `src/docker_agents.py` is the shared container-agent layer for Terminal-Bench plus the Python-harness software benchmarks.
+- `bench.py exercism` and `bench.py featurebench` keep edits and verification in the same copied container workspace.
+- Exercism prompts use stable in-container paths instead of host temp paths.
 
 ### Terminal Tasks (Terminal-Bench harness)
 
@@ -125,7 +125,7 @@ Run `docker system prune -af --volumes` between tasks to avoid disk exhaustion.
 --budget N                             # Spell budget in dollars
 ```
 
-`reasoning_effort` defaults to `high` in unified adapters unless explicitly overridden.
+`reasoning_effort` defaults to `high` in the benchmark adapters unless explicitly overridden.
 
 **`--trailing` quoting — do not backslash-escape the leading quote.** The trailing expression starts with `'` (Clojure's quote reader macro). In shell, pass it inside double quotes with NO backslash: `--trailing "'(patterns/fix-loop prompt)"`. Using `"\'(...)"` produces a Clojure character literal `\'` instead of `(quote ...)`, silently breaking the trailing expression. The model recovers as a plain sequential agent and results look plausible — the only way to detect the bug is checking trace node 0 for the expected init structure.
 
@@ -216,10 +216,10 @@ benchmarking/
 ├── src/
 │   ├── datasets.py        # Dataset loading
 │   ├── docker_agents.py   # Shared in-container agent execution
+│   ├── swebench_container.py # Official-image SWE-bench container backend
 │   ├── unified_adapters.py # Condition adapters (Spell/OneShot/Claude/Codex)
 │   ├── unified_results.py  # Unified JSONL schema + summaries
 │   ├── evaluation.py      # Scoring (exact match, regex extraction)
-│   ├── swebench_prep.py   # SWE-bench workspace setup
 │   └── swebench_output.py # Results formatting
 ├── results/               # JSON output files (gitignored)
 ├── traces/                # Execution traces (gitignored)
@@ -296,11 +296,11 @@ Results go to `data/exercism-results/` (timestamped directories) and `notebook/e
 
 **SWE-bench classpath:** `SpellAdapter` injects local `-Sdeps` so `spell.benchmark-api` can run from cloned workspace directories.
 
-**Non-software default output format (Spell):** The unified Spell adapter now sends `format={"required":["result"]}` by default for non-software benchmarks (`general`/math/long-context). Software benchmarks (`swebench`, `featurebench`, `scienceagentbench`, `exercism`) do not get this default. Override per request with `RunRequest.format_spec`.
+**Non-software default output format (Spell):** The Spell benchmark adapter sends `format={"required":["result"]}` by default for non-software benchmarks (`general`/math/long-context). Software benchmarks (`swebench`, `featurebench`, `scienceagentbench`, `exercism`) do not get this default. Override per request with `RunRequest.format_spec`.
 
 **Result-map unwrapping:** When format-constrained runs return maps like `{:result ...}`, `spell.benchmark-api` unwraps that value before writing JSON `result`, so existing answer extractors continue to consume plain answer text.
 
-**SWE-bench evaluation defaults:** `bench.py swebench` now runs official harness evaluation by default after prediction generation. Disable via `--no-evaluate` when iterating quickly.
+**SWE-bench evaluation:** `bench.py swebench` always runs official harness evaluation after prediction generation. For eval-only runs, use `bench.py swebench-eval`.
 
 **SWE-bench Docker socket on Colima:** evaluation uses Docker SDK (`docker.from_env`), which depends on `DOCKER_HOST` instead of Docker CLI context. `bench.py` now auto-falls back to `unix://~/.colima/default/docker.sock` when `DOCKER_HOST` is unset and `/var/run/docker.sock` is missing.
 

@@ -184,7 +184,6 @@ def run_unified_exercism(
             error_type=current_result.error_type,
             metadata={
                 "docker": True,
-                "unified": True,
                 "patch": container.diff(container.initial_commit or "HEAD"),
                 "changed_files": container.changed_files(container.initial_commit or "HEAD"),
                 "trace_dir": str(trace_dir) if trace_dir is not None else None,

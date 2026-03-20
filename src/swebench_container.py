@@ -1,0 +1,523 @@
+"""Official-image SWE-bench container runner."""
+
+from __future__ import annotations
+
+import ast
+import io
+import json
+import logging
+import shlex
+import subprocess
+import tarfile
+import tempfile
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import docker
+from swebench.harness.constants import (
+    DOCKER_PATCH,
+    DOCKER_WORKDIR,
+    KEY_INSTANCE_ID,
+    KEY_PREDICTION,
+)
+from swebench.harness.docker_build import build_container, close_logger, setup_logger
+from swebench.harness.grading import get_eval_report
+from swebench.harness.test_spec.test_spec import TestSpec, make_test_spec
+
+from .datasets import SWEBenchItem
+from .swebench_eval_wrapper import _maybe_patch_swebench_builder
+from .swebench_pro_eval import dockerhub_image_for_instance, ensure_scale_pro_eval_repo
+
+logger = logging.getLogger(__name__)
+
+PRO_WORKDIR = "/app"
+
+
+@dataclass(slots=True)
+class SameContainerEvalResult:
+    resolved: bool | None
+    test_output: str
+    raw_report: dict[str, Any] | None
+
+
+def _archive_bytes_for_files(files: dict[str, str]) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for name, content in files.items():
+            data = content.encode("utf-8")
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _parse_string_list(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            parsed = ast.literal_eval(value)
+        if isinstance(parsed, list):
+            return [str(v) for v in parsed]
+    raise ValueError(f"Expected list-like value, got {type(value).__name__}")
+
+
+def _shell_quote_legacy_env_value(value: str) -> str:
+    if not any(char.isspace() for char in value):
+        return value
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`")
+    return f'"{escaped}"'
+
+
+def _docker_env_line_to_export(line: str) -> str | None:
+    stripped = line.strip()
+    if not stripped.startswith("ENV "):
+        return None
+
+    payload = stripped[4:].strip()
+    if not payload:
+        return None
+
+    first_token = payload.split(None, 1)[0]
+    if "=" not in first_token:
+        parts = payload.split(None, 1)
+        if len(parts) != 2:
+            return None
+        key, value = parts
+        return f"export {key}={_shell_quote_legacy_env_value(value)}"
+
+    return f"export {payload}"
+
+
+def _env_exports_from_dockerfiles(*dockerfiles: Path) -> str:
+    exports: list[str] = []
+    for dockerfile in dockerfiles:
+        for line in dockerfile.read_text(encoding="utf-8").splitlines():
+            export_line = _docker_env_line_to_export(line)
+            if export_line:
+                exports.append(export_line)
+    return "\n".join(exports)
+
+
+def _build_pro_eval_entryscript(
+    *,
+    container_workdir: str,
+    env_exports: str,
+    before_repo_set_cmd: str,
+    selected_tests: list[str],
+) -> str:
+    selected_arg = ",".join(selected_tests)
+    entry_lines = []
+    if env_exports:
+        entry_lines.append(env_exports)
+    entry_lines.extend(
+        [
+            "set -e",
+            f"cd {container_workdir}",
+        ]
+    )
+    if before_repo_set_cmd:
+        entry_lines.append(before_repo_set_cmd)
+    run_cmd = "bash /tmp/run_script.sh"
+    if selected_arg:
+        run_cmd = f"{run_cmd} {shlex.quote(selected_arg)}"
+    entry_lines.extend(
+        [
+            f"{run_cmd} > /tmp/stdout.log 2> /tmp/stderr.log",
+            "python /tmp/parser.py /tmp/stdout.log /tmp/stderr.log /tmp/output.json",
+        ]
+    )
+    return "\n".join(entry_lines) + "\n"
+
+
+class SWEBenchContainer:
+    """Container backed by official SWE-bench instance images."""
+
+    def __init__(
+        self,
+        item: SWEBenchItem,
+        *,
+        pro_eval_repo: str | None = None,
+        dockerhub_username: str = "jefzda",
+        instance_image_tag: str = "latest",
+        env_image_tag: str = "latest",
+    ):
+        self.item = item
+        self.pro_eval_repo = pro_eval_repo
+        self.dockerhub_username = dockerhub_username
+        self.instance_image_tag = instance_image_tag
+        self.env_image_tag = env_image_tag
+
+        self.container_workdir = PRO_WORKDIR if self.is_pro else DOCKER_WORKDIR
+        self.container_id: str | None = None
+        self.initial_commit: str | None = None
+
+        self._docker_client: docker.DockerClient | None = None
+        self._container_obj: Any | None = None
+        self._logger: Any | None = None
+        self._test_spec: TestSpec | None = None
+
+    @property
+    def is_pro(self) -> bool:
+        return bool((self.item.raw_instance or {}).get("dockerhub_tag"))
+
+    def start(self) -> str:
+        _maybe_patch_swebench_builder()
+
+        if self.is_pro:
+            self._start_pro_container()
+        else:
+            self._start_standard_container()
+
+        head_result = self.exec_run("git rev-parse HEAD", timeout=30)
+        if head_result.exit_code != 0:
+            raise RuntimeError(
+                f"git rev-parse HEAD failed in container: {head_result.stderr.strip()}"
+            )
+        self.initial_commit = head_result.stdout.strip() or None
+        if self.container_id is None:
+            raise RuntimeError("Container failed to start")
+        return self.container_id
+
+    def _start_standard_container(self) -> None:
+        self._docker_client = docker.from_env()
+        self._test_spec = make_test_spec(
+            self.item.raw_instance,
+            namespace=None,
+            env_image_tag=self.env_image_tag,
+            instance_image_tag=self.instance_image_tag,
+            arch="x86_64",
+        )
+
+        log_dir = Path(tempfile.mkdtemp(prefix=f"swebench-build-{uuid.uuid4().hex[:8]}-"))
+        self._logger = setup_logger(self.item.instance_id, log_dir / "prepare_image.log")
+        try:
+            container = build_container(
+                self._test_spec,
+                self._docker_client,
+                uuid.uuid4().hex[:8],
+                self._logger,
+                False,
+                False,
+            )
+            container.start()
+        except Exception:
+            close_logger(self._logger)
+            self._logger = None
+            raise
+
+        self._container_obj = container
+        self.container_id = container.id
+
+    def _start_pro_container(self) -> None:
+        image_uri = dockerhub_image_for_instance(
+            {self.item.instance_id: self.item.raw_instance},
+            self.item.instance_id,
+            dockerhub_username=self.dockerhub_username,
+        )
+
+        pull = subprocess.run(
+            ["docker", "pull", "--platform", "linux/amd64", image_uri],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if pull.returncode != 0:
+            raise RuntimeError(f"docker pull failed for {image_uri}: {pull.stderr.strip()}")
+
+        run = subprocess.run(
+            [
+                "docker",
+                "run",
+                "-d",
+                "--rm",
+                "--platform",
+                "linux/amd64",
+                "-w",
+                self.container_workdir,
+                "--entrypoint",
+                "/bin/bash",
+                image_uri,
+                "-lc",
+                "tail -f /dev/null",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if run.returncode != 0:
+            raise RuntimeError(f"Docker run failed: {run.stderr.strip()}")
+
+        self.container_id = run.stdout.strip()
+
+    def exec_run(
+        self,
+        cmd: str,
+        *,
+        timeout: int | None = None,
+        env: dict[str, str] | None = None,
+        workdir: str | None = None,
+    ):
+        if not self.container_id:
+            raise RuntimeError("Container not started")
+
+        docker_cmd = ["docker", "exec"]
+        if workdir:
+            docker_cmd.extend(["-w", workdir])
+        for key, value in (env or {}).items():
+            docker_cmd.extend(["-e", f"{key}={value}"])
+        docker_cmd.extend([self.container_id, "bash", "-lc", cmd])
+
+        try:
+            result = subprocess.run(
+                docker_cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            from .docker_agents import ExecOutput
+
+            return ExecOutput(
+                exit_code=124,
+                stdout="",
+                stderr=f"Timeout after {timeout}s",
+                timed_out=True,
+            )
+
+        from .docker_agents import ExecOutput
+
+        return ExecOutput(
+            exit_code=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            timed_out=False,
+        )
+
+    def put_tar_archive(self, dest_dir: str, archive_bytes: bytes) -> bool:
+        if not self.container_id:
+            raise RuntimeError("Container not started")
+        with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp:
+            tmp.write(archive_bytes)
+            tmp_path = Path(tmp.name)
+        try:
+            archive_name = f"/tmp/{tmp_path.name}"
+            cp = subprocess.run(
+                ["docker", "cp", str(tmp_path), f"{self.container_id}:{archive_name}"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if cp.returncode != 0:
+                logger.error("docker cp for tar archive failed: %s", cp.stderr.strip())
+                return False
+            unpack = self.exec_run(
+                f"mkdir -p {shlex.quote(dest_dir)} && "
+                f"tar -xf {shlex.quote(archive_name)} -C {shlex.quote(dest_dir)} && "
+                f"rm -f {shlex.quote(archive_name)}",
+                timeout=180,
+                workdir="/",
+            )
+            return unpack.exit_code == 0
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def copy_to_host(self, source: str, dest: Path) -> bool:
+        if not self.container_id:
+            raise RuntimeError("Container not started")
+        dest = Path(dest)
+        dest.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.run(
+            ["docker", "cp", f"{self.container_id}:{source}", str(dest)],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        if proc.returncode != 0:
+            logger.warning("docker cp from container failed: %s", proc.stderr.strip())
+            return False
+        return True
+
+    def read_text(self, path: str) -> str:
+        result = self.exec_run(f"cat {shlex.quote(path)}", timeout=60, workdir="/")
+        return result.stdout if result.exit_code == 0 else ""
+
+    def diff(self, base: str = "HEAD") -> str:
+        result = self.exec_run(
+            f"git add -A && git diff --cached {shlex.quote(base)}; "
+            "status=$?; git reset -q >/dev/null 2>&1; exit $status",
+            workdir=self.container_workdir,
+        )
+        if result.exit_code != 0:
+            return ""
+        return result.stdout
+
+    def changed_files(self, base: str = "HEAD") -> list[str]:
+        result = self.exec_run(
+            f"git add -A && git diff --name-only --cached {shlex.quote(base)}; "
+            "status=$?; git reset -q >/dev/null 2>&1; exit $status",
+            workdir=self.container_workdir,
+        )
+        if result.exit_code != 0:
+            return []
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+    def run_eval(self, *, timeout: int) -> SameContainerEvalResult:
+        if self.is_pro:
+            return self._run_pro_eval(timeout=timeout)
+        return self._run_standard_eval(timeout=timeout)
+
+    def _run_standard_eval(self, *, timeout: int) -> SameContainerEvalResult:
+        if self._test_spec is None:
+            raise RuntimeError("Test spec not initialized")
+
+        files = {"eval.sh": self._test_spec.eval_script}
+        if not self.put_tar_archive("/tmp", _archive_bytes_for_files(files)):
+            raise RuntimeError("Failed to copy eval script into container")
+
+        log_path = "/tmp/same-container-eval.log"
+        run = self.exec_run(
+            f"chmod +x /tmp/eval.sh && /bin/bash /tmp/eval.sh > {log_path} 2>&1",
+            timeout=timeout,
+            workdir="/",
+        )
+        test_output = self.read_text(log_path)
+        if run.timed_out and "Timeout" not in test_output:
+            test_output = f"{test_output}\n\nTimeout after {timeout}s".strip()
+
+        patch = self.diff(self.initial_commit or "HEAD")
+        prediction = {
+            KEY_INSTANCE_ID: self.item.instance_id,
+            KEY_PREDICTION: patch,
+        }
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as tmp:
+            tmp.write(test_output)
+            tmp_path = Path(tmp.name)
+        try:
+            raw_report = get_eval_report(
+                self._test_spec,
+                prediction,
+                str(tmp_path),
+                include_tests_status=True,
+            )
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+        entry = (raw_report or {}).get(self.item.instance_id, {})
+        return SameContainerEvalResult(
+            resolved=entry.get("resolved"),
+            test_output=test_output,
+            raw_report=raw_report,
+        )
+
+    def _run_pro_eval(self, *, timeout: int) -> SameContainerEvalResult:
+        if not self.pro_eval_repo:
+            raise RuntimeError("SWE-bench Pro same-container eval requires --pro-eval-repo")
+
+        eval_repo = ensure_scale_pro_eval_repo(self.pro_eval_repo)
+        instance_id = self.item.instance_id
+        scripts_dir = eval_repo / "run_scripts" / instance_id
+        base_dockerfile = eval_repo / "dockerfiles" / "base_dockerfile" / instance_id / "Dockerfile"
+        instance_dockerfile = (
+            eval_repo / "dockerfiles" / "instance_dockerfile" / instance_id / "Dockerfile"
+        )
+
+        env_exports = _env_exports_from_dockerfiles(base_dockerfile, instance_dockerfile)
+        before_repo_set_cmd = str(
+            (self.item.raw_instance or {}).get("before_repo_set_cmd", "")
+        ).strip()
+        selected_tests = _parse_string_list(
+            (self.item.raw_instance or {}).get("selected_test_files_to_run", "[]")
+        )
+        files = {
+            "run_script.sh": (scripts_dir / "run_script.sh").read_text(encoding="utf-8"),
+            "parser.py": (scripts_dir / "parser.py").read_text(encoding="utf-8"),
+            "entryscript.sh": _build_pro_eval_entryscript(
+                container_workdir=self.container_workdir,
+                env_exports=env_exports,
+                before_repo_set_cmd=before_repo_set_cmd,
+                selected_tests=selected_tests,
+            ),
+        }
+        if not self.put_tar_archive("/tmp", _archive_bytes_for_files(files)):
+            raise RuntimeError("Failed to copy SWE-bench Pro eval assets into container")
+
+        run = self.exec_run(
+            "chmod +x /tmp/run_script.sh /tmp/entryscript.sh && /bin/bash /tmp/entryscript.sh",
+            timeout=timeout,
+            workdir="/",
+        )
+        stdout = self.read_text("/tmp/stdout.log")
+        stderr = self.read_text("/tmp/stderr.log")
+        output_json = self.read_text("/tmp/output.json")
+        if run.timed_out and "Timeout" not in stderr:
+            stderr = f"{stderr}\nTimeout after {timeout}s".strip()
+
+        parsed_output = json.loads(output_json) if output_json else {"tests": []}
+        passed_tests = {
+            str(test["name"])
+            for test in parsed_output.get("tests", [])
+            if test.get("status") == "PASSED"
+        }
+        fail_to_pass = set(
+            _parse_string_list(
+                (self.item.raw_instance or {}).get(
+                    "fail_to_pass",
+                    (self.item.raw_instance or {}).get("FAIL_TO_PASS", "[]"),
+                )
+            )
+        )
+        pass_to_pass = set(
+            _parse_string_list(
+                (self.item.raw_instance or {}).get(
+                    "pass_to_pass",
+                    (self.item.raw_instance or {}).get("PASS_TO_PASS", "[]"),
+                )
+            )
+        )
+        resolved = (fail_to_pass | pass_to_pass) <= passed_tests
+        raw_report = {
+            self.item.instance_id: {
+                "resolved": resolved,
+                "passed_tests": sorted(passed_tests),
+                "fail_to_pass": sorted(fail_to_pass),
+                "pass_to_pass": sorted(pass_to_pass),
+                "output": parsed_output,
+            }
+        }
+        combined_output = stdout
+        if stderr:
+            combined_output = f"{stdout}\n\n[stderr]\n{stderr}".strip()
+        return SameContainerEvalResult(
+            resolved=resolved,
+            test_output=combined_output,
+            raw_report=raw_report,
+        )
+
+    def stop(self) -> None:
+        if self.container_id:
+            subprocess.run(
+                ["docker", "stop", self.container_id],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        self.container_id = None
+        self.initial_commit = None
+        self._container_obj = None
+        if self._logger is not None:
+            close_logger(self._logger)
+            self._logger = None
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, *_args):
+        self.stop()

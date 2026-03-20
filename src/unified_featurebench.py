@@ -79,7 +79,6 @@ def run_unified_featurebench(
             error_type=result.error_type,
             metadata={
                 "docker": True,
-                "unified": True,
                 "patch": patch,
                 "changed_files": changed_files,
                 "test_results": test_results,

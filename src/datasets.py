@@ -28,6 +28,7 @@ class SWEBenchItem:
     hints_text: str        # Optional hints
     test_patch: str        # Tests that verify fix
     patch: str             # Gold patch (not given to model)
+    raw_instance: dict[str, Any] = field(default_factory=dict)
     metadata: dict = field(default_factory=dict)
 
 
@@ -899,6 +900,7 @@ def _load_swebench_dataset(dataset_name: str, max_items: int = None) -> list[SWE
             hints_text=row.get('hints_text', ''),
             test_patch=row['test_patch'],
             patch=row['patch'],
+            raw_instance=dict(row),
             metadata=metadata,
         ))
 

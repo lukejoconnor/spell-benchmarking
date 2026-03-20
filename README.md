@@ -68,7 +68,7 @@ uv run python benchmarking/bench.py general [OPTIONS]
 
 ### `swebench` — Bug Fixing in Real Repositories
 
-Clones a repository, checks out a base commit, runs the agent in the workspace, captures the resulting patch, then evaluates with the official SWE-bench harness by default.
+Runs the agent inside the official SWE-bench instance image, captures the resulting patch, and records a same-container evaluation result. Use `--clean-eval` when you also want a fresh official evaluation rerun after generation.
 
 ```bash
 uv run python benchmarking/bench.py swebench [OPTIONS]
@@ -91,14 +91,10 @@ uv run python benchmarking/bench.py swebench [OPTIONS]
 | `--max-tokens` | unlimited | Max output tokens per LLM call |
 | `--timeout` | 1800 | Per-item timeout in seconds (30 min) |
 | `--reasoning-effort` | `high` | `low`, `medium`, or `high` |
-| `--workspace-root` | `/tmp/swe_ws` | Directory for cloned workspaces |
-| `--keep-workspaces` | off | Don't delete workspaces after run |
-| `--docker` | off | Run agents inside copied Docker workspaces |
-| `--unified` | off | Use the shared software-benchmark container infra |
-| `--evaluate / --no-evaluate` | on | Run `swebench.harness.run_evaluation` after predictions are written |
+| `--clean-eval / --no-clean-eval` | off | Re-run patches in a fresh official eval container after generation |
 | `--eval-max-workers` | 4 | Max concurrent evaluation workers |
 | `--eval-final-cache-level` | `base` | Cache level used on final condition only |
-| `--eval-final-clean / --no-eval-final-clean` | on | Whether final condition performs cleanup |
+| `--eval-final-clean / --no-eval-final-clean` | on | Whether the final clean-eval condition performs cleanup |
 | `--agent` | — | Override Spell agent EDN file |
 | `--agent-msg` | — | Override agent for message-mode |
 | `--agent-tc` | — | Override agent for toolcall-mode |
@@ -106,11 +102,14 @@ uv run python benchmarking/bench.py swebench [OPTIONS]
 | `--run-id` | auto | Custom run ID |
 | `--output` | auto | Output JSONL path |
 
-Evaluation cleanup sequence for multi-condition runs:
+Execution details:
+- `mini`, `lite`, and `verified` run inside official SWE-bench instance images with the repo mounted at `/testbed`.
+- `pro` runs inside the official Docker Hub instance image with the repo at `/app`.
+- Same-container eval always runs after generation and is recorded in run metadata.
+
+Clean-eval cleanup sequence for multi-condition runs:
 - Non-final conditions: `cache_level=env`, `clean=false` (reuse env images)
 - Final condition: `cache_level=<eval-final-cache-level>`, `clean=<eval-final-clean>`
-
-`--unified` currently supports `mini`, `lite`, and `verified`. `--dataset pro` remains on the existing generation/eval path.
 
 ### `swebench-eval` — Official SWE-bench Harness Evaluation
 
@@ -410,8 +409,8 @@ benchmarking/
 │   ├── evaluation.py         # Scoring (exact match, math equivalence, regex extraction)
 │   ├── agent_policy.py       # Agent selection from model/provider transport
 │   ├── featurebench_lib.py   # FeatureBench workspace setup and test execution
-│   ├── swebench_prep.py      # SWE-bench workspace setup (clone, checkout, worktree)
 │   ├── docker_agents.py      # Shared in-container agent execution for software benchmarks
+│   ├── swebench_container.py # Official-image SWE-bench generation/eval container wrapper
 │   ├── swebench_output.py    # SWE-bench predictions JSONL writer
 │   └── workspace.py          # Shared repo cache and worktree management
 ├── results/                  # JSONL output (gitignored)

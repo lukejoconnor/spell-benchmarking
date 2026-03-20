@@ -80,6 +80,6 @@ For Spell conditions, `resolve_spell_agent()` (`src/agent_policy.py`) determines
 ### Evaluation
 
 - **Math/QA** (`general`): Inline in `_evaluate_general` — dataset-specific extractors (numeric, MCQ, freeform, GAIA scorer, math equivalence).
-- **SWE-bench**: Optional post-generation step runs the official `swebench.harness` Docker evaluator. Controlled by `--evaluate`/`--no-evaluate`. Supports staged cleanup across conditions.
+- **SWE-bench**: Post-generation step always runs the official `swebench.harness` Docker evaluator. Supports staged cleanup across conditions.
 - **FeatureBench/Exercism**: Test suites run against the modified workspace.
 - **ScienceAgentBench**: Program extraction + execution check (full eval requires external benchmark data).
