@@ -25,6 +25,37 @@ from .docker_agents import (
 BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _ensure_java_home() -> None:
+    """Ensure JAVA_HOME is set so clj can find the JVM on macOS."""
+    if os.environ.get("JAVA_HOME"):
+        return
+    # Try /usr/libexec/java_home (macOS standard)
+    try:
+        result = subprocess.run(
+            ["/usr/libexec/java_home"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            java_home = result.stdout.strip()
+            os.environ["JAVA_HOME"] = java_home
+            os.environ["PATH"] = os.path.join(java_home, "bin") + os.pathsep + os.environ.get("PATH", "")
+            return
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    # Homebrew fallback
+    for candidate in [
+        "/usr/local/opt/openjdk/libexec/openjdk.jdk/Contents/Home",
+        "/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home",
+    ]:
+        if Path(candidate).exists():
+            os.environ["JAVA_HOME"] = candidate
+            os.environ["PATH"] = os.path.join(candidate, "bin") + os.pathsep + os.environ.get("PATH", "")
+            return
+
+
+_ensure_java_home()
+
+
 def _resolve_spell_root() -> Path:
     env_spell_root = os.environ.get("SPELL_ROOT")
     if env_spell_root:
