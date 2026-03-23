@@ -493,6 +493,56 @@ def gaia_question_scorer(model_answer: str, ground_truth: str) -> bool:
     return _gaia_normalize_str(model_answer) == _gaia_normalize_str(ground_truth)
 
 
+def evaluate_browsecomp_judge(
+    item: "BenchmarkItem",
+    response_text: str,
+    judge_model: str = "claude-opus-4-6",
+) -> tuple[str | None, bool | None]:
+    """LLM-as-judge evaluation for BrowseComp-Plus items.
+
+    Returns (extracted_answer, is_correct).
+    Uses the Anthropic API directly (not via Spell).
+    """
+    try:
+        import anthropic
+    except ImportError:
+        # Fallback: simple string match
+        ans = response_text.strip()
+        return ans, ans.lower() == item.answer.strip().lower()
+
+    client = anthropic.Anthropic()
+    prompt = (
+        f"You are a judge evaluating whether a model's answer is correct.\n\n"
+        f"Question: {item.question}\n\n"
+        f"Expected answer: {item.answer}\n\n"
+        f"Model's response:\n{response_text}\n\n"
+        f"Is the model's response correct? Extract the model's final answer and determine if it matches "
+        f"the expected answer. Reply with exactly one of:\n"
+        f"CORRECT: <extracted answer>\n"
+        f"INCORRECT: <extracted answer>\n"
+        f"Be flexible about phrasing and formatting — what matters is factual equivalence."
+    )
+    try:
+        msg = client.messages.create(
+            model=judge_model,
+            max_tokens=256,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        judge_text = msg.content[0].text.strip()
+        if judge_text.upper().startswith("CORRECT:"):
+            extracted = judge_text[len("CORRECT:"):].strip()
+            return extracted, True
+        elif judge_text.upper().startswith("INCORRECT:"):
+            extracted = judge_text[len("INCORRECT:"):].strip()
+            return extracted, False
+        # Fallback if format unexpected
+        is_correct = "CORRECT" in judge_text.upper() and "INCORRECT" not in judge_text.upper()
+        return judge_text, is_correct
+    except Exception:
+        ans = response_text.strip()
+        return ans, ans.lower() == item.answer.strip().lower()
+
+
 def evaluate_result(result: RunResult, item: BenchmarkItem) -> RunResult:
     """Add extracted answer and correctness to result."""
     if item.choices:

@@ -236,6 +236,141 @@ class SpellAdapter:
         )
 
 
+def build_raw_init(
+    prompt: str,
+    namespace: str,
+    fn: str = "run",
+    *,
+    map_arg: bool = False,
+    extra_map_opts: dict[str, str] | None = None,
+) -> str:
+    """Build a raw Spell init expression that calls (namespace/fn task).
+
+    map_arg=True:  (eval (quote (ns/fn {:task "..."})))
+    map_arg=False: (eval (quote (ns/fn "...")))
+    extra_map_opts: additional keyword/value pairs to include in the map arg
+    """
+    escaped = _escape_for_spell(prompt)
+    if map_arg:
+        opts_str = f':task "{escaped}"'
+        for k, v in (extra_map_opts or {}).items():
+            opts_str += f' {k} "{_escape_for_spell(v)}"'
+        arg = "{" + opts_str + "}"
+    else:
+        arg = f'"{escaped}"'
+    return f"(eval (quote ({namespace}/{fn} {arg})))"
+
+
+class RawInitSpellAdapter:
+    """Spell adapter that builds a raw init expression instead of a quine-wrapped prompt.
+
+    Use this for namespaced entry points like react/run, context-folding/run, rlm/run, etc.
+    that should be invoked directly without the quine completion wrapper.
+    """
+
+    def __init__(
+        self,
+        condition: str,
+        project_root: Path,
+        model_spec: str,
+        namespace: str,
+        fn: str = "run",
+        map_arg: bool = False,
+        default_agent: str | None = None,
+    ):
+        self.condition = condition
+        self.project_root = project_root
+        self.model_spec = model_spec
+        self.namespace = namespace
+        self.fn = fn
+        self.map_arg = map_arg
+        self.default_agent = default_agent
+        self.client = SpellBenchmarkClient(project_root=project_root)
+        self.client.clj_cmd = _benchmark_api_clj_cmd(project_root)
+
+    def run(self, req: RunRequest) -> RunResponse:
+        search_url = getattr(self, "_search_url", None)
+        extra_map_opts = {":search-url": search_url} if search_url else None
+        init = build_raw_init(req.prompt, self.namespace, self.fn, map_arg=self.map_arg, extra_map_opts=extra_map_opts)
+        agent_file = req.agent_file or (
+            str(self.project_root / self.default_agent) if self.default_agent else None
+        )
+        payload = {
+            "mode": "spell",
+            "model": req.model_spec or self.model_spec,
+            "agent": agent_file,
+            "init": init,
+            "budget": req.budget,
+            "depth": req.depth,
+            "max_tokens": req.max_tokens,
+            "thinking": req.thinking_budget,
+            "reasoning_effort": req.reasoning_effort or DEFAULT_REASONING_EFFORT,
+            "verbosity": req.verbosity,
+            "trace": req.trace,
+        }
+        if req.trace_dir is not None:
+            payload["trace_dir"] = str(req.trace_dir)
+        payload = {k: v for k, v in payload.items() if v is not None}
+
+        with _benchmark_run_cwd(req.workspace) as run_cwd:
+            response = self.client.run(payload, timeout=req.timeout, cwd=run_cwd)
+        usage_total = (response.usage or {}).get("total", {})
+
+        if response.ok:
+            return RunResponse(
+                status="ok",
+                response_text=response.result,
+                tokens_in=usage_total.get("input_tokens"),
+                tokens_out=usage_total.get("output_tokens"),
+                cost_usd=usage_total.get("cost"),
+                latency_ms=response.latency_ms,
+                metadata={"trace_dir": response.trace_dir, "raw": response.raw},
+            )
+
+        return RunResponse(
+            status="timeout" if response.error_type == "timeout" else "error",
+            response_text=response.result,
+            tokens_in=usage_total.get("input_tokens"),
+            tokens_out=usage_total.get("output_tokens"),
+            cost_usd=usage_total.get("cost"),
+            latency_ms=response.latency_ms,
+            error_message=response.error,
+            error_type=response.error_type,
+            metadata={"raw": response.raw},
+        )
+
+
+def make_context_folding_adapter(
+    project_root: Path,
+    model_spec: str,
+    search_url: str | None = None,
+    agent_file: str | None = None,
+) -> RawInitSpellAdapter:
+    adapter = RawInitSpellAdapter(
+        condition="context_folding",
+        project_root=project_root,
+        model_spec=model_spec,
+        namespace="context-folding",
+        fn="run",
+        map_arg=True,
+        default_agent=agent_file or "config/agents/context-folding.agent.edn",
+    )
+    adapter._search_url = search_url
+    return adapter
+
+
+def make_react_adapter(project_root: Path, model_spec: str) -> RawInitSpellAdapter:
+    return RawInitSpellAdapter(
+        condition="react",
+        project_root=project_root,
+        model_spec=model_spec,
+        namespace="react",
+        fn="run",
+        map_arg=False,
+        default_agent="config/agents/react.agent.edn",
+    )
+
+
 class OneShotAdapter:
     condition = "one_shot"
 

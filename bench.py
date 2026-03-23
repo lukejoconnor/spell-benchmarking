@@ -70,10 +70,14 @@ from src.unified_adapters import (
     SweAgentAdapter,
     RunRequest,
     RunResponse,
+    RawInitSpellAdapter,
+    make_context_folding_adapter,
+    make_react_adapter,
     SpellAdapter,
     build_spell_init,
     run_requests_parallel,
 )
+from src.evaluation import evaluate_browsecomp_judge
 from src.unified_results import (
     UnifiedRunRecord,
     append_jsonl,
@@ -489,6 +493,9 @@ def _evaluate_general(item: BenchmarkItem, response_text: str | None) -> tuple[s
         answer = re.sub(r'\s*\[.*?\]\(.*?\)\s*$', '', answer).strip()
         return answer, gaia_question_scorer(answer, item.answer)
 
+    if item.dataset.startswith("browsecomp_plus"):
+        return evaluate_browsecomp_judge(item, response)
+
     answer = extract_freeform_answer(response)
     return answer, answer.strip().lower() == item.answer.strip().lower()
 
@@ -584,7 +591,18 @@ def _build_adapter(
     codex_model: str,
     swe_agent_model: str | None,
     budget: float,
+    search_url: str | None = None,
+    cf_agent: str | None = None,
 ):
+    if condition == "context_folding":
+        return make_context_folding_adapter(
+            project_root=SPELL_ROOT,
+            model_spec=_require_model(condition, model),
+            search_url=search_url,
+            agent_file=cf_agent,
+        )
+    if condition == "react":
+        return make_react_adapter(project_root=SPELL_ROOT, model_spec=_require_model(condition, model))
     if condition == "spell":
         return SpellAdapter(project_root=SPELL_ROOT, model_spec=_require_model(condition, model))
     if condition == "one_shot":
@@ -955,7 +973,7 @@ def cli() -> None:
 
 @cli.command("general")
 @click.option("--dataset", default="longbench_short", type=click.Choice(list(DATASETS.keys()) + ["all"]))
-@click.option("--condition", default="one_shot", type=click.Choice(["one_shot", "spell", "claude_code", "codex", "swe_agent", "all"]))
+@click.option("--condition", default="one_shot", type=click.Choice(["one_shot", "spell", "react", "context_folding", "claude_code", "codex", "swe_agent", "all"]))
 @click.option("--model", default=None, help="provider:model for one_shot/spell (required for those conditions)")
 @click.option("--claude-model", default=None, help="Model for Claude Code comparator (required for claude_code condition)")
 @click.option("--codex-model", default="codex", help="Model for Codex harness comparator")
@@ -987,6 +1005,8 @@ def cli() -> None:
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
 @click.option("--output", default=None, help="JSONL output path")
+@click.option("--search-url", default=None, help="Local search server URL for context_folding (e.g. http://localhost:8000)")
+@click.option("--cf-agent", default=None, help="Agent file override for context_folding condition")
 def run_general(
     dataset: str,
     condition: str,
@@ -1017,6 +1037,8 @@ def run_general(
     dry_run: bool = False,
     run_id: str | None = None,
     output: str | None = None,
+    search_url: str | None = None,
+    cf_agent: str | None = None,
 ) -> None:
     run_id = run_id or _run_id("general")
     output_file = Path(output) if output else _default_output(run_id)
@@ -1135,6 +1157,8 @@ def run_general(
             codex_model=codex_model,
             swe_agent_model=swe_agent_model,
             budget=budget,
+            search_url=search_url,
+            cf_agent=cf_agent,
         )
         spell_resolution = None
         if cond == "spell":
