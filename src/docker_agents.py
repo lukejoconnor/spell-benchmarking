@@ -107,7 +107,7 @@ if ! (command -v clojure >/dev/null 2>&1 && clojure -Sdescribe >/dev/null 2>&1) 
   tmpdir="$(mktemp -d)"
   curl -fsSL https://download.clojure.org/install/linux-install-1.11.1.1413.sh -o "$tmpdir/install-clojure.sh"
   chmod +x "$tmpdir/install-clojure.sh"
-  "$tmpdir/install-clojure.sh" >/dev/null
+  "$tmpdir/install-clojure.sh" --prefix "$HOME/.local" >/dev/null
   rm -rf "$tmpdir"
   export PATH="$HOME/.local/bin:$PATH"
 fi
