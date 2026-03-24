@@ -186,14 +186,14 @@ class SingularitySWEBenchContainer:
 
         # Directories to copy out of the SIF for bind-mounting.
         # None = create empty (no copy needed).
+        # NOTE: Do NOT bind /opt — it contains /opt/miniconda3 which the
+        # container's conda env depends on being read-only from the SIF.
         dirs = {
             "testbed": "/testbed",
             "etc": "/etc",
             "usrlib_locale": "/usr/lib/locale",
             "tmp": None,
             "root": None,
-            "var": "/var",
-            "opt": "/opt",
         }
         for local_name, container_path in dirs.items():
             local_dir = self.work_dir / local_name
@@ -220,16 +220,25 @@ class SingularitySWEBenchContainer:
     def _bind_args(self) -> list[str]:
         """Return --bind arguments for exec_run."""
         assert self.work_dir is not None
-        return [
+        args = [
             "--bind", f"{self.work_dir / 'testbed'}:/testbed",
             "--bind", f"{self.work_dir / 'tmp'}:/tmp",
             "--bind", f"{self.work_dir / 'etc'}:/etc",
             "--bind", f"{self.work_dir / 'usrlib_locale'}:/usr/lib/locale",
-            "--bind", f"{self.work_dir / 'var'}:/var",
-            "--bind", f"{self.work_dir / 'opt'}:/opt",
             "--bind", f"{self.work_dir / 'root'}:/root",
             "--bind", f"{self.work_dir / 'home'}:{Path.home()}",
         ]
+        # Bind host Java into the container if available, so the Spell
+        # install script skips the apt-get path (which requires root).
+        java_bin = shutil.which("java")
+        if java_bin:
+            java_real = Path(java_bin).resolve()
+            java_home = java_real.parent.parent
+            args.extend([
+                "--bind", f"{java_real}:/usr/local/bin/java",
+                "--bind", f"{java_home}:/usr/local/java",
+            ])
+        return args
 
     def stop(self) -> None:
         if self.work_dir and self.work_dir.exists():
