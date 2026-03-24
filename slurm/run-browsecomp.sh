@@ -31,13 +31,6 @@ if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
     exit 1
 fi
 
-# ── Pull latest code ───────────────────────────────────────────────────────────
-echo "=== Pulling latest spell ==="
-cd "$SPELL_DIR" && git pull --ff-only
-
-echo "=== Pulling latest benchmarking ==="
-cd "$BENCH_DIR" && git pull --ff-only
-
 # ── Start search server in background ──────────────────────────────────────────
 echo "=== Starting search server on port ${SEARCH_PORT} ==="
 module load conda3 2>/dev/null || true
