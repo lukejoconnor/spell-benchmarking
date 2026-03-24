@@ -34,6 +34,7 @@ fi
 # ── Start search server in background ──────────────────────────────────────────
 echo "=== Starting search server on port ${SEARCH_PORT} ==="
 module load conda3 2>/dev/null || true
+eval "$(conda shell.bash hook)"
 conda activate "$CONDA_ENV"
 
 cd "$FOLDAGENT_DIR"
