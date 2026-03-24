@@ -338,12 +338,14 @@ class RawInitSpellAdapter:
             "reasoning_effort": req.reasoning_effort or DEFAULT_REASONING_EFFORT,
             "verbosity": req.verbosity,
             "trace": req.trace,
+            "retries": [0, 10, 30, 60],  # aggressive retries for rate limits
         }
         if req.trace_dir is not None:
             payload["trace_dir"] = str(req.trace_dir)
         payload = {k: v for k, v in payload.items() if v is not None}
 
-        with _benchmark_run_cwd(req.workspace) as run_cwd:
+        # Use spell project root as CWD (not a temp dir) so config/web.edn is found.
+        with _benchmark_run_cwd(req.workspace or self.project_root) as run_cwd:
             response = self.client.run(payload, timeout=req.timeout, cwd=run_cwd)
         usage_total = (response.usage or {}).get("total", {})
 
