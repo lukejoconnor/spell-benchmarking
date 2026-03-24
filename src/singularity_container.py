@@ -184,11 +184,17 @@ class SingularitySWEBenchContainer:
         """Copy writable directories out of the SIF for bind mounting."""
         assert self.work_dir is not None and self.sif_path is not None
 
+        # Directories to copy out of the SIF for bind-mounting.
+        # None = create empty (no copy needed).
         dirs = {
             "testbed": "/testbed",
             "etc": "/etc",
             "usrlib_locale": "/usr/lib/locale",
-            "tmp": None,  # just create empty
+            "tmp": None,
+            "var_lib_apt": "/var/lib/apt",
+            "var_cache_apt": "/var/cache/apt",
+            "var_log": "/var/log",
+            "root": "/root",
         }
         for local_name, container_path in dirs.items():
             local_dir = self.work_dir / local_name
@@ -196,7 +202,7 @@ class SingularitySWEBenchContainer:
             if container_path:
                 logger.info("Copying %s from SIF...", container_path)
                 result = subprocess.run(
-                    [self._sing, "exec", self.sif_path,
+                    [self._sing, "exec", str(self.sif_path),
                      "cp", "-a", f"{container_path}/.", str(local_dir) + "/"],
                     capture_output=True,
                     text=True,
@@ -220,6 +226,10 @@ class SingularitySWEBenchContainer:
             "--bind", f"{self.work_dir / 'tmp'}:/tmp",
             "--bind", f"{self.work_dir / 'etc'}:/etc",
             "--bind", f"{self.work_dir / 'usrlib_locale'}:/usr/lib/locale",
+            "--bind", f"{self.work_dir / 'var_lib_apt'}:/var/lib/apt",
+            "--bind", f"{self.work_dir / 'var_cache_apt'}:/var/cache/apt",
+            "--bind", f"{self.work_dir / 'var_log'}:/var/log",
+            "--bind", f"{self.work_dir / 'root'}:/root",
             "--bind", f"{self.work_dir / 'home'}:{Path.home()}",
         ]
 
@@ -285,12 +295,21 @@ class SingularitySWEBenchContainer:
     def _host_path(self, container_path: str) -> Path:
         """Map a container path to the corresponding host bind-mount path."""
         assert self.work_dir is not None
-        if container_path.startswith("/testbed"):
-            return self.work_dir / "testbed" / container_path[len("/testbed/"):]
-        if container_path.startswith("/tmp"):
-            return self.work_dir / "tmp" / container_path[len("/tmp/"):]
-        if container_path.startswith("/etc"):
-            return self.work_dir / "etc" / container_path[len("/etc/"):]
+        # Order matters: check longer prefixes first
+        mappings = [
+            ("/testbed/", "testbed"),
+            ("/testbed", "testbed"),
+            ("/tmp/", "tmp"),
+            ("/tmp", "tmp"),
+            ("/etc/", "etc"),
+            ("/etc", "etc"),
+            ("/root/", "root"),
+            ("/root", "root"),
+        ]
+        for prefix, local_name in mappings:
+            if container_path.startswith(prefix):
+                remainder = container_path[len(prefix):]
+                return self.work_dir / local_name / remainder
         # Fallback: use /tmp bind
         return self.work_dir / "tmp" / Path(container_path).name
 
