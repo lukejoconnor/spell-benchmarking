@@ -191,10 +191,9 @@ class SingularitySWEBenchContainer:
             "etc": "/etc",
             "usrlib_locale": "/usr/lib/locale",
             "tmp": None,
-            "var_lib_apt": "/var/lib/apt",
-            "var_cache_apt": "/var/cache/apt",
-            "var_log": "/var/log",
-            "root": "/root",
+            "root": None,
+            "var": "/var",
+            "opt": "/opt",
         }
         for local_name, container_path in dirs.items():
             local_dir = self.work_dir / local_name
@@ -209,13 +208,13 @@ class SingularitySWEBenchContainer:
                     timeout=300,
                 )
                 if result.returncode != 0:
-                    # Non-fatal for /etc (permission errors on shadow files are OK)
+                    # Non-fatal (permission errors on shadow/lock files are OK)
                     logger.warning(
                         "cp %s had errors (may be OK): %s",
                         container_path, result.stderr.strip()[:200],
                     )
 
-        # Also ensure a writable /home dir for git config
+        # Writable /home dir for git config etc.
         (self.work_dir / "home").mkdir(parents=True, exist_ok=True)
 
     def _bind_args(self) -> list[str]:
@@ -226,9 +225,8 @@ class SingularitySWEBenchContainer:
             "--bind", f"{self.work_dir / 'tmp'}:/tmp",
             "--bind", f"{self.work_dir / 'etc'}:/etc",
             "--bind", f"{self.work_dir / 'usrlib_locale'}:/usr/lib/locale",
-            "--bind", f"{self.work_dir / 'var_lib_apt'}:/var/lib/apt",
-            "--bind", f"{self.work_dir / 'var_cache_apt'}:/var/cache/apt",
-            "--bind", f"{self.work_dir / 'var_log'}:/var/log",
+            "--bind", f"{self.work_dir / 'var'}:/var",
+            "--bind", f"{self.work_dir / 'opt'}:/opt",
             "--bind", f"{self.work_dir / 'root'}:/root",
             "--bind", f"{self.work_dir / 'home'}:{Path.home()}",
         ]
