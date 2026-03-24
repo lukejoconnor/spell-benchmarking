@@ -145,12 +145,15 @@ class SingularitySWEBenchContainer:
             logger.info("Using cached SIF: %s", sif_path)
             return sif_path
 
-        # Also try matching by instance_image_key pattern in cache dir
-        # (RC-built SIFs may have slightly different naming)
+        # Also try matching by image_key substring in cache dir
+        # (RC-built SIFs may omit the namespace prefix)
         if cache_dir.exists():
-            instance_id_part = self.item.instance_id.replace("/", "_").replace("-", "_")
+            # Extract the core image name (without namespace and tag)
+            # e.g. "swebench/sweb.eval.x86_64.django_1776_django-11039:latest"
+            #   -> "sweb.eval.x86_64.django_1776_django-11039"
+            core = image_key.split("/")[-1].split(":")[0]
             for candidate in cache_dir.iterdir():
-                if candidate.suffix == ".sif" and instance_id_part in candidate.name:
+                if candidate.suffix == ".sif" and core in candidate.stem:
                     logger.info("Using SIF (pattern match): %s", candidate)
                     return candidate
 
