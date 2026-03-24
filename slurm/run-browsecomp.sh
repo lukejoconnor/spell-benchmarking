@@ -5,7 +5,7 @@
 #SBATCH --mem=48G
 #SBATCH --gres=gpu:1
 #SBATCH -J browsecomp-cf
-#SBATCH -o /n/scratch/users/a/amberzshen/browsecomp-cf-%j.out
+#SBATCH -o /n/data1/hms/dbmi/oconnor/lab/amber/tmp/browsecomp-cf-%j.out
 
 set -euo pipefail
 
