@@ -285,7 +285,10 @@ def build_raw_init(
     if map_arg:
         opts_str = f':task "{escaped}"'
         for k, v in (extra_map_opts or {}).items():
-            opts_str += f' {k} "{_escape_for_spell(v)}"'
+            if isinstance(v, str):
+                opts_str += f' {k} "{_escape_for_spell(v)}"'
+            else:
+                opts_str += f' {k} {v}'
         arg = "{" + opts_str + "}"
     else:
         arg = f'"{escaped}"'
@@ -321,7 +324,13 @@ class RawInitSpellAdapter:
 
     def run(self, req: RunRequest) -> RunResponse:
         search_url = getattr(self, "_search_url", None)
-        extra_map_opts = {":search-url": search_url} if search_url else None
+        max_branch_steps = getattr(self, "_max_branch_steps", None)
+        extra_map_opts: dict | None = {}
+        if search_url:
+            extra_map_opts[":search-url"] = search_url
+        if max_branch_steps:
+            extra_map_opts[":max-branch-steps"] = max_branch_steps
+        extra_map_opts = extra_map_opts or None
         init = build_raw_init(req.prompt, self.namespace, self.fn, map_arg=self.map_arg, extra_map_opts=extra_map_opts)
         agent_file = req.agent_file or (
             str(self.project_root / self.default_agent) if self.default_agent else None
@@ -378,6 +387,7 @@ def make_context_folding_adapter(
     model_spec: str,
     search_url: str | None = None,
     agent_file: str | None = None,
+    max_branch_steps: int | None = None,
 ) -> RawInitSpellAdapter:
     adapter = RawInitSpellAdapter(
         condition="context_folding",
@@ -389,6 +399,7 @@ def make_context_folding_adapter(
         default_agent=agent_file or "config/agents/context-folding.agent.edn",
     )
     adapter._search_url = search_url
+    adapter._max_branch_steps = max_branch_steps
     return adapter
 
 

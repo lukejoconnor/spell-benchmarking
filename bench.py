@@ -593,6 +593,7 @@ def _build_adapter(
     budget: float,
     search_url: str | None = None,
     cf_agent: str | None = None,
+    cf_max_branch_steps: int | None = None,
 ):
     if condition == "context_folding":
         return make_context_folding_adapter(
@@ -600,6 +601,7 @@ def _build_adapter(
             model_spec=_require_model(condition, model),
             search_url=search_url,
             agent_file=cf_agent,
+            max_branch_steps=cf_max_branch_steps,
         )
     if condition == "react":
         return make_react_adapter(project_root=SPELL_ROOT, model_spec=_require_model(condition, model))
@@ -1007,6 +1009,7 @@ def cli() -> None:
 @click.option("--output", default=None, help="JSONL output path")
 @click.option("--search-url", default=None, help="Local search server URL for context_folding (e.g. http://localhost:8000)")
 @click.option("--cf-agent", default=None, help="Agent file override for context_folding condition")
+@click.option("--cf-max-branch-steps", default=None, type=int, help="Max branch steps for context_folding (default: 64)")
 def run_general(
     dataset: str,
     condition: str,
@@ -1039,6 +1042,7 @@ def run_general(
     output: str | None = None,
     search_url: str | None = None,
     cf_agent: str | None = None,
+    cf_max_branch_steps: int | None = None,
 ) -> None:
     run_id = run_id or _run_id("general")
     output_file = Path(output) if output else _default_output(run_id)
@@ -1159,6 +1163,7 @@ def run_general(
             budget=budget,
             search_url=search_url,
             cf_agent=cf_agent,
+            cf_max_branch_steps=cf_max_branch_steps,
         )
         spell_resolution = None
         if cond == "spell":
