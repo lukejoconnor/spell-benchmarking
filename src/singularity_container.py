@@ -194,6 +194,7 @@ class SingularitySWEBenchContainer:
             "usrlib_locale": "/usr/lib/locale",
             "tmp": None,
             "root": None,
+            "opt_spell": None,  # for spell bundle
         }
         for local_name, container_path in dirs.items():
             local_dir = self.work_dir / local_name
@@ -225,6 +226,7 @@ class SingularitySWEBenchContainer:
             "--bind", f"{self.work_dir / 'tmp'}:/tmp",
             "--bind", f"{self.work_dir / 'etc'}:/etc",
             "--bind", f"{self.work_dir / 'usrlib_locale'}:/usr/lib/locale",
+            "--bind", f"{self.work_dir / 'opt_spell'}:/opt/spell",
             "--bind", f"{self.work_dir / 'root'}:/root",
             "--bind", f"{self.work_dir / 'home'}:{Path.home()}",
         ]
