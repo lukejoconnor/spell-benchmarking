@@ -2,7 +2,7 @@
 
 ## Architecture
 
-The harness is a Click CLI (`bench.py`) with subcommands for each benchmark family: `general` (math, long-context, QA), `swebench`, `featurebench`, `exercism`, `scienceagentbench`. Every subcommand follows the same execution pipeline:
+The harness is a Click CLI (`bench.py`) with subcommands for each benchmark family: `general` (math, long-context, QA), `swebench`, `featurebench`, `terminalbench`, `exercism`, `scienceagentbench`. Every subcommand follows the same execution pipeline:
 
 ```
 CLI flags → load dataset → build adapter per condition → construct RunRequests → execute → evaluate → write JSONL
@@ -28,7 +28,7 @@ Spell conditions don't receive a bare prompt — they receive an **init string**
 
 1. **`format_benchmark_prompt(item)`** (`src/datasets.py`) — formats the dataset item into a natural-language prompt string, shared across conditions where possible.
 
-2. **`build_spell_init(prompt, trailing)`** (`src/unified_adapters.py`) — wraps the prompt in Spell's completion template:
+2. **`build_spell_init(prompt, trailing)`** (`src/docker_agents.py`) — wraps the prompt in Spell's completion template:
    ```
    (quine completion (eval (do (quine prompt "...escaped prompt...") <trailing>)))
    ```
@@ -43,6 +43,8 @@ Three modes exist for software benchmarks (SWE-bench, FeatureBench, Exercism):
 - **Host** (default): Adapter runs locally. For SWE-bench, a git worktree is set up per item; patches are extracted via `git diff`.
 - **Docker** (`--docker`): Docker-wrapped adapters run the agent inside a container. Patch returned in response metadata.
 - **Unified** (`--unified`): Shared container-agent infrastructure (`src/docker_agents.py`). The agent runs in a `DockerWorkspaceContainer` with the repo pre-cloned. Used by Terminal-Bench and now available for SWE-bench/FeatureBench/Exercism. Calls `run_unified_swebench()` / `run_unified_featurebench()` / `run_unified_exercism()` instead of `adapter.run()`.
+
+Terminal-Bench now uses `bench.py terminalbench` as the primary entrypoint. That subcommand wraps `tb run`, normalizes per-task `results.json` into `UnifiedRunRecord`s, and copies Spell traces out of per-task `agent-logs/spell-trace/` directories into the standard `traces/<run-id>/spell/...` layout.
 
 In unified mode, `bench.py` still constructs the `RunRequest` (including `init`) identically — the unified runners just receive the pre-built init string.
 

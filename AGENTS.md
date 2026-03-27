@@ -87,22 +87,32 @@ Software-benchmark container infra:
 
 | Benchmark | Items | What it tests | Run command |
 |-----------|-------|---------------|-------------|
-| Terminal-Bench 2.0 | ~80 | Shell tasks in Docker containers | `./terminal_bench/run_pilot.sh both` |
+| Terminal-Bench 2.0 | ~80 | Shell tasks in Docker containers | `uv run python bench.py terminalbench --condition all` |
 
 Requires Docker (Colima or Docker Desktop). Uses `tb` CLI (`uv tool install terminal-bench`).
-All three conditions use imported Docker agents under `terminal_bench/`.
+All three conditions use imported Docker agents under `terminal_bench/`, orchestrated through `bench.py terminalbench`.
+If `benchmarking/` is checked out as a standalone worktree instead of nested under the main Spell repo, export `SPELL_ROOT=/path/to/spell` before running `bench.py terminalbench`.
 
-Individual task runs:
+Examples:
 ```bash
-export DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock"  # if using Colima
-export PYTHONPATH="${PWD}/terminal_bench"
-export SPELL_ROOT="/path/to/spell"  # needed when benchmarking is checked out standalone
-tb run --agent-import-path "spell_agent:SpellAgent" --model "anthropic/claude-opus-4-6" \
-  --dataset "terminal-bench-core==0.1.1" -t <task-id> --output-path <dir> --run-id <id> \
-  --n-concurrent 1 -k "budget=5.0" -k "sh_timeout=120"
+# Spell vs Codex CLI on two tasks with ACM-style io reminder
+uv run python bench.py terminalbench \
+  --condition spell \
+  --condition codex \
+  --model codex-tc:gpt-5.3-codex \
+  --agent config/agents/io-acm-tc.agent.edn \
+  --trailing "'(!describe io)" \
+  -t hello-world \
+  -t csv-to-parquet
+
+# Dry-run the exact tb commands without executing them
+uv run python bench.py terminalbench \
+  --condition spell \
+  -t hello-world \
+  --dry-run
 ```
 
-Run `docker system prune -af --volumes` between tasks to avoid disk exhaustion.
+Direct `tb run` still works for one-off debugging when you need raw harness behavior, but batch runs and unified JSONL collection should go through `bench.py terminalbench`.
 
 ### Orchestration (Clojure harness)
 
@@ -244,13 +254,12 @@ terminal_bench/
 ├── spell_agent.py         # SpellAgent: installs Spell runtime + runs benchmark API in Docker
 ├── codex_agent.py         # CodexAgent: Codex CLI in Docker, --json JSONL parsing
 ├── cc_agent.py            # ClaudeCodeAgent: CC in Docker, stream-json parsing
-├── run_pilot.sh           # Runner script for CC vs Spell comparison
 └── __init__.py
 ```
 
 Requires `tb` CLI (`uv tool install terminal-bench`) and Docker. Tasks cached at `~/.cache/terminal-bench/`.
 
-**Agent invocations:**
+**Direct agent invocations (for one-off debugging):**
 ```bash
 # All require: PYTHONPATH="${PWD}/terminal_bench:${PYTHONPATH:-}"
 # and: DOCKER_HOST="unix:///Users/loconnor/.colima/default/docker.sock"
@@ -320,7 +329,7 @@ Results go to `data/exercism-results/` (timestamped directories) and `notebook/e
 
 **Terminal-Bench Spell runtime:** SpellAgent now executes inside the task container and copies a minimal Spell runtime bundle (`deps.edn`, `src/`, `config/`) to `/opt/spell` during install. This avoids host-vs-container filesystem asymmetry during scoring.
 
-**Terminal-Bench disk exhaustion:** Each task builds a Docker image. Running many tasks without cleanup fills Colima's VM disk. Use `docker system prune -af --volumes` between tasks. Never run more than 2 tasks concurrently on Colima with default disk (20GB). The `run_pilot.sh` script runs tasks sequentially.
+**Terminal-Bench disk exhaustion:** Each task builds a Docker image. Running many tasks without cleanup fills Colima's VM disk. `bench.py terminalbench --cleanup` threads `tb` cleanup through each run and also prunes Docker between conditions. Never run more than 2 tasks concurrently on Colima with default disk (20GB).
 
 **Terminal-Bench empty tool-call error:** Opus 4.6 occasionally returns an empty `spell_suffix` tool_use (`input: {}`), causing a fatal `missing-tool-call` error. This is not currently retried (see TODO #144). Observed on write-compressor.
 

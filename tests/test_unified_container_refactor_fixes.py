@@ -115,6 +115,17 @@ class ResolveAgentForContainerTest(unittest.TestCase):
 
             self.assertEqual(resolved, str(agent_file))
 
+    def test_rewrites_spell_relative_agent_override(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            spell_root = Path(tmp_dir) / "spell"
+            _make_spell_root(spell_root)
+            agent_file = spell_root / "config" / "agents" / "io-acm-tc.agent.edn"
+            agent_file.write_text("{:name acm}", encoding="utf-8")
+
+            resolved = _resolve_agent_for_container("config/agents/io-acm-tc.agent.edn", spell_root=spell_root)
+
+            self.assertEqual(resolved, "/opt/spell/config/agents/io-acm-tc.agent.edn")
+
 
 class UnifiedSWEBenchRunnerTest(unittest.TestCase):
     @patch("src.unified_swebench.run_agent_in_container")

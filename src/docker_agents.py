@@ -932,6 +932,24 @@ def discover_spell_root(explicit: str | None = None, *, search_from: Path | None
     return None
 
 
+def _escape_for_spell(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+    )
+
+
+def build_spell_init(prompt: str, trailing: str | None = None) -> str:
+    escaped_prompt = _escape_for_spell(prompt)
+    trailing_expr = trailing or "'(!extend)"
+    return (
+        f'(quine completion (eval (do (quine prompt "{escaped_prompt}") '
+        f"{trailing_expr})))"
+    )
+
+
 def spell_build_bundle(spell_root: Path | None = None) -> bytes:
     resolved_root = spell_root or discover_spell_root()
     if resolved_root is None:
@@ -999,7 +1017,12 @@ def _resolve_agent_for_container(agent_file: str | None, *, spell_root: Path | N
     if resolved_root is None:
         return agent_file
 
-    resolved_agent = Path(agent_file).expanduser().resolve()
+    candidate_agent = Path(agent_file).expanduser()
+    if not candidate_agent.is_absolute():
+        spell_relative = (resolved_root / candidate_agent).resolve()
+        if spell_relative.exists():
+            candidate_agent = spell_relative
+    resolved_agent = candidate_agent.resolve()
     bundled_agents_dir = (resolved_root / "config" / "agents").resolve()
     try:
         resolved_agent.relative_to(bundled_agents_dir)

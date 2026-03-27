@@ -6,9 +6,7 @@ so all benchmarked methods execute in the same container environment.
 
 from __future__ import annotations
 
-import base64
 import io
-import json
 import logging
 import sys
 import tarfile
@@ -24,6 +22,7 @@ try:
     from src.docker_agents import (
         SPELL_AGENT_IN_CONTAINER,
         SPELL_BUNDLE_PATHS,
+        build_spell_init,
         resolve_spell_model,
         discover_spell_root,
         spell_build_bundle,
@@ -38,6 +37,7 @@ except ImportError:
     from src.docker_agents import (
         SPELL_AGENT_IN_CONTAINER,
         SPELL_BUNDLE_PATHS,
+        build_spell_init,
         resolve_spell_model,
         discover_spell_root,
         spell_build_bundle,
@@ -64,6 +64,8 @@ class SpellAgent(DockerExecAgent):
         agent_file: str | None = None,
         spell_root: str | None = None,
         reasoning_effort: str = "high",
+        trailing: str | None = None,
+        trace: bool = True,
         **kwargs,
     ):
         super().__init__(model_name=resolve_spell_model(model_name), agent_timeout=agent_timeout, **kwargs)
@@ -74,6 +76,8 @@ class SpellAgent(DockerExecAgent):
         self._spell_root = discover_spell_root(spell_root, search_from=Path(__file__).resolve())
         self._spell_bundle: bytes | None = None
         self._reasoning_effort = reasoning_effort
+        self._trailing = trailing
+        self._trace = trace
 
     @staticmethod
     def name() -> str:
@@ -128,31 +132,18 @@ class SpellAgent(DockerExecAgent):
         logger.info("Spell runtime installed")
         return True
 
-    def _build_payload(self, instruction: str) -> dict:
-        payload: dict = {
-            "mode": "spell",
-            "model": self._model_name,
-            "prompt": instruction,
-            "budget": self._budget,
-            "agent": self._agent_file,
-            "trace": True,
-        }
-        if self._depth is not None:
-            payload["depth"] = self._depth
-        if self._reasoning_effort:
-            payload["reasoning_effort"] = self._reasoning_effort
-        return payload
-
     def _run_command(self, instruction: str, workdir: str) -> str:
         del workdir
+        init = build_spell_init(instruction, self._trailing)
         return spell_run_command(
-            prompt=instruction,
+            prompt=None,
+            init=init,
             model_name=self._model_name,
             agent_file=self._agent_file,
             budget=self._budget,
             depth=self._depth,
             reasoning_effort=self._reasoning_effort,
-            trace=True,
+            trace=self._trace,
         )
 
     def _extract_response_json(self, stdout: str) -> dict | None:
@@ -201,7 +192,7 @@ class SpellAgent(DockerExecAgent):
         """Override to extract traces before the container is torn down."""
         container = session.container
         result = super().perform_task(instruction, session, logging_dir)
-        if logging_dir:
+        if self._trace and logging_dir:
             # Re-read stdout from saved logs to get trace_dir
             stdout_file = logging_dir / "stdout.txt"
             stdout = stdout_file.read_text() if stdout_file.exists() else ""
