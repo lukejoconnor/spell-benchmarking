@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from .docker_agents import (
+    build_spell_init,
     swe_agent_env_vars,
     swe_agent_run_command,
     _extract_swe_agent_cost,
@@ -97,25 +98,6 @@ def _benchmark_run_cwd(workspace: Path | None):
 
     with tempfile.TemporaryDirectory(prefix="spell-bench-") as tmp_dir:
         yield Path(tmp_dir)
-
-
-def _escape_for_spell(s: str) -> str:
-    return (
-        s.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\n", "\\n")
-        .replace("\t", "\\t")
-    )
-
-
-def build_spell_init(prompt: str, trailing: str | None = None) -> str:
-    escaped_prompt = _escape_for_spell(prompt)
-    trailing_expr = trailing or "'(!extend)"
-    return (
-        f'(quine completion (eval (do (quine prompt "{escaped_prompt}") '
-        f"{trailing_expr})))"
-    )
-
 
 def _default_format_for_spell(req: "RunRequest") -> dict[str, list[str]] | None:
     if req.benchmark in SOFTWARE_BENCHMARKS:

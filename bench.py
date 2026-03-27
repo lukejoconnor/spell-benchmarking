@@ -82,6 +82,18 @@ from src.unified_results import (
     parse_model_spec,
     summarize_records,
 )
+from src.terminalbench_runner import (
+    TERMINALBENCH_DATASET,
+    build_terminalbench_command,
+    parse_terminalbench_conditions,
+    prepare_terminalbench_env,
+    prune_terminalbench_docker,
+    resolve_terminalbench_model,
+    terminalbench_condition_run_id,
+    terminalbench_output_file,
+    terminalbench_records_from_run,
+    terminalbench_run_dir,
+)
 from src.swebench_pro_eval import (
     check_docker_manifest_access,
     convert_predictions_jsonl_to_scale_json,
@@ -212,6 +224,12 @@ def _parse_swebench_conditions(value: str) -> list[str]:
     if value == "all":
         return ["spell", "claude_code", "codex", "swe_agent"]
     return [value]
+
+
+def _parse_terminalbench_conditions_option(values: tuple[str, ...]) -> list[str]:
+    if not values:
+        return parse_terminalbench_conditions(["all"])
+    return parse_terminalbench_conditions(list(values))
 
 
 def _cleanup_swebench_instance_images(image_names: set[str]) -> None:
@@ -2144,6 +2162,157 @@ def run_featurebench(
             append_jsonl(output_file, record)
 
         _print_summary(output_file, run_id, cond, name=name)
+
+
+@cli.command("terminalbench")
+@click.option(
+    "--condition",
+    "condition_values",
+    multiple=True,
+    type=click.Choice(["spell", "claude_code", "codex", "all"]),
+    default=("all",),
+    help="Condition(s) to run. Repeat the flag to run multiple explicit conditions.",
+)
+@click.option("--dataset", default=TERMINALBENCH_DATASET, show_default=True)
+@click.option("--model", default=None, help="provider:model override for Spell")
+@click.option("--claude-model", default=None, help="Model override for Claude Code")
+@click.option("--codex-model", default=None, help="Model override for Codex CLI")
+@click.option("--items", "task_ids", multiple=True, help="Specific Terminal-Bench task IDs")
+@click.option("-t", "task_ids_short", multiple=True, help="Specific Terminal-Bench task IDs")
+@click.option("--n", "n_tasks", type=int, default=None, help="Limit to N tasks")
+@click.option("--budget", type=float, default=5.0, show_default=True, help="Spell budget in USD")
+@click.option("--n-concurrent", type=int, default=1, show_default=True)
+@click.option("--agent", default=None, help="Spell agent override")
+@click.option("--cleanup/--no-cleanup", default=True, show_default=True)
+@click.option("--trace/--no-trace", default=True, show_default=True, help="Extract Spell traces to traces/<run-id>/spell/")
+@click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
+@click.option("--name", default=None, help="Label for this run variant (flows into output directories and JSONL records)")
+@click.option("--trailing", default=None, help="Custom Spell trailing expression (default: '(!extend))")
+@click.option("--dry-run", is_flag=True, default=False)
+@click.option("--run-id", default=None)
+@click.option("--output", default=None, help="JSONL output path")
+def run_terminalbench(
+    condition_values: tuple[str, ...],
+    dataset: str,
+    model: str | None,
+    claude_model: str | None,
+    codex_model: str | None,
+    task_ids: tuple[str, ...],
+    task_ids_short: tuple[str, ...],
+    n_tasks: int | None,
+    budget: float,
+    n_concurrent: int,
+    agent: str | None,
+    cleanup: bool,
+    trace: bool,
+    reasoning_effort: str,
+    name: str | None,
+    trailing: str | None,
+    dry_run: bool,
+    run_id: str | None,
+    output: str | None,
+) -> None:
+    run_id = run_id or _run_id("terminalbench")
+    output_file = Path(output) if output else terminalbench_output_file(run_id)
+    conditions = _parse_terminalbench_conditions_option(condition_values)
+    requested_task_ids = tuple(task_ids) + tuple(task_ids_short)
+
+    click.echo(f"Run ID: {run_id}")
+    click.echo(f"Output: {output_file}")
+    if name:
+        click.echo(f"Name: {name}")
+
+    env = prepare_terminalbench_env(BENCHMARK_ROOT)
+    if env.get("DOCKER_HOST"):
+        click.echo(f"DOCKER_HOST: {env['DOCKER_HOST']}")
+
+    models_by_condition = {
+        "spell": model,
+        "claude_code": claude_model,
+        "codex": codex_model,
+    }
+    commands: list[dict[str, Any]] = []
+    for cond in conditions:
+        tb_run_id = terminalbench_condition_run_id(run_id, cond, name=name)
+        cmd = build_terminalbench_command(
+            condition=cond,
+            run_id=tb_run_id,
+            model=models_by_condition.get(cond),
+            dataset=dataset,
+            task_ids=requested_task_ids,
+            n_tasks=n_tasks,
+            n_concurrent=n_concurrent,
+            budget=budget,
+            cleanup=cleanup,
+            reasoning_effort=reasoning_effort,
+            agent_file=agent,
+            trailing=trailing,
+            trace=trace,
+        )
+        commands.append(
+            {
+                "condition": cond,
+                "tb_run_id": tb_run_id,
+                "model": resolve_terminalbench_model(cond, models_by_condition.get(cond)),
+                "run_dir": str(terminalbench_run_dir(run_id, cond, name=name)),
+                "command": cmd,
+            }
+        )
+
+    if dry_run:
+        click.echo("Dry run config:")
+        click.echo(
+            json.dumps(
+                {
+                    "dataset": dataset,
+                    "conditions": conditions,
+                    "task_ids": list(requested_task_ids),
+                    "n_tasks": n_tasks,
+                    "n_concurrent": n_concurrent,
+                    "budget": budget,
+                    "cleanup": cleanup,
+                    "trace": trace,
+                    "reasoning_effort": reasoning_effort,
+                    "name": name,
+                    "trailing": trailing,
+                    "commands": commands,
+                },
+                indent=2,
+            )
+        )
+        return
+
+    host_trace_root = _resolve_trace_dir(run_id, trace)
+    if host_trace_root:
+        click.echo(f"Trace dir: {host_trace_root}")
+
+    for idx, command_info in enumerate(commands):
+        cond = command_info["condition"]
+        click.echo(f"\n--- Running {cond} ---")
+        subprocess.run(command_info["command"], check=True, cwd=BENCHMARK_ROOT, env=env)
+
+        records = terminalbench_records_from_run(
+            run_dir=terminalbench_run_dir(run_id, cond, name=name),
+            run_id=run_id,
+            condition=cond,
+            dataset=dataset,
+            model_spec=command_info["model"],
+            name=name,
+            agent_file=agent if cond == "spell" else None,
+            host_trace_root=_trace_dir_for_condition(host_trace_root, cond, name=name) if cond == "spell" else None,
+        )
+        for record in records:
+            append_jsonl(output_file, record)
+
+        click.echo(
+            f"  Imported {len(records)} Terminal-Bench result(s) from "
+            f"{terminalbench_run_dir(run_id, cond, name=name)}"
+        )
+        _print_summary(output_file, run_id, cond, name=name)
+
+        if cleanup and idx < len(commands) - 1:
+            click.echo("  Pruning Docker before next condition...")
+            prune_terminalbench_docker(env)
 
 
 SAB_BENCHMARK_DIR = BENCHMARK_ROOT / "data" / "scienceagentbench" / "benchmark" / "benchmark"

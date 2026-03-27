@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import os
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
+if str(BENCHMARK_ROOT) not in sys.path:
+    sys.path.insert(0, str(BENCHMARK_ROOT))
+
 from src.docker_agents import (
     ExecOutput,
     _load_swe_agent_trajectory,
+    build_spell_init,
     resolve_spell_model,
     spell_env_vars,
 )
@@ -16,6 +22,12 @@ from src.docker_agents import (
 class DockerAgentsTests(unittest.TestCase):
     def test_resolve_spell_model_preserves_fireworks_prefix(self) -> None:
         self.assertEqual(resolve_spell_model("fireworks:glm-5"), "fireworks:glm-5")
+
+    def test_build_spell_init_defaults_to_extend(self) -> None:
+        init = build_spell_init("Solve it")
+
+        self.assertIn('(quine prompt "Solve it")', init)
+        self.assertIn("'(!extend)", init)
 
     def test_spell_env_vars_forwards_fireworks_api_key(self) -> None:
         with patch.dict(os.environ, {"FIREWORKS_API_KEY": "fw-test"}, clear=False):
