@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -68,7 +69,7 @@ def terminalbench_output_file(run_id: str) -> Path:
 def terminalbench_condition_run_id(run_id: str, condition: str, *, name: str | None = None) -> str:
     parts = [condition]
     if name:
-        parts.append(name)
+        parts.append(_sanitize_terminalbench_segment(name, "name"))
     parts.append(run_id)
     return "_".join(parts)
 
@@ -266,15 +267,44 @@ def _condition_provider(condition: str, model: str | None) -> str | None:
     return provider or None
 
 
+def _sanitize_terminalbench_segment(value: str, fallback: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", (value or "").strip())
+    cleaned = cleaned.strip("._-")
+    return cleaned or fallback
+
+
+def _terminalbench_failure_mode(trial: dict[str, Any]) -> str | None:
+    failure_mode = trial.get("failure_mode")
+    if not failure_mode or failure_mode in {"none", "unset"}:
+        return None
+    return str(failure_mode)
+
+
 def _status_for_trial(trial: dict[str, Any]) -> str:
     if trial.get("is_resolved") is True:
         return "resolved"
-    failure_mode = trial.get("failure_mode")
-    if failure_mode and failure_mode not in {"none", "unset"}:
+    failure_mode = _terminalbench_failure_mode(trial)
+    if failure_mode == "agent_timeout":
+        return "timeout"
+    if failure_mode:
         return "error"
     if trial.get("is_resolved") is False:
         return "unresolved"
     return "error"
+
+
+def _error_type_for_trial(trial: dict[str, Any]) -> str | None:
+    failure_mode = _terminalbench_failure_mode(trial)
+    if failure_mode == "agent_timeout":
+        return "timeout"
+    return failure_mode
+
+
+def _error_message_for_trial(trial: dict[str, Any]) -> str | None:
+    failure_mode = _terminalbench_failure_mode(trial)
+    if failure_mode is None:
+        return None
+    return f"Terminal-Bench failure: {failure_mode}"
 
 
 def terminalbench_records_from_run(
@@ -297,6 +327,9 @@ def terminalbench_records_from_run(
     for trial in trials:
         task_id = trial["task_id"]
         trial_name = trial["trial_name"]
+        status = _status_for_trial(trial)
+        error_type = _error_type_for_trial(trial)
+        error_message = _error_message_for_trial(trial)
         agent_result = _load_agent_result(run_dir, task_id, trial_name)
         tokens_in = trial.get("total_input_tokens")
         tokens_out = trial.get("total_output_tokens")
@@ -336,17 +369,17 @@ def terminalbench_records_from_run(
                 provider=_condition_provider(condition, resolved_model),
                 model=normalized_model or None,
                 agent_file=agent_file,
-                status=_status_for_trial(trial),
+                status=status,
                 response_text=None,
                 patch=None,
                 answer_extracted=None,
-                correct=trial.get("is_resolved"),
+                correct=None if error_message else trial.get("is_resolved"),
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
                 cost_usd=cost_usd,
                 latency_ms=_latency_ms(trial.get("agent_started_at"), trial.get("agent_ended_at")),
-                error_type=trial.get("failure_mode") if _status_for_trial(trial) == "error" else None,
-                error_message=None,
+                error_type=error_type,
+                error_message=error_message,
                 metadata=metadata,
                 name=name,
             )

@@ -13,7 +13,9 @@ if str(BENCHMARK_ROOT) not in sys.path:
 from src.terminalbench_runner import (
     build_terminalbench_command,
     parse_terminalbench_conditions,
+    terminalbench_condition_run_id,
     terminalbench_records_from_run,
+    terminalbench_run_dir,
 )
 
 
@@ -56,6 +58,16 @@ class TerminalBenchRunnerTests(unittest.TestCase):
         self.assertIn("-k agent_file=config/agents/io-acm-tc.agent.edn", rendered)
         self.assertIn("-k trailing='(!describe io)", rendered)
         self.assertIn("-k trace=false", rendered)
+
+    def test_terminalbench_run_id_sanitizes_name(self) -> None:
+        self.assertEqual(
+            terminalbench_condition_run_id("terminalbench_demo", "spell", name="io/acm"),
+            "spell_io_acm_terminalbench_demo",
+        )
+        self.assertEqual(
+            terminalbench_run_dir("terminalbench_demo", "spell", name="io/acm"),
+            Path("results") / "terminal-bench" / "spell_io_acm_terminalbench_demo",
+        )
 
     def test_terminalbench_records_copy_spell_traces_and_cost(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -111,6 +123,49 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             self.assertEqual(record.latency_ms, 2000.0)
             copied_trace = Path(record.metadata["trace_dir"])
             self.assertTrue((copied_trace / "trace-1" / "tree.txt").exists())
+
+    def test_terminalbench_failures_become_unscored_error_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            run_dir = root / "results" / "spell_demo"
+            trial_dir = run_dir / "hello-world" / "hello-world.1-of-1.spell_demo"
+            agent_log_dir = trial_dir / "agent-logs"
+            agent_log_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "results.json").write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "trial_name": "hello-world.1-of-1.spell_demo",
+                                "task_id": "hello-world",
+                                "is_resolved": False,
+                                "failure_mode": "agent_timeout",
+                                "parser_results": {"check": "failed"},
+                                "total_input_tokens": 100,
+                                "total_output_tokens": 25,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            records = terminalbench_records_from_run(
+                run_dir=run_dir,
+                run_id="terminalbench_demo",
+                condition="spell",
+                dataset="terminal-bench-core==0.1.1",
+                model_spec="anthropic-tc:opus46",
+                name=None,
+                agent_file=None,
+            )
+
+            self.assertEqual(len(records), 1)
+            record = records[0]
+            self.assertEqual(record.status, "timeout")
+            self.assertIsNone(record.correct)
+            self.assertEqual(record.error_type, "timeout")
+            self.assertEqual(record.error_message, "Terminal-Bench failure: agent_timeout")
 
     def test_terminalbench_records_estimate_codex_cost_from_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
