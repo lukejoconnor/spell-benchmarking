@@ -142,6 +142,10 @@ def build_terminalbench_command(
     else:
         cmd.append("--no-cleanup")
 
+    # Set the harness-level agent timeout to 900s (15 min).
+    # The tb CLI defaults to 360s which kills slow Spell runs prematurely.
+    cmd.extend(["--global-agent-timeout-sec", "900"])
+
     for task_id in task_ids:
         cmd.extend(["-t", task_id])
     if n_tasks is not None:
@@ -152,7 +156,7 @@ def build_terminalbench_command(
         agent_kwargs = {
             "budget": budget,
             "sh_timeout": 120,
-            "agent_timeout": 600,
+            "agent_timeout": 900,
             "reasoning_effort": reasoning_effort,
             "trace": trace,
         }
