@@ -121,7 +121,7 @@ class Worktree:
             return ""
         try:
             result = subprocess.run(
-                ["git", "diff", "--cached", base],
+                ["git", "diff", "--cached", base, "--", ".", ":!.spell-trace"],
                 cwd=self.path, capture_output=True, timeout=60,
             )
         finally:
@@ -149,7 +149,7 @@ class Worktree:
             return []
         try:
             result = subprocess.run(
-                ["git", "diff", "--name-only", "--cached", base],
+                ["git", "diff", "--name-only", "--cached", base, "--", ".", ":!.spell-trace"],
                 cwd=self.path, capture_output=True, timeout=60,
             )
         finally:

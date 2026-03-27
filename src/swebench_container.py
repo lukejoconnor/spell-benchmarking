@@ -399,7 +399,8 @@ class SWEBenchContainer:
 
     def diff(self, base: str = "HEAD") -> str:
         result = self.exec_run(
-            f"git add -A && git diff --cached {shlex.quote(base)}; "
+            f"git add -A && git diff --cached {shlex.quote(base)}"
+            " -- . ':!.spell-trace'; "
             "status=$?; git reset -q >/dev/null 2>&1; exit $status",
             workdir=self.container_workdir,
         )
@@ -409,7 +410,8 @@ class SWEBenchContainer:
 
     def changed_files(self, base: str = "HEAD") -> list[str]:
         result = self.exec_run(
-            f"git add -A && git diff --name-only --cached {shlex.quote(base)}; "
+            f"git add -A && git diff --name-only --cached {shlex.quote(base)}"
+            " -- . ':!.spell-trace'; "
             "status=$?; git reset -q >/dev/null 2>&1; exit $status",
             workdir=self.container_workdir,
         )

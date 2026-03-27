@@ -62,7 +62,7 @@ if [ -d "$HOME/.nvm" ]; then
         exit 0
     fi
 fi
-apt-get update -qq && apt-get install -y -qq curl >/dev/null 2>&1
+apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq curl >/dev/null 2>&1
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash
 source "$HOME/.nvm/nvm.sh"
 nvm install 22
@@ -76,8 +76,8 @@ export PATH="$HOME/.local/bin:$PATH"
 if ! command -v java >/dev/null 2>&1; then
   if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq
-    apt-get install -y -qq ca-certificates curl default-jre >/dev/null
+    apt-get -o Acquire::AllowInsecureRepositories=true update -qq
+    apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq ca-certificates curl default-jre >/dev/null
   elif command -v apk >/dev/null 2>&1; then
     apk add --no-cache ca-certificates curl bash openjdk17-jre >/dev/null
   elif command -v yum >/dev/null 2>&1; then
@@ -92,8 +92,8 @@ if ! (command -v clojure >/dev/null 2>&1 && clojure -Sdescribe >/dev/null 2>&1) 
   if ! command -v curl >/dev/null 2>&1; then
     if command -v apt-get >/dev/null 2>&1; then
       export DEBIAN_FRONTEND=noninteractive
-      apt-get update -qq
-      apt-get install -y -qq curl >/dev/null
+      apt-get -o Acquire::AllowInsecureRepositories=true update -qq
+      apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq curl >/dev/null
     elif command -v apk >/dev/null 2>&1; then
       apk add --no-cache curl >/dev/null
     elif command -v yum >/dev/null 2>&1; then
@@ -234,7 +234,7 @@ class DockerWorkspaceContainer:
         self.container_id = result.stdout.strip()
         self.exec_run(
             "command -v git >/dev/null 2>&1 || "
-            "(apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1)",
+            "(apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq git >/dev/null 2>&1)",
             timeout=240,
             workdir="/",
         )
@@ -376,7 +376,8 @@ class DockerWorkspaceContainer:
 
     def diff(self, base: str = "HEAD") -> str:
         result = self.exec_run(
-            f"git add -A && git diff --cached {shlex.quote(base)}; "
+            f"git add -A && git diff --cached {shlex.quote(base)}"
+            " -- . ':!.spell-trace'; "
             "status=$?; git reset -q >/dev/null 2>&1; exit $status"
         )
         if result.exit_code != 0:
@@ -385,7 +386,8 @@ class DockerWorkspaceContainer:
 
     def changed_files(self, base: str = "HEAD") -> list[str]:
         result = self.exec_run(
-            f"git add -A && git diff --name-only --cached {shlex.quote(base)}; "
+            f"git add -A && git diff --name-only --cached {shlex.quote(base)}"
+            " -- . ':!.spell-trace'; "
             "status=$?; git reset -q >/dev/null 2>&1; exit $status"
         )
         if result.exit_code != 0:
@@ -423,7 +425,7 @@ def install_nvm_node(container: DockerWorkspaceContainer) -> bool:
             time.sleep(2)
 
     fallback = container.exec_run(
-        "apt-get update -qq && apt-get install -y -qq nodejs npm >/dev/null 2>&1 && "
+        "apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq nodejs npm >/dev/null 2>&1 && "
         'echo "node installed via apt: $(node --version 2>/dev/null || echo missing)"',
         timeout=300,
         workdir="/",
@@ -470,7 +472,7 @@ def install_nvm_node_exec(exec_fn: Callable[..., ExecOutput]) -> bool:
     if result.exit_code == 0:
         return True
     fallback = exec_fn(
-        "apt-get update -qq && apt-get install -y -qq nodejs npm >/dev/null 2>&1",
+        "apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq nodejs npm >/dev/null 2>&1",
         timeout=300,
         workdir="/",
     )
@@ -660,7 +662,10 @@ def codex_run_command(
     web_search: bool = False,
     ephemeral: bool = True,
 ) -> str:
-    parts = ['[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"', "&&", "codex"]
+    parts = ['[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"', "&&"]
+    if workdir:
+        parts.extend(["cd", shlex.quote(workdir), "&&"])
+    parts.append("codex")
     if web_search:
         parts.append("--search")
     else:
@@ -670,8 +675,6 @@ def codex_run_command(
     if ephemeral:
         parts.append("--ephemeral")
     parts.extend(["--skip-git-repo-check", "--sandbox", "danger-full-access"])
-    if workdir:
-        parts.extend(["--cwd", shlex.quote(workdir)])
     parts.extend(["-m", shlex.quote(model), shlex.quote(prompt)])
     return " ".join(parts)
 
@@ -1037,13 +1040,18 @@ def spell_run_command(
         payload["prompt"] = prompt
     payload = {key: value for key, value in payload.items() if value is not None}
     payload_json = json.dumps(payload, separators=(",", ":"))
+    # Use a heredoc with single-quoted delimiter to prevent all shell
+    # interpretation of the JSON payload.  shlex.quote + printf was
+    # previously used, but some Docker container bash environments
+    # mangle '!' characters inside the payload despite single-quoting.
     return (
         'export PATH="$HOME/.local/bin:$PATH" && '
         'CLOJURE_BIN="$(if command -v clojure >/dev/null 2>&1 && clojure -Sdescribe >/dev/null 2>&1; '
         'then echo clojure; elif command -v clj >/dev/null 2>&1; then echo clj; else echo clojure; fi)" && '
-        f"printf %s {shlex.quote(payload_json)} | "
         f"$CLOJURE_BIN -Sdeps {shlex.quote(SPELL_SDEPS)} -M -m spell.benchmark-api "
-        "--request - --response -"
+        "--request - --response - <<'SPELL_PAYLOAD'\n"
+        f"{payload_json}\n"
+        "SPELL_PAYLOAD"
     )
 
 
