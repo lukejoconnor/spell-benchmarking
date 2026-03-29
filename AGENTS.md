@@ -153,6 +153,9 @@ Spell `--model` specs (provider prefix + model name from `.provider.edn`):
 | Anthropic (prefill) | `anthropic-pf:claude-opus-4-6` | `claude-opus-4-6` |
 | Codex (toolcall) | `codex-tc:gpt-5.3-codex` | `gpt-5.3-codex` |
 | Codex (message) | `codex-msg:gpt-5.3-codex` | `gpt-5.3-codex` |
+| OpenAI (toolcall) | `openai-tc:gpt-5.4` | `gpt-5.4` |
+
+`codex-tc` and `codex-msg` route through the ChatGPT subscription API and require `~/.codex/auth.json` (obtained via `codex` CLI login). `openai-tc` routes through the standard OpenAI Responses API using `OPENAI_API_KEY` — use this on GCP or when Codex auth is unavailable.
 
 Model names must match the provider's API exactly. The provider `.edn` files in `config/providers/` define defaults.
 

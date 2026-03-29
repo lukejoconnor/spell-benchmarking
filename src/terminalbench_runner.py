@@ -156,6 +156,7 @@ def build_terminalbench_command(
         agent_kwargs = {
             "budget": budget,
             "sh_timeout": 120,
+            "agent_timeout": 900,
             "reasoning_effort": reasoning_effort,
             "trace": trace,
         }
