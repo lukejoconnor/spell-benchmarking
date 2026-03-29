@@ -22,7 +22,13 @@ from swebench.harness.constants import (
     KEY_INSTANCE_ID,
     KEY_PREDICTION,
 )
-from swebench.harness.docker_build import build_container, close_logger, setup_logger
+from swebench.harness.docker_build import (
+    BuildImageError,
+    build_container,
+    build_env_images,
+    close_logger,
+    setup_logger,
+)
 from swebench.harness.grading import get_eval_report
 from swebench.harness.test_spec.test_spec import TestSpec, make_test_spec
 
@@ -223,14 +229,7 @@ class SWEBenchContainer:
         log_dir = Path(tempfile.mkdtemp(prefix=f"swebench-build-{uuid.uuid4().hex[:8]}-"))
         self._logger = setup_logger(self.item.instance_id, log_dir / "prepare_image.log")
         try:
-            container = build_container(
-                self._test_spec,
-                self._docker_client,
-                uuid.uuid4().hex[:8],
-                self._logger,
-                False,
-                False,
-            )
+            container = self._build_with_auto_env(log_dir)
             container.start()
         except Exception:
             close_logger(self._logger)
@@ -240,6 +239,31 @@ class SWEBenchContainer:
         self._image_name = self._test_spec.instance_image_key
         self._container_obj = container
         self.container_id = container.id
+
+    def _build_with_auto_env(self, log_dir: Path):
+        """Build the instance container, auto-building env images if missing."""
+        run_id = uuid.uuid4().hex[:8]
+        try:
+            return build_container(
+                self._test_spec, self._docker_client, run_id, self._logger, False, False
+            )
+        except BuildImageError as exc:
+            if "not found" not in str(exc).lower():
+                raise
+        logger.info(
+            "Env image missing for %s; building from scratch",
+            self.item.instance_id,
+        )
+        build_env_images(self._docker_client, [self._test_spec], False, False, 1)
+        env_logger = setup_logger(
+            self.item.instance_id, log_dir / "rebuild_after_env.log"
+        )
+        try:
+            return build_container(
+                self._test_spec, self._docker_client, run_id, env_logger, False, False
+            )
+        finally:
+            close_logger(env_logger)
 
     def _start_pro_container(self) -> None:
         image_uri = self._resolve_image_name()
