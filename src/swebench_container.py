@@ -10,6 +10,7 @@ import shlex
 import subprocess
 import tarfile
 import tempfile
+import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +40,8 @@ from .swebench_pro_eval import dockerhub_image_for_instance, ensure_scale_pro_ev
 logger = logging.getLogger(__name__)
 
 PRO_WORKDIR = "/app"
+_ENV_BUILD_LOCKS: dict[str, threading.Lock] = {}
+_ENV_BUILD_LOCKS_GUARD = threading.Lock()
 
 
 @dataclass(slots=True)
@@ -166,6 +169,23 @@ def remove_swebench_instance_image(image_name: str) -> bool:
     return False
 
 
+def _env_build_lock_key(test_spec: Any) -> str:
+    env_image_key = getattr(test_spec, "env_image_key", None)
+    if env_image_key:
+        return str(env_image_key)
+    return str(test_spec.instance_image_key)
+
+
+def _env_build_lock_for(test_spec: Any) -> threading.Lock:
+    key = _env_build_lock_key(test_spec)
+    with _ENV_BUILD_LOCKS_GUARD:
+        lock = _ENV_BUILD_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _ENV_BUILD_LOCKS[key] = lock
+        return lock
+
+
 class SWEBenchContainer:
     """Container backed by official SWE-bench instance images."""
 
@@ -250,11 +270,26 @@ class SWEBenchContainer:
         except BuildImageError as exc:
             if "not found" not in str(exc).lower():
                 raise
+        env_lock_key = _env_build_lock_key(self._test_spec)
         logger.info(
-            "Env image missing for %s; building from scratch",
+            "Env image %s missing for %s; waiting for rebuild lock",
+            env_lock_key,
             self.item.instance_id,
         )
-        build_env_images(self._docker_client, [self._test_spec], False, False, 1)
+        with _env_build_lock_for(self._test_spec):
+            try:
+                return build_container(
+                    self._test_spec, self._docker_client, run_id, self._logger, False, False
+                )
+            except BuildImageError as exc:
+                if "not found" not in str(exc).lower():
+                    raise
+            logger.info(
+                "Env image %s missing for %s; building from scratch",
+                env_lock_key,
+                self.item.instance_id,
+            )
+            build_env_images(self._docker_client, [self._test_spec], False, False, 1)
         env_logger = setup_logger(
             self.item.instance_id, log_dir / "rebuild_after_env.log"
         )

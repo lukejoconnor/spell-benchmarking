@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+from swebench.harness.docker_build import BuildImageError
 
 from src.swebench_container import (
     SWEBenchContainer,
@@ -113,3 +117,60 @@ def test_stop_removes_stopped_container() -> None:
         ["docker", "rm", "container-123"],
     ]
     assert container.container_id is None
+
+
+def test_build_with_auto_env_serializes_shared_env_rebuilds(tmp_path: Path) -> None:
+    container_a = SWEBenchContainer(_make_item(instance_id="item-a"))
+    container_b = SWEBenchContainer(_make_item(instance_id="item-b"))
+    shared_spec = SimpleNamespace(
+        env_image_key="sweb.env.shared:latest",
+        instance_image_key="sweb.eval.shared:latest",
+    )
+    for container in (container_a, container_b):
+        container._test_spec = shared_spec
+        container._docker_client = object()
+        container._logger = object()
+
+    barrier = threading.Barrier(2)
+    state_lock = threading.Lock()
+    attempt_counts: dict[int, int] = {}
+    build_env_call_count = 0
+
+    def fake_build_container(test_spec, docker_client, run_id, logger, *_args):
+        del test_spec, docker_client, logger
+        thread_id = threading.get_ident()
+        with state_lock:
+            attempt = attempt_counts.get(thread_id, 0) + 1
+            attempt_counts[thread_id] = attempt
+            env_ready = build_env_call_count > 0
+        if not env_ready:
+            if attempt == 1:
+                barrier.wait(timeout=2)
+            raise BuildImageError(
+                "sweb.env.shared:latest",
+                "env image not found",
+                SimpleNamespace(log_file="build.log"),
+            )
+        return SimpleNamespace(id=f"container-{run_id}")
+
+    def fake_build_env_images(docker_client, specs, *_args):
+        del docker_client, specs
+        nonlocal build_env_call_count
+        with state_lock:
+            build_env_call_count += 1
+
+    with (
+        patch("src.swebench_container.build_container", side_effect=fake_build_container),
+        patch("src.swebench_container.build_env_images", side_effect=fake_build_env_images),
+        patch("src.swebench_container.setup_logger", return_value=object()),
+        patch("src.swebench_container.close_logger"),
+    ):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(container_a._build_with_auto_env, tmp_path / "a"),
+                pool.submit(container_b._build_with_auto_env, tmp_path / "b"),
+            ]
+            results = [future.result() for future in futures]
+
+    assert build_env_call_count == 1
+    assert all(result.id.startswith("container-") for result in results)
