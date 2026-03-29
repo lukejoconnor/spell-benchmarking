@@ -153,9 +153,6 @@ Spell `--model` specs (provider prefix + model name from `.provider.edn`):
 | Anthropic (prefill) | `anthropic-pf:claude-opus-4-6` | `claude-opus-4-6` |
 | Codex (toolcall) | `codex-tc:gpt-5.3-codex` | `gpt-5.3-codex` |
 | Codex (message) | `codex-msg:gpt-5.3-codex` | `gpt-5.3-codex` |
-| OpenAI (toolcall) | `openai-tc:gpt-5.4` | `gpt-5.4` |
-
-`codex-tc` and `codex-msg` route through the ChatGPT subscription API and require `~/.codex/auth.json` (obtained via `codex` CLI login). `openai-tc` routes through the standard OpenAI Responses API using `OPENAI_API_KEY` — use this on GCP or when Codex auth is unavailable.
 
 Model names must match the provider's API exactly. The provider `.edn` files in `config/providers/` define defaults.
 
@@ -214,11 +211,10 @@ Note: ScienceAgentBench "correct" = program executes and produces expected outpu
 |-----------|-------|----|-------|
 | Terminal-Bench (25, Opus 4.6) | 76% | 52% | `terminal-bench-pilot` |
 | Terminal-Bench (25, gpt-5.3-codex) | 44% | 56%* | `terminal-bench-codex` |
-| Terminal-Bench (25, gpt-5.4, ACM) | 40% | 60%* | `termbench-gpt54-codex-acm` |
 
-*CC column for Codex runs = Codex CLI (not Claude Code).
+*CC column for Codex run = Codex CLI (not Claude Code).
 
-Opus 4.6: Spell wins 6, CC wins 0. gpt-5.3-codex: Codex CLI wins 5, Spell wins 1 genuine + 1 infra fluke. gpt-5.4: Codex CLI wins 7, Spell wins 2 (1 genuine + 1 Codex infra failure). Model difference dominates framework difference.
+Opus 4.6: Spell wins 6, CC wins 0. Codex: Codex CLI wins 5, Spell wins 1 genuine + 1 infra fluke. Model difference dominates framework difference.
 
 ## Infrastructure
 
