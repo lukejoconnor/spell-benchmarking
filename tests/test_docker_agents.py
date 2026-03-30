@@ -13,6 +13,7 @@ if str(BENCHMARK_ROOT) not in sys.path:
 from src.docker_agents import (
     ExecOutput,
     _load_swe_agent_trajectory,
+    _normalize_spell_trailing,
     build_spell_init,
     resolve_spell_model,
     spell_env_vars,
@@ -28,6 +29,19 @@ class DockerAgentsTests(unittest.TestCase):
 
         self.assertIn('(quine prompt "Solve it")', init)
         self.assertIn("'(!extend)", init)
+
+    def test_build_spell_init_normalizes_shell_escaped_bang_in_trailing(self) -> None:
+        init = build_spell_init("Solve it", trailing="'(\\!describe io)")
+
+        self.assertIn("'(!describe io)", init)
+        self.assertNotIn("\\!describe", init)
+
+    def test_normalize_spell_trailing_preserves_backslash_bang_inside_strings(self) -> None:
+        trailing = "'(do (think \"literal \\\\! stays\") (!describe io))"
+
+        normalized = _normalize_spell_trailing(trailing)
+
+        self.assertEqual(normalized, trailing)
 
     def test_spell_env_vars_forwards_fireworks_api_key(self) -> None:
         with patch.dict(os.environ, {"FIREWORKS_API_KEY": "fw-test"}, clear=False):

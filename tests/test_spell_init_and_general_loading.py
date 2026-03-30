@@ -68,6 +68,12 @@ class SpellInitRegressionTest(unittest.TestCase):
         self.assertIn("'(do (quine sys-reminder \"Use tools\") (!describe io) (!extend))", init)
         self.assertNotIn("'(!extend))))", init)
 
+    def test_build_spell_init_fixes_shell_escaped_describe_trailing(self):
+        init = build_spell_init("Solve it", trailing="'(\\!describe io)")
+
+        self.assertIn("'(!describe io)", init)
+        self.assertNotIn("\\!describe", init)
+
     def test_fix_loop_variant_uses_bound_prompt_symbol(self):
         init = bench._make_spell_init(
             "Repository: demo/repo\n\n## Issue to Fix\n\nHandle newline-sensitive input.",
