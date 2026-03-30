@@ -67,6 +67,8 @@ def run_unified_featurebench(
     if result.raw and not result.raw.get("ok", False):
         status = "timeout" if result.raw.get("error_type") == "timeout" else "error"
 
+    result_metadata = getattr(result, "metadata", None) or {}
+
     return (
         RunResponse(
             status=status,
@@ -84,6 +86,7 @@ def run_unified_featurebench(
                 "test_results": test_results,
                 "trace_dir": result.trace_dir,
                 "raw": result.raw,
+                **result_metadata,
             },
         ),
         tests_passed,

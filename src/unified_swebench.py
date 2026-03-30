@@ -91,6 +91,8 @@ def run_unified_swebench(
     if result.raw and not result.raw.get("ok", False):
         status = "timeout" if result.raw.get("error_type") == "timeout" else "error"
 
+    result_metadata = getattr(result, "metadata", None) or {}
+
     return RunResponse(
         status=status,
         response_text=result.response_text,
@@ -107,6 +109,7 @@ def run_unified_swebench(
             "instance_image_name": image_name,
             "trace_dir": result.trace_dir,
             "raw": result.raw,
+            **result_metadata,
             "same_container_resolved": eval_result.resolved,
             "same_container_eval": eval_result.raw_report,
             "same_container_eval_log": eval_log_path,

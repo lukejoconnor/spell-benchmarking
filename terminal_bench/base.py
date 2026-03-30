@@ -134,6 +134,7 @@ class DockerExecAgent(BaseAgent):
             "output_tokens": usage.output_tokens if usage else 0,
             "total_input_tokens": usage.total_input_tokens if usage else 0,
             "cost_usd": usage.cost_usd if usage else None,
+            "cost_source": usage.cost_source if usage else None,
         }
         (logging_dir / "result.json").write_text(json.dumps(result_data, indent=2))
 

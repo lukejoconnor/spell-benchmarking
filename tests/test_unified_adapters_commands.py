@@ -151,9 +151,8 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
                     json.dumps({"type": "thread.started", "thread_id": "thread-1"}),
                     json.dumps(
                         {
-                            "type": "assistant_event",
-                            "item": {"type": "assistant_message", "role": "assistant", "content": "done"},
-                            "usage": {"input_tokens": 3, "output_tokens": 2},
+                            "type": "turn.completed",
+                            "usage": {"input_tokens": 3, "cached_input_tokens": 4, "output_tokens": 2},
                         }
                     ),
                     "not-json-line",
@@ -173,6 +172,8 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
             self.assertEqual(payload["condition"], "codex")
             self.assertEqual(payload["item_id"], "item-1")
             self.assertEqual(payload["non_json_lines"], ["not-json-line"])
+            self.assertEqual(response.tokens_in, 7)
+            self.assertEqual(response.metadata.get("cost_source"), "estimated")
 
     @patch("src.unified_adapters.subprocess.run")
     def test_swe_agent_adapter_reads_trajectory_and_writes_trace(self, run_mock):

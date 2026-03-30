@@ -22,6 +22,7 @@ from .docker_agents import (
     _extract_swe_agent_cost,
     _extract_swe_agent_response,
 )
+from .codex_usage import normalize_codex_model, usage_from_events
 
 BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 
@@ -54,34 +55,6 @@ from spell_benchmark_client import SpellBenchmarkClient
 DEFAULT_REASONING_EFFORT = "high"
 SOFTWARE_BENCHMARKS = {"swebench", "featurebench", "scienceagentbench", "exercism"}
 NONSOFTWARE_DEFAULT_FORMAT: dict[str, list[str]] = {"required": ["result"]}
-
-# Per-MTok pricing [input, output] for cost estimation when the CLI
-# doesn't report cost directly (e.g. Codex subscription mode).
-_MODEL_PRICING: dict[str, tuple[float, float]] = {
-    "gpt-5-codex": (1.25, 10.00),
-    "gpt-5.1-codex": (1.25, 10.00),
-    "gpt-5.2-codex": (1.75, 14.00),
-    "gpt-5.3-codex": (1.75, 14.00),
-    "gpt-5-mini": (0.25, 2.00),
-    "gpt-5": (1.25, 10.00),
-    "gpt-5.1": (1.25, 10.00),
-    "gpt-5.2": (1.75, 14.00),
-    "gpt-5.3": (1.75, 14.00),
-    "claude-opus-4-6": (5.00, 25.00),
-    "claude-sonnet-4-6": (1.00, 5.00),
-    "claude-haiku-4-5-20251001": (0.25, 1.25),
-}
-
-
-def _estimate_cost(model: str, tokens_in: int | None, tokens_out: int | None) -> float | None:
-    """Estimate cost from token counts using prefix-matched pricing."""
-    if tokens_in is None or tokens_out is None:
-        return None
-    for prefix, (in_rate, out_rate) in _MODEL_PRICING.items():
-        if model.startswith(prefix):
-            return tokens_in * in_rate / 1_000_000 + tokens_out * out_rate / 1_000_000
-    return None
-
 
 def _benchmark_api_clj_cmd(project_root: Path) -> list[str]:
     # Allow spell.benchmark-api invocations from external workspace CWDs
@@ -504,17 +477,6 @@ class ClaudeCodeAdapter:
         )
 
 
-def _normalize_codex_model(model_spec: str | None, fallback: str | None = None) -> str:
-    raw = (model_spec or fallback or "codex").strip()
-    if ":" in raw:
-        _, raw = raw.split(":", 1)
-    # Keep "codex" as the user-facing default, but resolve to the canonical
-    # Codex CLI model id to avoid metadata fallback warnings.
-    if raw in {"", "codex"}:
-        return "gpt-5-codex"
-    return raw
-
-
 def _parse_jsonl_events(stdout: str) -> tuple[list[dict[str, Any]], list[str]]:
     events: list[dict[str, Any]] = []
     non_json_lines: list[str] = []
@@ -531,53 +493,6 @@ def _parse_jsonl_events(stdout: str) -> tuple[list[dict[str, Any]], list[str]]:
         except json.JSONDecodeError:
             non_json_lines.append(stripped)
     return events, non_json_lines
-
-
-def _iter_dicts(v: Any):
-    if isinstance(v, dict):
-        yield v
-        for child in v.values():
-            yield from _iter_dicts(child)
-    elif isinstance(v, list):
-        for child in v:
-            yield from _iter_dicts(child)
-
-
-def _extract_codex_usage(events: list[dict[str, Any]], model: str = "") -> tuple[int | None, int | None, float | None]:
-    def as_int(v: Any) -> int:
-        return int(v) if isinstance(v, (int, float)) else 0
-
-    usage_candidate: dict[str, Any] | None = None
-    for event in events:
-        for d in _iter_dicts(event):
-            if any(k in d for k in ("input_tokens", "output_tokens", "total_tokens", "total_cost_usd", "cost_usd", "cost")):
-                usage_candidate = d
-
-    if not usage_candidate:
-        return None, None, None
-
-    base_input = usage_candidate.get("input_tokens")
-    cache_creation = usage_candidate.get("cache_creation_input_tokens", 0)
-    cache_read = usage_candidate.get("cache_read_input_tokens", 0)
-    tokens_in = None
-    if isinstance(base_input, (int, float)):
-        tokens_in = as_int(base_input) + as_int(cache_creation) + as_int(cache_read)
-
-    output = usage_candidate.get("output_tokens")
-    tokens_out = int(output) if isinstance(output, (int, float)) else None
-
-    cost = usage_candidate.get("total_cost_usd")
-    if cost is None:
-        cost = usage_candidate.get("cost_usd")
-    if cost is None:
-        cost = usage_candidate.get("cost")
-    cost_usd = float(cost) if isinstance(cost, (int, float)) else None
-
-    # Fall back to token-based estimation when CLI doesn't report cost
-    if cost_usd is None and model:
-        cost_usd = _estimate_cost(model, tokens_in, tokens_out)
-
-    return tokens_in, tokens_out, cost_usd
 
 
 def _extract_codex_error(events: list[dict[str, Any]], stderr: str, return_code: int) -> str:
@@ -674,7 +589,7 @@ class CodexAdapter:
         self.model_spec = model_spec
 
     def run(self, req: RunRequest) -> RunResponse:
-        model = _normalize_codex_model(req.model_spec, self.model_spec)
+        model = normalize_codex_model(req.model_spec, self.model_spec)
         reasoning_effort = req.reasoning_effort or DEFAULT_REASONING_EFFORT
         add_dir = req.metadata.get("add_dir")
 
@@ -740,7 +655,10 @@ class CodexAdapter:
         stdout = (proc.stdout or "").strip()
         stderr = (proc.stderr or "").strip()
         events, non_json_lines = _parse_jsonl_events(stdout)
-        tokens_in, tokens_out, cost_usd = _extract_codex_usage(events, model=model)
+        usage = usage_from_events(events, model=model)
+        tokens_in = usage.total_input_tokens if usage else None
+        tokens_out = usage.output_tokens if usage else None
+        cost_usd = usage.cost_usd if usage else None
         thread_id = _extract_codex_thread_id(events)
 
         response_text = ""
@@ -771,6 +689,7 @@ class CodexAdapter:
         metadata = {
             "requested_model": (req.model_spec or self.model_spec or "codex"),
             "resolved_model": model,
+            "cost_source": usage.cost_source if usage else None,
             "reasoning_effort": reasoning_effort,
             "no_custom_config": codex_launcher != "codex",
             "thread_id": thread_id,

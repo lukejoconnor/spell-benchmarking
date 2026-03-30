@@ -27,6 +27,8 @@ from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Any, Callable, Literal
 
+from .codex_usage import normalize_codex_model, usage_from_events
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_IMAGE = "python:3.11-slim"
@@ -151,6 +153,7 @@ class ParsedUsage:
     cached_input_tokens: int = 0
     output_tokens: int | None = None
     cost_usd: float | None = None
+    cost_source: str | None = None
 
     @property
     def total_input_tokens(self) -> int | None:
@@ -168,6 +171,7 @@ class AgentRunResult:
     error_type: str | None = None
     raw: dict[str, Any] | None = None
     trace_dir: str | None = None
+    metadata: dict[str, Any] | None = None
 
 
 def parse_jsonl_events(stdout: str) -> list[dict[str, Any]]:
@@ -645,13 +649,7 @@ def codex_env_vars() -> dict[str, str]:
 
 
 def resolve_codex_model(model: str | None) -> str:
-    if not model or model == "codex":
-        return "gpt-5-codex"
-    if ":" in model:
-        _, model = model.split(":", 1)
-    if "/" in model:
-        model = model.split("/", 1)[1]
-    return model
+    return normalize_codex_model(model)
 
 
 def codex_run_command(
@@ -679,29 +677,17 @@ def codex_run_command(
     return " ".join(parts)
 
 
-def codex_parse_usage(stdout: str) -> ParsedUsage | None:
+def codex_parse_usage(stdout: str, model: str | None = None) -> ParsedUsage | None:
     events = parse_jsonl_events(stdout)
-    usage_candidate = None
-    for event in events:
-        for dict_value in iter_dicts(event):
-            if any(key in dict_value for key in ("input_tokens", "output_tokens")):
-                usage_candidate = dict_value
-    if not usage_candidate:
+    usage = usage_from_events(events, model=model)
+    if not usage:
         return None
-
-    def _int(value: Any) -> int:
-        return int(value) if isinstance(value, (int, float)) else 0
-
-    total_in = _int(usage_candidate.get("input_tokens", 0))
-    cached = _int(usage_candidate.get("cached_input_tokens", 0))
-    output_tokens = _int(usage_candidate.get("output_tokens", 0))
-    cost = usage_candidate.get("total_cost_usd") or usage_candidate.get("cost_usd")
-    cost_usd = float(cost) if isinstance(cost, (int, float)) else None
     return ParsedUsage(
-        input_tokens=total_in - cached,
-        cached_input_tokens=cached,
-        output_tokens=output_tokens,
-        cost_usd=cost_usd,
+        input_tokens=usage.input_tokens,
+        cached_input_tokens=usage.cached_input_tokens,
+        output_tokens=usage.output_tokens,
+        cost_usd=usage.cost_usd,
+        cost_source=usage.cost_source,
     )
 
 
@@ -1319,12 +1305,16 @@ def run_agent_in_container(
             timeout=timeout,
             env=env,
         )
-        usage = codex_parse_usage(output.stdout)
+        usage = codex_parse_usage(output.stdout, model=resolved_model)
+        metadata = {"resolved_model": resolved_model}
+        if usage and usage.cost_source:
+            metadata["cost_source"] = usage.cost_source
         return AgentRunResult(
             output=output,
             usage=usage,
             error_message=output.stderr[:2000] if output.exit_code != 0 else None,
             error_type="codex_cli_error" if output.exit_code != 0 else None,
+            metadata=metadata,
         )
 
     if condition == "swe_agent":

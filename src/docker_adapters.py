@@ -22,6 +22,8 @@ def _response_from_container_run(
     status = "timeout" if result.output.timed_out else ("ok" if result.output.exit_code == 0 else "error")
     if result.raw and not result.raw.get("ok", False):
         status = "timeout" if result.raw.get("error_type") == "timeout" else "error"
+    result_metadata = getattr(result, "metadata", None) or {}
+
     return RunResponse(
         status=status,
         response_text=result.response_text,
@@ -37,6 +39,7 @@ def _response_from_container_run(
             "changed_files": changed_files,
             "trace_dir": trace_dir,
             "raw": result.raw,
+            **result_metadata,
         },
     )
 

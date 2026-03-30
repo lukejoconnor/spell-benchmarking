@@ -12,8 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .codex_usage import normalize_codex_model, usage_from_payload
 from .docker_agents import discover_spell_root
-from .unified_adapters import _estimate_cost, _normalize_codex_model
 from .unified_results import UnifiedRunRecord, now_iso
 
 TERMINALBENCH_DATASET = "terminal-bench-core==0.1.1"
@@ -246,12 +246,10 @@ def _copy_spell_trace_dir(
     return str(dest)
 
 
-def _normalize_model_for_cost(condition: str, model: str | None) -> str:
+def _normalize_record_model(condition: str, model: str | None) -> str:
     raw = (model or "").strip()
     if condition == "codex":
-        if "/" in raw:
-            raw = raw.split("/", 1)[1]
-        return _normalize_codex_model(raw, raw)
+        return normalize_codex_model(raw, raw)
     if "/" in raw:
         return raw.split("/", 1)[1]
     if ":" in raw:
@@ -325,7 +323,7 @@ def terminalbench_records_from_run(
     trials = payload.get("results") or []
     records: list[UnifiedRunRecord] = []
     resolved_model = resolve_terminalbench_model(condition, model_spec)
-    normalized_model = _normalize_model_for_cost(condition, resolved_model)
+    normalized_model = _normalize_record_model(condition, resolved_model)
 
     for trial in trials:
         task_id = trial["task_id"]
@@ -334,11 +332,10 @@ def terminalbench_records_from_run(
         error_type = _error_type_for_trial(trial)
         error_message = _error_message_for_trial(trial)
         agent_result = _load_agent_result(run_dir, task_id, trial_name)
+        usage = usage_from_payload(agent_result if condition == "codex" else None, model=normalized_model)
         tokens_in = trial.get("total_input_tokens")
         tokens_out = trial.get("total_output_tokens")
-        cost_usd = agent_result.get("cost_usd")
-        if cost_usd is None and condition == "codex":
-            cost_usd = _estimate_cost(normalized_model, tokens_in, tokens_out)
+        cost_usd = usage.cost_usd if usage else agent_result.get("cost_usd")
 
         copied_trace_dir = None
         if condition == "spell":
@@ -357,6 +354,8 @@ def terminalbench_records_from_run(
             "tb_run_dir": str(run_dir),
             "tb_agent_result": agent_result or None,
             "trace_dir": copied_trace_dir,
+            "resolved_model": normalized_model if condition == "codex" else None,
+            "cost_source": usage.cost_source if usage else agent_result.get("cost_source"),
         }
         metadata = {key: value for key, value in metadata.items() if value is not None}
 

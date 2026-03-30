@@ -73,7 +73,7 @@ class CodexAgent(DockerExecAgent):
         Scans all events for the last dict containing token keys.
         Handles turn.completed events and any nested usage structures.
         """
-        usage = codex_parse_usage(stdout)
+        usage = codex_parse_usage(stdout, model=self._resolve_model())
         if not usage:
             logger.warning("No usage data found in Codex output")
         return usage

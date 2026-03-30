@@ -167,14 +167,23 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             self.assertEqual(record.error_type, "timeout")
             self.assertEqual(record.error_message, "Terminal-Bench failure: agent_timeout")
 
-    def test_terminalbench_records_estimate_codex_cost_from_tokens(self) -> None:
+    def test_terminalbench_records_use_codex_agent_usage_estimate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             run_dir = root / "results" / "codex_demo"
             trial_dir = run_dir / "hello-world" / "hello-world.1-of-1.codex_demo"
             agent_log_dir = trial_dir / "agent-logs"
             agent_log_dir.mkdir(parents=True, exist_ok=True)
-            (agent_log_dir / "result.json").write_text(json.dumps({}), encoding="utf-8")
+            (agent_log_dir / "result.json").write_text(
+                json.dumps(
+                    {
+                        "input_tokens": 750_000,
+                        "cached_input_tokens": 250_000,
+                        "output_tokens": 100_000,
+                    }
+                ),
+                encoding="utf-8",
+            )
             (run_dir / "results.json").write_text(
                 json.dumps(
                     {
@@ -208,6 +217,8 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             record = records[0]
             self.assertEqual(record.status, "unresolved")
             self.assertAlmostEqual(record.cost_usd or 0.0, 3.15, places=6)
+            self.assertEqual(record.metadata["resolved_model"], "gpt-5.3-codex")
+            self.assertEqual(record.metadata["cost_source"], "estimated")
 
 
 if __name__ == "__main__":
