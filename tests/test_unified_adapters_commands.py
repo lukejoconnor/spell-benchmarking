@@ -152,7 +152,7 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
                     json.dumps(
                         {
                             "type": "turn.completed",
-                            "usage": {"input_tokens": 3, "cached_input_tokens": 4, "output_tokens": 2},
+                            "usage": {"input_tokens": 7, "cached_input_tokens": 4, "output_tokens": 2},
                         }
                     ),
                     "not-json-line",

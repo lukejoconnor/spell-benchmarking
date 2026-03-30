@@ -36,7 +36,7 @@ class CodexUsage:
     def total_input_tokens(self) -> int | None:
         if self.input_tokens is None:
             return None
-        return self.input_tokens + self.cached_input_tokens
+        return self.input_tokens
 
 
 def _as_int(value: Any) -> int:
@@ -114,8 +114,7 @@ def usage_from_payload(payload: dict[str, Any] | None, *, model: str | None = No
 
     total_input_raw = payload.get("total_input_tokens")
     if input_tokens is None and isinstance(total_input_raw, (int, float)):
-        total_input_tokens = int(total_input_raw)
-        input_tokens = max(total_input_tokens - cached_input_tokens, 0)
+        input_tokens = int(total_input_raw)
 
     output_raw = payload.get("output_tokens")
     output_tokens = int(output_raw) if isinstance(output_raw, (int, float)) else None
@@ -131,7 +130,7 @@ def usage_from_payload(payload: dict[str, Any] | None, *, model: str | None = No
     if cost_usd is None:
         cost_usd = estimate_cost(
             model,
-            input_tokens + cached_input_tokens if input_tokens is not None else None,
+            input_tokens,
             output_tokens,
         )
         if cost_usd is not None:

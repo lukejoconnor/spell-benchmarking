@@ -177,7 +177,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             (agent_log_dir / "result.json").write_text(
                 json.dumps(
                     {
-                        "input_tokens": 750_000,
+                        "input_tokens": 1_000_000,
                         "cached_input_tokens": 250_000,
                         "output_tokens": 100_000,
                     }

@@ -159,7 +159,7 @@ class ParsedUsage:
     def total_input_tokens(self) -> int | None:
         if self.input_tokens is None:
             return None
-        return self.input_tokens + self.cached_input_tokens
+        return self.input_tokens
 
 
 @dataclass(slots=True)

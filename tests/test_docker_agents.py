@@ -59,8 +59,8 @@ class DockerAgentsTests(unittest.TestCase):
         assert usage is not None
         self.assertEqual(usage.input_tokens, 6804)
         self.assertEqual(usage.cached_input_tokens, 5888)
-        self.assertEqual(usage.total_input_tokens, 12692)
-        self.assertAlmostEqual(usage.cost_usd or 0.0, 0.079335, places=6)
+        self.assertEqual(usage.total_input_tokens, 6804)
+        self.assertAlmostEqual(usage.cost_usd or 0.0, 0.071975, places=6)
         self.assertEqual(usage.cost_source, "estimated")
 
     def test_spell_env_vars_forwards_fireworks_api_key(self) -> None:
