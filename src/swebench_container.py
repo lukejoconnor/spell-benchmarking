@@ -248,6 +248,20 @@ def _normalize_build_image_error(exc: BuildImageError, *, stage: str) -> SWEBenc
     return _normalize_setup_error(stage=stage, detail=detail, log_path=getattr(exc, "log_path", None))
 
 
+def _normalize_failed_env_build(failed_payloads: list[tuple[Any, ...]]) -> SWEBenchContainerSetupError:
+    first_failure = failed_payloads[0] if failed_payloads else ()
+    image_name = first_failure[0] if first_failure else None
+    build_dir = first_failure[5] if len(first_failure) > 5 else None
+    extra_failures = len(failed_payloads) - 1
+    detail = "Environment image build failed"
+    if image_name:
+        detail = f"Error building image {image_name}: environment image build failed"
+    if extra_failures > 0:
+        detail = f"{detail} (+{extra_failures} more failures)"
+    log_path = Path(build_dir) / "build_image.log" if build_dir else None
+    return _normalize_setup_error(stage="build_env_images", detail=detail, log_path=log_path)
+
+
 class SWEBenchContainer:
     """Container backed by official SWE-bench instance images."""
 
@@ -352,9 +366,13 @@ class SWEBenchContainer:
                 self.item.instance_id,
             )
             try:
-                build_env_images(self._docker_client, [self._test_spec], False, False, 1)
+                _, failed = build_env_images(self._docker_client, [self._test_spec], False, False, 1)
+                if failed:
+                    raise _normalize_failed_env_build(failed)
             except BuildImageError as exc:
                 raise _normalize_build_image_error(exc, stage="build_env_images") from exc
+            except SWEBenchContainerSetupError:
+                raise
             except Exception as exc:
                 raise _normalize_setup_error(
                     stage="build_env_images",

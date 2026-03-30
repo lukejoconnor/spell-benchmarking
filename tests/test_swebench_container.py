@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from swebench.harness.docker_build import BuildImageError
 
 from src.swebench_container import (
@@ -140,6 +141,53 @@ def test_normalize_build_image_error_includes_log_tail(tmp_path: Path) -> None:
     assert "Build log tail" in str(normalized)
 
 
+def test_build_with_auto_env_surfaces_failed_env_build_log(tmp_path: Path) -> None:
+    container = SWEBenchContainer(_make_item())
+    container._test_spec = SimpleNamespace(
+        env_image_key="sweb.env.shared:latest",
+        instance_image_key="sweb.eval.shared:latest",
+    )
+    container._docker_client = object()
+    container._logger = object()
+    env_build_dir = tmp_path / "env-build"
+    env_build_dir.mkdir()
+    log_path = env_build_dir / "build_image.log"
+    log_path.write_text("step 1 ok\nstep 2 failed: gcc missing\n", encoding="utf-8")
+
+    with (
+        patch(
+            "src.swebench_container.build_container",
+            side_effect=BuildImageError(
+                "sweb.env.shared:latest",
+                "env image not found",
+                SimpleNamespace(log_file="prepare.log"),
+            ),
+        ),
+        patch(
+            "src.swebench_container.build_env_images",
+            return_value=(
+                [],
+                [
+                    (
+                        "sweb.env.shared:latest",
+                        {"setup_env.sh": "echo hi"},
+                        "FROM python:3.11",
+                        "linux/amd64",
+                        object(),
+                        env_build_dir,
+                    )
+                ],
+            ),
+        ),
+    ):
+        with pytest.raises(SWEBenchContainerSetupError) as excinfo:
+            container._build_with_auto_env(tmp_path / "run")
+
+    assert excinfo.value.stage == "build_env_images"
+    assert excinfo.value.log_path == str(log_path)
+    assert excinfo.value.log_tail == "step 1 ok\nstep 2 failed: gcc missing"
+
+
 def test_build_with_auto_env_serializes_shared_env_rebuilds(tmp_path: Path) -> None:
     container_a = SWEBenchContainer(_make_item(instance_id="item-a"))
     container_b = SWEBenchContainer(_make_item(instance_id="item-b"))
@@ -179,6 +227,7 @@ def test_build_with_auto_env_serializes_shared_env_rebuilds(tmp_path: Path) -> N
         nonlocal build_env_call_count
         with state_lock:
             build_env_call_count += 1
+        return [], []
 
     with (
         patch("src.swebench_container.build_container", side_effect=fake_build_container),
