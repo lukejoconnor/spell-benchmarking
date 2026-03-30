@@ -528,6 +528,61 @@ class WebSearchCliRegressionTest(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         cleanup_mock.assert_not_called()
 
+    def test_swebench_container_setup_error_surfaces_log_tail_in_record(self):
+        lite_item = SimpleNamespace(
+            instance_id="django__django-1",
+            repo="django/django",
+            base_commit="abc123",
+            problem_statement="Fix it",
+            hints_text="",
+            metadata={},
+            raw_instance={},
+        )
+        written_records = []
+        error = self.bench.SWEBenchContainerSetupError(
+            stage="build_container",
+            detail="docker build exited with code 1",
+            log_path="/tmp/prepare_image.log",
+            log_tail="pip install failed",
+        )
+
+        def fake_append_jsonl(_path, record):
+            written_records.append(record)
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.object(self.bench, "load_swebench_lite", return_value=[lite_item]), \
+             patch.object(self.bench, "run_unified_swebench", side_effect=error), \
+             patch.object(self.bench, "append_jsonl", side_effect=fake_append_jsonl), \
+             patch.object(self.bench, "_print_summary"), \
+             patch.object(self.bench, "write_predictions_jsonl"), \
+             patch.object(self.bench, "_resolve_trace_dir", return_value=None):
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "swebench",
+                    "--dataset",
+                    "lite",
+                    "--condition",
+                    "codex",
+                    "--codex-model",
+                    "codex",
+                    "--n",
+                    "1",
+                    "--output",
+                    str(Path(tmp_dir) / "out.jsonl"),
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(len(written_records), 1)
+        record = written_records[0]
+        self.assertEqual(record.error_type, "container_error")
+        self.assertIn("docker build exited with code 1", record.error_message)
+        self.assertIn("pip install failed", record.error_message)
+        self.assertEqual(record.metadata["container_error_stage"], "build_container")
+        self.assertEqual(record.metadata["container_error_log_path"], "/tmp/prepare_image.log")
+        self.assertEqual(record.metadata["container_error_log_tail"], "pip install failed")
+
     def test_swebench_multi_condition_defers_image_cleanup_until_after_generation(self):
         lite_item = SimpleNamespace(
             instance_id="django__django-1",

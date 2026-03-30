@@ -59,7 +59,7 @@ from src.featurebench_lib import (
     setup_workspace,
 )
 from src.swebench_output import write_predictions_jsonl
-from src.swebench_container import remove_swebench_instance_image
+from src.swebench_container import SWEBenchContainerSetupError, remove_swebench_instance_image
 from src.workspace import RepoCache
 from src.unified_exercism import format_unified_exercism_prompt, run_unified_exercism
 from src.unified_featurebench import run_unified_featurebench
@@ -1662,6 +1662,9 @@ def run_swebench(
                     # Keep long SWE-bench runs alive even when one instance fails
                     # during container setup or same-container evaluation.
                     err_text = str(exc)
+                    err_metadata: dict[str, Any] = {}
+                    if isinstance(exc, SWEBenchContainerSetupError):
+                        err_metadata = exc.metadata()
                     return _mk_record(
                         run_id=run_id,
                         benchmark="swebench",
@@ -1687,7 +1690,7 @@ def run_swebench(
                             latency_ms=None,
                             error_message=err_text,
                             error_type="container_error",
-                            metadata={},
+                            metadata=err_metadata,
                         ),
                         response_text="",
                         patch=None,

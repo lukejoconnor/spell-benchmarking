@@ -40,6 +40,7 @@ from .swebench_pro_eval import dockerhub_image_for_instance, ensure_scale_pro_ev
 logger = logging.getLogger(__name__)
 
 PRO_WORKDIR = "/app"
+_SETUP_LOG_TAIL_CHARS = 4000
 _ENV_BUILD_LOCKS: dict[str, threading.Lock] = {}
 _ENV_BUILD_LOCKS_GUARD = threading.Lock()
 
@@ -49,6 +50,33 @@ class SameContainerEvalResult:
     resolved: bool | None
     test_output: str
     raw_report: dict[str, Any] | None
+
+
+@dataclass(slots=True)
+class SWEBenchContainerSetupError(Exception):
+    stage: str
+    detail: str
+    log_path: str | None = None
+    log_tail: str | None = None
+
+    def __post_init__(self) -> None:
+        Exception.__init__(self, self.detail)
+
+    def __str__(self) -> str:
+        parts = [f"SWE-bench container setup failed during {self.stage}: {self.detail}"]
+        if self.log_path:
+            parts.append(f"Build log: {self.log_path}")
+        if self.log_tail:
+            parts.append(f"Build log tail:\n{self.log_tail}")
+        return "\n\n".join(parts)
+
+    def metadata(self) -> dict[str, str]:
+        metadata = {"container_error_stage": self.stage}
+        if self.log_path:
+            metadata["container_error_log_path"] = self.log_path
+        if self.log_tail:
+            metadata["container_error_log_tail"] = self.log_tail
+        return metadata
 
 
 def _archive_bytes_for_files(files: dict[str, str]) -> bytes:
@@ -186,6 +214,40 @@ def _env_build_lock_for(test_spec: Any) -> threading.Lock:
         return lock
 
 
+def _read_log_tail(log_path: str | Path | None, limit: int = _SETUP_LOG_TAIL_CHARS) -> str | None:
+    if not log_path:
+        return None
+    try:
+        text = Path(log_path).read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    if not text:
+        return None
+    return text[-limit:]
+
+
+def _normalize_setup_error(
+    *,
+    stage: str,
+    detail: str,
+    log_path: str | Path | None = None,
+) -> SWEBenchContainerSetupError:
+    log_path_str = str(log_path) if log_path else None
+    return SWEBenchContainerSetupError(
+        stage=stage,
+        detail=detail.strip(),
+        log_path=log_path_str,
+        log_tail=_read_log_tail(log_path_str),
+    )
+
+
+def _normalize_build_image_error(exc: BuildImageError, *, stage: str) -> SWEBenchContainerSetupError:
+    image_name = getattr(exc, "image_name", None)
+    base_detail = getattr(exc, "super_str", None) or str(exc)
+    detail = f"Error building image {image_name}: {base_detail}" if image_name else base_detail
+    return _normalize_setup_error(stage=stage, detail=detail, log_path=getattr(exc, "log_path", None))
+
+
 class SWEBenchContainer:
     """Container backed by official SWE-bench instance images."""
 
@@ -269,7 +331,7 @@ class SWEBenchContainer:
             )
         except BuildImageError as exc:
             if "not found" not in str(exc).lower():
-                raise
+                raise _normalize_build_image_error(exc, stage="build_container") from exc
         env_lock_key = _env_build_lock_key(self._test_spec)
         logger.info(
             "Env image %s missing for %s; waiting for rebuild lock",
@@ -283,13 +345,21 @@ class SWEBenchContainer:
                 )
             except BuildImageError as exc:
                 if "not found" not in str(exc).lower():
-                    raise
+                    raise _normalize_build_image_error(exc, stage="build_container") from exc
             logger.info(
                 "Env image %s missing for %s; building from scratch",
                 env_lock_key,
                 self.item.instance_id,
             )
-            build_env_images(self._docker_client, [self._test_spec], False, False, 1)
+            try:
+                build_env_images(self._docker_client, [self._test_spec], False, False, 1)
+            except BuildImageError as exc:
+                raise _normalize_build_image_error(exc, stage="build_env_images") from exc
+            except Exception as exc:
+                raise _normalize_setup_error(
+                    stage="build_env_images",
+                    detail=str(exc) or "Unknown env image build failure",
+                ) from exc
         env_logger = setup_logger(
             self.item.instance_id, log_dir / "rebuild_after_env.log"
         )
@@ -297,6 +367,8 @@ class SWEBenchContainer:
             return build_container(
                 self._test_spec, self._docker_client, run_id, env_logger, False, False
             )
+        except BuildImageError as exc:
+            raise _normalize_build_image_error(exc, stage="build_container") from exc
         finally:
             close_logger(env_logger)
 

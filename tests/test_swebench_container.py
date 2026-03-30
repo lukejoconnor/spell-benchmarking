@@ -10,8 +10,10 @@ from swebench.harness.docker_build import BuildImageError
 
 from src.swebench_container import (
     SWEBenchContainer,
+    SWEBenchContainerSetupError,
     _build_pro_eval_entryscript,
     _env_exports_from_dockerfiles,
+    _normalize_build_image_error,
     _parse_string_list,
 )
 from src.datasets import SWEBenchItem
@@ -117,6 +119,25 @@ def test_stop_removes_stopped_container() -> None:
         ["docker", "rm", "container-123"],
     ]
     assert container.container_id is None
+
+
+def test_normalize_build_image_error_includes_log_tail(tmp_path: Path) -> None:
+    log_path = tmp_path / "prepare_image.log"
+    log_path.write_text("step 1 ok\nstep 2 failed: wheel build exploded\n", encoding="utf-8")
+    exc = BuildImageError(
+        "sweb.eval.x86_64.id:latest",
+        "docker build exited with code 1",
+        SimpleNamespace(log_file=log_path),
+    )
+
+    normalized = _normalize_build_image_error(exc, stage="build_container")
+
+    assert isinstance(normalized, SWEBenchContainerSetupError)
+    assert normalized.stage == "build_container"
+    assert normalized.log_path == str(log_path)
+    assert normalized.log_tail == "step 1 ok\nstep 2 failed: wheel build exploded"
+    assert "docker build exited with code 1" in str(normalized)
+    assert "Build log tail" in str(normalized)
 
 
 def test_build_with_auto_env_serializes_shared_env_rebuilds(tmp_path: Path) -> None:
