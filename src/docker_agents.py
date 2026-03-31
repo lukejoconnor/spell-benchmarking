@@ -866,7 +866,7 @@ def swe_agent_parse_usage(stdout: str, container: DockerWorkspaceContainer) -> P
 def resolve_spell_model(model_name: str | None) -> str:
     if model_name is None:
         return "anthropic-tc:opus46"
-    if any(model_name.startswith(prefix + ":") for prefix in ("anthropic-tc", "anthropic-pf", "fireworks", "openai-tc", "openai", "codex-msg", "codex-tc")):
+    if any(model_name.startswith(prefix + ":") for prefix in ("anthropic-tc", "anthropic-pf", "fireworks", "openai", "codex-msg", "codex-tc")):
         return model_name
     if model_name in LITELLM_TO_SPELL_MODEL:
         return LITELLM_TO_SPELL_MODEL[model_name]
