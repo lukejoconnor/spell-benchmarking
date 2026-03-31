@@ -553,7 +553,6 @@ def _mk_record(
     answer_extracted: str | None,
     correct: bool | None,
     metadata: dict[str, Any] | None = None,
-    reasoning_effort: str | None = None,
 ) -> UnifiedRunRecord:
     provider, model = _provider_model_for_condition(condition, model_spec)
     return UnifiedRunRecord(
@@ -580,7 +579,6 @@ def _mk_record(
         error_message=response.error_message,
         metadata={**(metadata or {}), **response.metadata},
         name=name,
-        reasoning_effort=reasoning_effort,
     )
 
 
@@ -1259,7 +1257,6 @@ def run_general(
                         else {}
                     ),
                 },
-                reasoning_effort=reasoning_effort,
             )
             append_jsonl(output_file, record)
 
@@ -1660,7 +1657,6 @@ def run_swebench(
                                 else {}
                             ),
                         },
-                        reasoning_effort=reasoning_effort,
                     )
                 except Exception as exc:
                     # Keep long SWE-bench runs alive even when one instance fails
@@ -1714,7 +1710,6 @@ def run_swebench(
                                 else {}
                             ),
                         },
-                        reasoning_effort=reasoning_effort,
                     )
 
             if parallel <= 1:
@@ -2145,7 +2140,6 @@ def run_featurebench(
                             else {}
                         ),
                     },
-                    reasoning_effort=reasoning_effort,
                 )
             finally:
                 wt.remove()
@@ -2697,7 +2691,6 @@ def run_scienceagentbench(
                             else {}
                         ),
                     },
-                    reasoning_effort=reasoning_effort,
                 )
             finally:
                 # Keep workspaces for inspection during pilot
@@ -3041,7 +3034,6 @@ def run_exercism(
                                 else {}
                             ),
                         },
-                        reasoning_effort=reasoning_effort,
                     )
 
                 test_path = ws / item.test_file
@@ -3182,7 +3174,6 @@ def run_exercism(
                             else {}
                         ),
                     },
-                    reasoning_effort=reasoning_effort,
                 )
             finally:
                 _cleanup_exercism_workspace(ws)

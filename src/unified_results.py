@@ -34,7 +34,6 @@ class UnifiedRunRecord:
     error_message: str | None
     metadata: dict[str, Any]
     name: str | None = None
-    reasoning_effort: str | None = None
 
 
 def now_iso() -> str:
