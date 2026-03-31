@@ -156,6 +156,7 @@ def build_terminalbench_command(
         agent_kwargs = {
             "budget": budget,
             "sh_timeout": 120,
+            "agent_timeout": 900,
             "reasoning_effort": reasoning_effort,
             "trace": trace,
         }
@@ -384,6 +385,7 @@ def terminalbench_records_from_run(
                 error_message=error_message,
                 metadata=metadata,
                 name=name,
+                reasoning_effort=reasoning_effort,
             )
         )
 

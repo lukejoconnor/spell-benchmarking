@@ -927,68 +927,9 @@ def _escape_for_spell(value: str) -> str:
     )
 
 
-def _normalize_spell_trailing(trailing: str) -> str:
-    """Normalize common shell-quoting accidents in trailing Spell code.
-
-    Interactive shells sometimes encourage escaping ``!`` inside double quotes,
-    which turns a valid form like ``'(!describe io)`` into ``'(\\!describe io)``.
-    That sequence is invalid Spell outside string literals, so normalize it back
-    before embedding the trailing expression into the init program.
-    """
-    chars: list[str] = []
-    in_string = False
-    escape = False
-    in_comment = False
-    i = 0
-    n = len(trailing)
-
-    while i < n:
-        c = trailing[i]
-
-        if in_comment:
-            chars.append(c)
-            if c == "\n":
-                in_comment = False
-            i += 1
-            continue
-
-        if in_string:
-            chars.append(c)
-            if escape:
-                escape = False
-            elif c == "\\":
-                escape = True
-            elif c == '"':
-                in_string = False
-            i += 1
-            continue
-
-        if c == ";":
-            in_comment = True
-            chars.append(c)
-            i += 1
-            continue
-
-        if c == '"':
-            in_string = True
-            chars.append(c)
-            i += 1
-            continue
-
-        if c == "\\" and i + 1 < n and trailing[i + 1] == "!":
-            chars.append("!")
-            i += 2
-            continue
-
-        chars.append(c)
-        i += 1
-
-    return "".join(chars)
-
-
 def build_spell_init(prompt: str, trailing: str | None = None) -> str:
     escaped_prompt = _escape_for_spell(prompt)
-    trailing_expr = _normalize_spell_trailing(trailing) if trailing is not None else "'(!extend)"
+    trailing_expr = trailing or "'(!extend)"
     return (
         f'(quine completion (eval (do (quine prompt "{escaped_prompt}") '
         f"{trailing_expr})))"

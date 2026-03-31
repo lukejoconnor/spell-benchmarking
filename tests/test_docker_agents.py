@@ -13,7 +13,6 @@ if str(BENCHMARK_ROOT) not in sys.path:
 from src.docker_agents import (
     ExecOutput,
     _load_swe_agent_trajectory,
-    _normalize_spell_trailing,
     build_spell_init,
     codex_parse_usage,
     resolve_spell_model,
@@ -62,7 +61,6 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertEqual(usage.total_input_tokens, 6804)
         self.assertAlmostEqual(usage.cost_usd or 0.0, 0.071975, places=6)
         self.assertEqual(usage.cost_source, "estimated")
-
     def test_spell_env_vars_forwards_fireworks_api_key(self) -> None:
         with patch.dict(os.environ, {"FIREWORKS_API_KEY": "fw-test"}, clear=False):
             env = spell_env_vars("fireworks:glm-5")
