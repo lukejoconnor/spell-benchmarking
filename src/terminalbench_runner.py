@@ -385,7 +385,6 @@ def terminalbench_records_from_run(
                 error_message=error_message,
                 metadata=metadata,
                 name=name,
-                reasoning_effort=reasoning_effort,
             )
         )
 

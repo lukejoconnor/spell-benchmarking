@@ -659,6 +659,7 @@ def codex_run_command(
     workdir: str | None = None,
     web_search: bool = False,
     ephemeral: bool = True,
+    reasoning_effort: str | None = None,
 ) -> str:
     parts = ['[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"', "&&"]
     if workdir:
@@ -668,6 +669,8 @@ def codex_run_command(
         parts.append("--search")
     else:
         parts.extend(["-c", shlex.quote('web_search="disabled"')])
+    if reasoning_effort:
+        parts.extend(["-c", shlex.quote(f'model_reasoning_effort="{reasoning_effort}"')])
     parts.append("exec")
     parts.extend(["--json"])
     if ephemeral:
@@ -866,7 +869,7 @@ def swe_agent_parse_usage(stdout: str, container: DockerWorkspaceContainer) -> P
 def resolve_spell_model(model_name: str | None) -> str:
     if model_name is None:
         return "anthropic-tc:opus46"
-    if any(model_name.startswith(prefix + ":") for prefix in ("anthropic-tc", "anthropic-pf", "fireworks", "openai", "codex-msg", "codex-tc")):
+    if any(model_name.startswith(prefix + ":") for prefix in ("anthropic-tc", "anthropic-pf", "fireworks", "openai-tc", "openai", "codex-msg", "codex-tc")):
         return model_name
     if model_name in LITELLM_TO_SPELL_MODEL:
         return LITELLM_TO_SPELL_MODEL[model_name]
@@ -1242,6 +1245,7 @@ def run_agent_in_container(
                 model=resolved_model,
                 workdir=container.container_workdir,
                 web_search=web_search,
+                reasoning_effort=reasoning_effort,
             ),
             timeout=timeout,
             env=env,
