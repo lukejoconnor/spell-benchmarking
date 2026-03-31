@@ -318,6 +318,7 @@ def terminalbench_records_from_run(
     model_spec: str | None,
     name: str | None,
     agent_file: str | None,
+    reasoning_effort: str | None = None,
     host_trace_root: Path | None = None,
 ) -> list[UnifiedRunRecord]:
     payload = load_terminalbench_results(run_dir)
@@ -385,6 +386,7 @@ def terminalbench_records_from_run(
                 error_message=error_message,
                 metadata=metadata,
                 name=name,
+                reasoning_effort=reasoning_effort,
             )
         )
 

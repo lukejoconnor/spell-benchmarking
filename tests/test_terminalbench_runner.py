@@ -112,6 +112,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
                 model_spec="anthropic-tc:opus46",
                 name="demo",
                 agent_file="/tmp/agent.edn",
+                reasoning_effort="medium",
                 host_trace_root=host_trace_root,
             )
 
@@ -121,6 +122,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             self.assertTrue(record.correct)
             self.assertEqual(record.cost_usd, 0.42)
             self.assertEqual(record.latency_ms, 2000.0)
+            self.assertEqual(record.reasoning_effort, "medium")
             copied_trace = Path(record.metadata["trace_dir"])
             self.assertTrue((copied_trace / "trace-1" / "tree.txt").exists())
 
