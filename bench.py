@@ -75,6 +75,7 @@ from src.unified_adapters import (
     build_spell_init,
     run_requests_parallel,
 )
+from src.reasoning_effort import effective_reasoning_effort
 from src.unified_results import (
     UnifiedRunRecord,
     append_jsonl,
@@ -556,6 +557,7 @@ def _mk_record(
     reasoning_effort: str | None = None,
 ) -> UnifiedRunRecord:
     provider, model = _provider_model_for_condition(condition, model_spec)
+    recorded_reasoning_effort = effective_reasoning_effort(condition, model_spec, reasoning_effort)
     return UnifiedRunRecord(
         run_id=run_id,
         timestamp=now_iso(),
@@ -580,7 +582,7 @@ def _mk_record(
         error_message=response.error_message,
         metadata={**(metadata or {}), **response.metadata},
         name=name,
-        reasoning_effort=reasoning_effort,
+        reasoning_effort=recorded_reasoning_effort,
     )
 
 

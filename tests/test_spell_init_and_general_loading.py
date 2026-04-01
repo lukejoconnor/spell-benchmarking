@@ -106,6 +106,32 @@ class GeneralLoadingRegressionTest(unittest.TestCase):
 
         self.assertEqual(record.reasoning_effort, "high")
 
+    def test_mk_record_drops_unsupported_reasoning_effort(self):
+        record = bench._mk_record(
+            run_id="run-1",
+            benchmark="general",
+            dataset="gsm8k",
+            split=None,
+            item_id="item-1",
+            condition="spell",
+            model_spec="anthropic-tc:opus46",
+            agent_file=None,
+            response=RunResponse(
+                status="ok",
+                response_text="done",
+                tokens_in=10,
+                tokens_out=5,
+                cost_usd=0.12,
+                latency_ms=50.0,
+            ),
+            response_text="done",
+            patch=None,
+            answer_extracted="42",
+            correct=True,
+            reasoning_effort="high",
+        )
+
+        self.assertIsNone(record.reasoning_effort)
     def test_project_euler_items_filter_uses_normalized_ids(self):
         loaded_item = BenchmarkItem(
             id="project_euler_0001",

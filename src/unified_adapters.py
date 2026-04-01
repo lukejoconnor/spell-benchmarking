@@ -370,8 +370,10 @@ class ClaudeCodeAdapter:
             model,
             "--max-budget-usd",
             str(req.budget if req.budget is not None else self.budget),
-            req.prompt,
         ]
+        if req.reasoning_effort:
+            cmd.extend(["--effort", req.reasoning_effort])
+        cmd.append(req.prompt)
 
         if add_dir := req.metadata.get("add_dir"):
             cmd[1:1] = ["--add-dir", str(add_dir)]

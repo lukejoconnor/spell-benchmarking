@@ -43,9 +43,11 @@ class CodexAgent(DockerExecAgent):
         self,
         model_name: str | None = None,
         agent_timeout: int = 600,
+        reasoning_effort: str | None = None,
         **kwargs,
     ):
         super().__init__(model_name=model_name, agent_timeout=agent_timeout, **kwargs)
+        self._reasoning_effort = reasoning_effort
 
     @staticmethod
     def name() -> str:
@@ -65,6 +67,7 @@ class CodexAgent(DockerExecAgent):
             instruction,
             model=self._resolve_model(),
             workdir=workdir,
+            reasoning_effort=self._reasoning_effort,
         )
 
     def _parse_usage(self, stdout: str) -> ParsedUsage | None:

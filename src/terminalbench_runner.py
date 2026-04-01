@@ -14,6 +14,7 @@ from typing import Any
 
 from .codex_usage import normalize_codex_model, usage_from_payload
 from .docker_agents import discover_spell_root
+from .reasoning_effort import effective_reasoning_effort
 from .unified_results import UnifiedRunRecord, now_iso
 
 TERMINALBENCH_DATASET = "terminal-bench-core==0.1.1"
@@ -120,6 +121,7 @@ def build_terminalbench_command(
     output_root: Path = TERMINALBENCH_RESULTS_DIR,
 ) -> list[str]:
     spec = CONDITION_SPECS[condition]
+    effective_effort = effective_reasoning_effort(condition, model or spec.default_model, reasoning_effort)
     cmd = [
         "tb",
         "run",
@@ -157,17 +159,22 @@ def build_terminalbench_command(
             "budget": budget,
             "sh_timeout": 120,
             "agent_timeout": 900,
-            "reasoning_effort": reasoning_effort,
             "trace": trace,
         }
+        if effective_effort is not None:
+            agent_kwargs["reasoning_effort"] = effective_effort
         if agent_file:
             agent_kwargs["agent_file"] = agent_file
         if trailing is not None:
             agent_kwargs["trailing"] = trailing
     elif condition == "claude_code":
         agent_kwargs = {"max_budget_usd": budget}
+        if effective_effort is not None:
+            agent_kwargs["reasoning_effort"] = effective_effort
     elif condition == "codex":
         agent_kwargs = {"agent_timeout": 600}
+        if effective_effort is not None:
+            agent_kwargs["reasoning_effort"] = effective_effort
 
     for key, value in agent_kwargs.items():
         rendered = str(value).lower() if isinstance(value, bool) else str(value)
@@ -326,6 +333,7 @@ def terminalbench_records_from_run(
     records: list[UnifiedRunRecord] = []
     resolved_model = resolve_terminalbench_model(condition, model_spec)
     normalized_model = _normalize_record_model(condition, resolved_model)
+    recorded_reasoning_effort = effective_reasoning_effort(condition, resolved_model, reasoning_effort)
 
     for trial in trials:
         task_id = trial["task_id"]
@@ -386,7 +394,7 @@ def terminalbench_records_from_run(
                 error_message=error_message,
                 metadata=metadata,
                 name=name,
-                reasoning_effort=reasoning_effort,
+                reasoning_effort=recorded_reasoning_effort,
             )
         )
 

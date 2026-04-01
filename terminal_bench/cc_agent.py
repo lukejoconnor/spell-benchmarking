@@ -51,11 +51,13 @@ class ClaudeCodeAgent(DockerExecAgent):
         model_name: str | None = None,
         agent_timeout: int = 600,
         max_budget_usd: float = 5.0,
+        reasoning_effort: str | None = None,
         setting_sources: str = "",
         **kwargs,
     ):
         super().__init__(model_name=model_name, agent_timeout=agent_timeout, **kwargs)
         self._max_budget_usd = max_budget_usd
+        self._reasoning_effort = reasoning_effort
         self._setting_sources = setting_sources
 
     @staticmethod
@@ -96,6 +98,7 @@ class ClaudeCodeAgent(DockerExecAgent):
             instruction,
             model=self._resolve_model(),
             budget=self._max_budget_usd,
+            reasoning_effort=self._reasoning_effort,
             allowed_tools=self.ALLOWED_TOOLS,
             setting_sources=self._setting_sources,
         )

@@ -60,12 +60,16 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         )
 
         adapter = ClaudeCodeAdapter(model="sonnet", budget=1.0)
-        response = adapter.run(_request("claude_code", "claude_code:sonnet"))
+        req = _request("claude_code", "claude_code:sonnet")
+        req.reasoning_effort = "high"
+        response = adapter.run(req)
 
         self.assertEqual(response.status, "ok")
         cmd = run_mock.call_args.args[0]
         self.assertEqual(cmd[:3], ["claude", "--setting-sources", ""])
         self.assertIn("stream-json", cmd)
+        self.assertIn("--effort", cmd)
+        self.assertIn("high", cmd)
         self.assertEqual(response.metadata.get("num_turns"), 2)
         self.assertEqual(response.metadata.get("session_id"), "sess-1")
 
