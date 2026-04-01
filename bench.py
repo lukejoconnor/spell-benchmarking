@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -152,6 +153,44 @@ MATH_TRAILING = "'(!describe math)"
 class _SwePrediction:
     instance_id: str
     patch: str
+
+
+@functools.cache
+def _git_versions() -> dict[str, Any]:
+    """Capture git revision info for both repos when available."""
+    versions: dict[str, Any] = {}
+    for label, path in (("spell", SPELL_ROOT), ("benchmarking", BENCHMARK_ROOT)):
+        try:
+            sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=path,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True,
+            ).stdout.strip()
+            branch = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=path,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True,
+            ).stdout.strip()
+            dirty = bool(
+                subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    cwd=path,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=True,
+                ).stdout.strip()
+            )
+            versions[label] = {"commit": sha, "branch": branch, "dirty": dirty}
+        except Exception:
+            versions[label] = None
+    return versions
 
 
 def _run_id(prefix: str) -> str:
@@ -578,7 +617,7 @@ def _mk_record(
         latency_ms=response.latency_ms,
         error_type=response.error_type,
         error_message=response.error_message,
-        metadata={**(metadata or {}), **response.metadata},
+        metadata={**(metadata or {}), **response.metadata, "versions": _git_versions()},
         name=name,
         reasoning_effort=reasoning_effort,
     )

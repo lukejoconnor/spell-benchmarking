@@ -332,9 +332,16 @@ Results are written as JSONL with one record per item. Key fields:
   "latency_ms": 30000,
   "error_type": null,
   "error_message": null,
-  "metadata": {}
+  "metadata": {
+    "versions": {
+      "spell": {"commit": "6139d2f...", "branch": "main", "dirty": false},
+      "benchmarking": {"commit": "abc1234...", "branch": "HEAD", "dirty": false}
+    }
+  }
 }
 ```
+
+`metadata.versions` is injected automatically for unified benchmark records and captures the git revision, branch name, and dirty state of both the main `spell` repo and the nested `benchmarking` repo at run time.
 
 Status values: `ok`, `error`, `timeout`, `patch_generated`, `no_patch`, `tests_passed`.
 

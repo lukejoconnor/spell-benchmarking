@@ -106,6 +106,50 @@ class GeneralLoadingRegressionTest(unittest.TestCase):
 
         self.assertEqual(record.reasoning_effort, "high")
 
+    def test_mk_record_includes_git_versions_metadata(self):
+        with patch.object(
+            bench,
+            "_git_versions",
+            return_value={
+                "spell": {"commit": "spell-sha", "branch": "main", "dirty": False},
+                "benchmarking": {"commit": "bench-sha", "branch": "HEAD", "dirty": True},
+            },
+        ):
+            record = bench._mk_record(
+                run_id="run-1",
+                benchmark="general",
+                dataset="gsm8k",
+                split=None,
+                item_id="item-1",
+                condition="spell",
+                model_spec="codex-tc:gpt-5.3-codex",
+                agent_file=None,
+                response=RunResponse(
+                    status="ok",
+                    response_text="done",
+                    tokens_in=10,
+                    tokens_out=5,
+                    cost_usd=0.12,
+                    latency_ms=50.0,
+                    metadata={"trace_dir": "/tmp/trace"},
+                ),
+                response_text="done",
+                patch=None,
+                answer_extracted="42",
+                correct=True,
+                metadata={"source": "pilot"},
+            )
+
+        self.assertEqual(record.metadata["source"], "pilot")
+        self.assertEqual(record.metadata["trace_dir"], "/tmp/trace")
+        self.assertEqual(
+            record.metadata["versions"],
+            {
+                "spell": {"commit": "spell-sha", "branch": "main", "dirty": False},
+                "benchmarking": {"commit": "bench-sha", "branch": "HEAD", "dirty": True},
+            },
+        )
+
     def test_project_euler_items_filter_uses_normalized_ids(self):
         loaded_item = BenchmarkItem(
             id="project_euler_0001",
