@@ -128,7 +128,7 @@ Direct `tb run` still works for one-off debugging when you need raw harness beha
 --n N                                  # Limit to N items
 --model anthropic-tc:claude-opus-4-6         # Model override
 --name trial-label                     # Optional run label in JSONL/traces/predictions
---trailing "'(!extend)"               # Spell trailing override  ⚠️ see note below
+--trailing "'(!extend)"               # Spell trailing override
 --agent path/to/agent.edn             # Primary Spell configuration override
 --thinking --reasoning-effort high     # Extended thinking
 --suffix-grammar                       # Suffix grammar support
@@ -137,7 +137,7 @@ Direct `tb run` still works for one-off debugging when you need raw harness beha
 
 `reasoning_effort` defaults to `high` in the benchmark adapters unless explicitly overridden.
 
-**`--trailing` quoting — do not backslash-escape the leading quote.** The trailing expression starts with `'` (Clojure's quote reader macro). In shell, pass it inside double quotes with NO backslash: `--trailing "'(patterns/fix-loop prompt)"`. Using `"\'(...)"` produces a Clojure character literal `\'` instead of `(quote ...)`, silently breaking the trailing expression. The model recovers as a plain sequential agent and results look plausible — the only way to detect the bug is checking trace node 0 for the expected init structure.
+**`--trailing` quoting:** The harness normalizes shell-escaped `\!` back to `!`, so plain double-quoted examples like `--trailing "'(!describe io)"` are fine. Still do not backslash-escape the leading quote: use `--trailing "'(patterns/fix-loop prompt)"`, not `--trailing "\"'(patterns/fix-loop prompt)"`, or you will produce a Clojure character literal instead of `(quote ...)`.
 
 Condition semantics:
 - `one_shot`: single LLM call (text-only). Use any provider/model via `--model` (including Codex-backed single-call models).

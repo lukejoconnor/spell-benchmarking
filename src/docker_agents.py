@@ -930,9 +930,34 @@ def _escape_for_spell(value: str) -> str:
     )
 
 
+def _normalize_spell_trailing(trailing: str) -> str:
+    """Normalize shell-escaped bangs outside of Spell string literals."""
+    result: list[str] = []
+    in_string = False
+    i = 0
+    while i < len(trailing):
+        ch = trailing[i]
+        if ch == '"':
+            backslashes = 0
+            j = i - 1
+            while j >= 0 and trailing[j] == "\\":
+                backslashes += 1
+                j -= 1
+            if backslashes % 2 == 0:
+                in_string = not in_string
+            result.append(ch)
+        elif ch == "\\" and i + 1 < len(trailing) and trailing[i + 1] == "!" and not in_string:
+            result.append("!")
+            i += 1
+        else:
+            result.append(ch)
+        i += 1
+    return "".join(result)
+
+
 def build_spell_init(prompt: str, trailing: str | None = None) -> str:
     escaped_prompt = _escape_for_spell(prompt)
-    trailing_expr = trailing or "'(!extend)"
+    trailing_expr = _normalize_spell_trailing(trailing) if trailing else "'(!extend)"
     return (
         f'(quine completion (eval (do (quine prompt "{escaped_prompt}") '
         f"{trailing_expr})))"
