@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import functools
 import json
 import os
 import re
@@ -76,6 +75,7 @@ from src.unified_adapters import (
     build_spell_init,
     run_requests_parallel,
 )
+from src.provenance import BENCHMARK_ROOT, benchmark_git_versions, resolve_spell_root
 from src.unified_results import (
     UnifiedRunRecord,
     append_jsonl,
@@ -104,29 +104,7 @@ from src.swebench_pro_eval import (
     write_raw_sample_jsonl,
 )
 
-BENCHMARK_ROOT = Path(__file__).resolve().parent
-
-
-def _resolve_spell_root() -> Path:
-    env_spell_root = os.environ.get("SPELL_ROOT")
-    if env_spell_root:
-        return Path(env_spell_root).expanduser().resolve()
-
-    # Nested checkout mode: spell/benchmarking/bench.py
-    nested_candidate = BENCHMARK_ROOT.parent
-    if (nested_candidate / "config" / "agents").exists():
-        return nested_candidate
-
-    sibling_candidate = BENCHMARK_ROOT.parent / "spell"
-    if (sibling_candidate / "config" / "agents").exists():
-        return sibling_candidate
-
-    # Standalone fallback: leave as benchmark root and let agent resolution
-    # surface a precise error if config files are unavailable.
-    return BENCHMARK_ROOT
-
-
-SPELL_ROOT = _resolve_spell_root()
+SPELL_ROOT = resolve_spell_root()
 CONTEXT_DIR = BENCHMARK_ROOT / "data" / "contexts"
 SCALE_PRO_EVAL_REPO_DEFAULT = "data/swebench_pro_eval/SWE-bench_Pro-os"
 SCALE_PRO_OUTPUT_DIR_DEFAULT = "results/swebench_pro_eval"
@@ -153,45 +131,6 @@ MATH_TRAILING = "'(!describe math)"
 class _SwePrediction:
     instance_id: str
     patch: str
-
-
-@functools.cache
-def _git_versions() -> dict[str, Any]:
-    """Capture git revision info for both repos when available."""
-    versions: dict[str, Any] = {}
-    for label, path in (("spell", SPELL_ROOT), ("benchmarking", BENCHMARK_ROOT)):
-        try:
-            sha = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=path,
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=True,
-            ).stdout.strip()
-            branch = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=path,
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=True,
-            ).stdout.strip()
-            dirty = bool(
-                subprocess.run(
-                    ["git", "status", "--porcelain"],
-                    cwd=path,
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    check=True,
-                ).stdout.strip()
-            )
-            versions[label] = {"commit": sha, "branch": branch, "dirty": dirty}
-        except Exception:
-            versions[label] = None
-    return versions
-
 
 def _run_id(prefix: str) -> str:
     ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
@@ -617,7 +556,7 @@ def _mk_record(
         latency_ms=response.latency_ms,
         error_type=response.error_type,
         error_message=response.error_message,
-        metadata={**(metadata or {}), **response.metadata, "versions": _git_versions()},
+        metadata={**(metadata or {}), **response.metadata, "versions": benchmark_git_versions()},
         name=name,
         reasoning_effort=reasoning_effort,
     )

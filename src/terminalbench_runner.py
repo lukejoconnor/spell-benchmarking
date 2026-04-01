@@ -14,6 +14,7 @@ from typing import Any
 
 from .codex_usage import normalize_codex_model, usage_from_payload
 from .docker_agents import discover_spell_root
+from .provenance import benchmark_git_versions
 from .unified_results import UnifiedRunRecord, now_iso
 
 TERMINALBENCH_DATASET = "terminal-bench-core==0.1.1"
@@ -358,6 +359,7 @@ def terminalbench_records_from_run(
             "trace_dir": copied_trace_dir,
             "resolved_model": normalized_model if condition == "codex" else None,
             "cost_source": usage.cost_source if usage else agent_result.get("cost_source"),
+            "versions": benchmark_git_versions(),
         }
         metadata = {key: value for key, value in metadata.items() if value is not None}
 

@@ -40,6 +40,7 @@ def _import_bench_with_stubbed_client():
 
 bench = _import_bench_with_stubbed_client()
 from src.datasets import BenchmarkItem
+from src.provenance import benchmark_git_versions
 from src.unified_adapters import RunResponse, build_spell_init
 
 
@@ -109,7 +110,7 @@ class GeneralLoadingRegressionTest(unittest.TestCase):
     def test_mk_record_includes_git_versions_metadata(self):
         with patch.object(
             bench,
-            "_git_versions",
+            "benchmark_git_versions",
             return_value={
                 "spell": {"commit": "spell-sha", "branch": "main", "dirty": False},
                 "benchmarking": {"commit": "bench-sha", "branch": "HEAD", "dirty": True},
@@ -149,6 +150,30 @@ class GeneralLoadingRegressionTest(unittest.TestCase):
                 "benchmarking": {"commit": "bench-sha", "branch": "HEAD", "dirty": True},
             },
         )
+
+    def test_benchmark_git_versions_dedupes_standalone_checkout(self):
+        benchmark_git_versions.cache_clear()
+        try:
+            with patch("src.provenance.resolve_spell_root", return_value=BENCHMARK_ROOT), patch(
+                "src.provenance.subprocess.run"
+            ) as run_mock:
+                run_mock.side_effect = [
+                    types.SimpleNamespace(stdout="bench-sha\n"),
+                    types.SimpleNamespace(stdout="main\n"),
+                    types.SimpleNamespace(stdout=" M bench.py\n"),
+                ]
+
+                versions = benchmark_git_versions()
+
+            self.assertEqual(
+                versions,
+                {
+                    "benchmarking": {"commit": "bench-sha", "branch": "main", "dirty": True},
+                },
+            )
+            self.assertEqual(run_mock.call_count, 3)
+        finally:
+            benchmark_git_versions.cache_clear()
 
     def test_project_euler_items_filter_uses_normalized_ids(self):
         loaded_item = BenchmarkItem(
