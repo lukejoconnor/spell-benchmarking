@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 if str(BENCHMARK_ROOT) not in sys.path:
@@ -104,17 +105,24 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             )
 
             host_trace_root = root / "traces" / "spell"
-            records = terminalbench_records_from_run(
-                run_dir=run_dir,
-                run_id="terminalbench_demo",
-                condition="spell",
-                dataset="terminal-bench-core==0.1.1",
-                model_spec="anthropic-tc:opus46",
-                name="demo",
-                agent_file="/tmp/agent.edn",
-                reasoning_effort="medium",
-                host_trace_root=host_trace_root,
-            )
+            with patch(
+                "src.terminalbench_runner.benchmark_git_versions",
+                return_value={
+                    "spell": {"commit": "spell-sha", "branch": "main", "dirty": False},
+                    "benchmarking": {"commit": "bench-sha", "branch": "pr-25", "dirty": False},
+                },
+            ):
+                records = terminalbench_records_from_run(
+                    run_dir=run_dir,
+                    run_id="terminalbench_demo",
+                    condition="spell",
+                    dataset="terminal-bench-core==0.1.1",
+                    model_spec="anthropic-tc:opus46",
+                    name="demo",
+                    agent_file="/tmp/agent.edn",
+                    reasoning_effort="medium",
+                    host_trace_root=host_trace_root,
+                )
 
             self.assertEqual(len(records), 1)
             record = records[0]
@@ -123,6 +131,13 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             self.assertEqual(record.cost_usd, 0.42)
             self.assertEqual(record.latency_ms, 2000.0)
             self.assertEqual(record.reasoning_effort, "medium")
+            self.assertEqual(
+                record.metadata["versions"],
+                {
+                    "spell": {"commit": "spell-sha", "branch": "main", "dirty": False},
+                    "benchmarking": {"commit": "bench-sha", "branch": "pr-25", "dirty": False},
+                },
+            )
             copied_trace = Path(record.metadata["trace_dir"])
             self.assertTrue((copied_trace / "trace-1" / "tree.txt").exists())
 

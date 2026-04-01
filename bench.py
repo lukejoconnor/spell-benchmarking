@@ -75,6 +75,7 @@ from src.unified_adapters import (
     build_spell_init,
     run_requests_parallel,
 )
+from src.provenance import BENCHMARK_ROOT, benchmark_git_versions, resolve_spell_root
 from src.unified_results import (
     UnifiedRunRecord,
     append_jsonl,
@@ -103,29 +104,7 @@ from src.swebench_pro_eval import (
     write_raw_sample_jsonl,
 )
 
-BENCHMARK_ROOT = Path(__file__).resolve().parent
-
-
-def _resolve_spell_root() -> Path:
-    env_spell_root = os.environ.get("SPELL_ROOT")
-    if env_spell_root:
-        return Path(env_spell_root).expanduser().resolve()
-
-    # Nested checkout mode: spell/benchmarking/bench.py
-    nested_candidate = BENCHMARK_ROOT.parent
-    if (nested_candidate / "config" / "agents").exists():
-        return nested_candidate
-
-    sibling_candidate = BENCHMARK_ROOT.parent / "spell"
-    if (sibling_candidate / "config" / "agents").exists():
-        return sibling_candidate
-
-    # Standalone fallback: leave as benchmark root and let agent resolution
-    # surface a precise error if config files are unavailable.
-    return BENCHMARK_ROOT
-
-
-SPELL_ROOT = _resolve_spell_root()
+SPELL_ROOT = resolve_spell_root()
 CONTEXT_DIR = BENCHMARK_ROOT / "data" / "contexts"
 SCALE_PRO_EVAL_REPO_DEFAULT = "data/swebench_pro_eval/SWE-bench_Pro-os"
 SCALE_PRO_OUTPUT_DIR_DEFAULT = "results/swebench_pro_eval"
@@ -152,7 +131,6 @@ MATH_TRAILING = "'(!describe math)"
 class _SwePrediction:
     instance_id: str
     patch: str
-
 
 def _run_id(prefix: str) -> str:
     ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
@@ -578,7 +556,7 @@ def _mk_record(
         latency_ms=response.latency_ms,
         error_type=response.error_type,
         error_message=response.error_message,
-        metadata={**(metadata or {}), **response.metadata},
+        metadata={**(metadata or {}), **response.metadata, "versions": benchmark_git_versions()},
         name=name,
         reasoning_effort=reasoning_effort,
     )

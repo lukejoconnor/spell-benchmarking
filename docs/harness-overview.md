@@ -67,7 +67,7 @@ After execution, responses are evaluated (`_evaluate_general` for math/QA, `git 
 
 ### Output format
 
-All results go to `results/unified/<run_id>.jsonl`. Each line is a `UnifiedRunRecord` with: run_id, timestamp, benchmark, dataset, condition, provider, model, status, response_text, answer_extracted, correct, tokens, cost, latency, error info, and freeform metadata.
+All results go to `results/unified/<run_id>.jsonl`. Each line is a `UnifiedRunRecord` with: run_id, timestamp, benchmark, dataset, condition, provider, model, status, response_text, answer_extracted, correct, tokens, cost, latency, error info, and freeform metadata. Unified records now always include `metadata.versions`, which captures the git commit, branch, and dirty state for both the main `spell` repo and the `benchmarking` repo.
 
 `summarize_records()` aggregates by condition: total, correct, errors, accuracy, cost.
 
