@@ -54,7 +54,7 @@ uv run python benchmarking/bench.py general [OPTIONS]
 | `--timeout` | 300 | Per-item timeout in seconds |
 | `--thinking / --no-thinking` | off | Enable Anthropic extended thinking |
 | `--thinking-budget` | 10000 | Token budget for extended thinking |
-| `--reasoning-effort` | `high` | `low`, `medium`, or `high` (OpenAI) |
+| `--reasoning-effort` | `high` | `low`, `medium`, or `high`; recorded only when the selected runner/provider actually supports it |
 | `--verbosity` | — | `low` or `auto` (OpenAI) |
 | `--responses-api / --no-responses-api` | off | Use OpenAI Responses API |
 | `--suffix-grammar / --no-suffix-grammar` | off | Enable prefix-aware grammar constraints |
@@ -90,7 +90,7 @@ uv run python benchmarking/bench.py swebench [OPTIONS]
 | `--depth` | 50 | Max LLM recursion depth |
 | `--max-tokens` | unlimited | Max output tokens per LLM call |
 | `--timeout` | 1800 | Per-item timeout in seconds (30 min) |
-| `--reasoning-effort` | `high` | `low`, `medium`, or `high` |
+| `--reasoning-effort` | `high` | `low`, `medium`, or `high`; currently forwarded for `codex` and `claude_code`, and for Spell only on OpenAI/Codex-family providers |
 | `--keep-images / --no-keep-images` | off | Keep per-item SWE-bench instance images after generation |
 | `--clean-eval / --no-clean-eval` | off | Re-run patches in a fresh official eval container after generation |
 | `--eval-max-workers` | 4 | Max concurrent evaluation workers |
@@ -159,7 +159,7 @@ uv run python benchmarking/bench.py featurebench [OPTIONS]
 | `--depth` | 50 | Max LLM recursion depth |
 | `--max-tokens` | unlimited | Max output tokens per LLM call |
 | `--timeout` | 1800 | Per-item timeout in seconds (30 min) |
-| `--reasoning-effort` | `high` | `low`, `medium`, or `high` |
+| `--reasoning-effort` | `high` | `low`, `medium`, or `high`; currently forwarded for `codex` and `claude_code`, and for Spell only on OpenAI/Codex-family providers |
 | `--workspace-root` | `/tmp/fb_ws` | Directory for cloned workspaces |
 | `--skip-install` | off | Skip dependency installation |
 | `--skip-tests` | off | Skip test verification |
@@ -236,6 +236,12 @@ Selected via `--split` and `--task-ids`. Tasks are loaded from the FeatureBench 
 | `codex` | Codex CLI (`codex exec`) | `--codex-model` (default: `codex`) |
 | `swe_agent` | mini-swe-agent CLI (`mini`) | `--swe-agent-model` |
 | `all` | Run all conditions | all of the above |
+
+`--reasoning-effort` is support-matrix driven rather than purely condition-driven:
+- `codex`: forwarded and recorded.
+- `claude_code`: forwarded via `claude --effort` and recorded.
+- `spell` / `one_shot`: forwarded only for OpenAI/Codex-family providers (`openai`, `openai-tc`, `codex-msg`, `codex-tc`); Anthropic-backed Spell runs leave the field empty.
+- `swe_agent`: not currently benchmark-wired, so records leave the field empty.
 
 ## One-Off Files
 

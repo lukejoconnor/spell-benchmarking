@@ -567,6 +567,7 @@ def cc_run_command(
     *,
     model: str | None = None,
     budget: float | None = None,
+    reasoning_effort: str | None = None,
     allowed_tools: list[str] | None = None,
     setting_sources: str = "",
 ) -> str:
@@ -577,6 +578,8 @@ def cc_run_command(
         parts.extend(["--max-budget-usd", str(budget)])
     if model:
         parts.extend(["--model", shlex.quote(model)])
+    if reasoning_effort:
+        parts.extend(["--effort", shlex.quote(reasoning_effort)])
     tools = allowed_tools or CC_ALLOWED_TOOLS
     parts.extend(["--allowedTools", " ".join(tools)])
     parts.extend(["-p", shlex.quote(prompt)])
@@ -1224,6 +1227,7 @@ def run_agent_in_container(
                 prompt,
                 model=resolved_model,
                 budget=budget,
+                reasoning_effort=reasoning_effort,
             ),
             timeout=timeout,
             env=env,

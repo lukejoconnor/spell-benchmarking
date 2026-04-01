@@ -60,6 +60,60 @@ class TerminalBenchRunnerTests(unittest.TestCase):
         self.assertIn("-k trailing='(!describe io)", rendered)
         self.assertIn("-k trace=false", rendered)
 
+    def test_build_terminalbench_command_threads_claude_and_codex_effort(self) -> None:
+        claude_cmd = build_terminalbench_command(
+            condition="claude_code",
+            run_id="claude_demo",
+            model="anthropic/claude-opus-4-6",
+            dataset="terminal-bench-core==0.1.1",
+            task_ids=("hello-world",),
+            n_tasks=1,
+            n_concurrent=1,
+            budget=7.5,
+            cleanup=False,
+            reasoning_effort="medium",
+            agent_file=None,
+            trailing=None,
+            trace=False,
+        )
+        codex_cmd = build_terminalbench_command(
+            condition="codex",
+            run_id="codex_demo",
+            model="openai/gpt-5.3-codex",
+            dataset="terminal-bench-core==0.1.1",
+            task_ids=("hello-world",),
+            n_tasks=1,
+            n_concurrent=1,
+            budget=7.5,
+            cleanup=False,
+            reasoning_effort="medium",
+            agent_file=None,
+            trailing=None,
+            trace=False,
+        )
+
+        self.assertIn("-k reasoning_effort=medium", " ".join(claude_cmd))
+        self.assertIn("-k reasoning_effort=medium", " ".join(codex_cmd))
+
+    def test_build_terminalbench_command_omits_unsupported_spell_effort(self) -> None:
+        cmd = build_terminalbench_command(
+            condition="spell",
+            run_id="spell_demo",
+            model="anthropic-tc:opus46",
+            dataset="terminal-bench-core==0.1.1",
+            task_ids=("hello-world",),
+            n_tasks=1,
+            n_concurrent=1,
+            budget=7.5,
+            cleanup=False,
+            reasoning_effort="medium",
+            agent_file=None,
+            trailing=None,
+            trace=False,
+        )
+
+        self.assertNotIn("-k reasoning_effort=medium", " ".join(cmd))
+
     def test_terminalbench_run_id_sanitizes_name(self) -> None:
         self.assertEqual(
             terminalbench_condition_run_id("terminalbench_demo", "spell", name="io/acm"),
@@ -117,7 +171,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
                     run_id="terminalbench_demo",
                     condition="spell",
                     dataset="terminal-bench-core==0.1.1",
-                    model_spec="anthropic-tc:opus46",
+                    model_spec="codex-tc:gpt-5.3-codex",
                     name="demo",
                     agent_file="/tmp/agent.edn",
                     reasoning_effort="medium",
