@@ -27,6 +27,8 @@ class CodexUsageTests(unittest.TestCase):
         self.assertEqual(usage.input_tokens, 42_069)
         self.assertEqual(usage.cached_input_tokens, 33_408)
         self.assertEqual(usage.total_input_tokens, 42_069)
+        self.assertAlmostEqual(usage.cost_usd or 0.0, 0.02012225, places=8)
+        self.assertEqual(usage.cost_source, "estimated")
 
     def test_usage_from_payload_uses_total_input_tokens_field_without_subtracting_cached_tokens(self) -> None:
         usage = usage_from_payload(
@@ -43,6 +45,8 @@ class CodexUsageTests(unittest.TestCase):
         self.assertEqual(usage.input_tokens, 42_069)
         self.assertEqual(usage.cached_input_tokens, 33_408)
         self.assertEqual(usage.total_input_tokens, 42_069)
+        self.assertAlmostEqual(usage.cost_usd or 0.0, 0.02012225, places=8)
+        self.assertEqual(usage.cost_source, "estimated")
 
 
 if __name__ == "__main__":

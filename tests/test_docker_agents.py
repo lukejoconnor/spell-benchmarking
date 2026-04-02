@@ -59,7 +59,7 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertEqual(usage.input_tokens, 6804)
         self.assertEqual(usage.cached_input_tokens, 5888)
         self.assertEqual(usage.total_input_tokens, 6804)
-        self.assertAlmostEqual(usage.cost_usd or 0.0, 0.071975, places=6)
+        self.assertAlmostEqual(usage.cost_usd or 0.0, 0.065351, places=6)
         self.assertEqual(usage.cost_source, "estimated")
     def test_spell_env_vars_forwards_fireworks_api_key(self) -> None:
         with patch.dict(os.environ, {"FIREWORKS_API_KEY": "fw-test"}, clear=False):

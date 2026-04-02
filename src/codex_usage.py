@@ -5,22 +5,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-# Per-MTok pricing [input, output] for normalized benchmark cost estimation when
-# the Codex CLI omits billed cost from its JSON stream.
-_MODEL_PRICING: dict[str, tuple[float, float]] = {
-    "gpt-5-codex": (1.25, 10.00),
-    "gpt-5.1-codex": (1.25, 10.00),
-    "gpt-5.2-codex": (1.75, 14.00),
-    "gpt-5.3-codex": (1.75, 14.00),
-    "gpt-5.4": (2.50, 15.00),
-    "gpt-5-mini": (0.25, 2.00),
-    "gpt-5": (1.25, 10.00),
-    "gpt-5.1": (1.25, 10.00),
-    "gpt-5.2": (1.75, 14.00),
-    "gpt-5.3": (1.75, 14.00),
-    "claude-opus-4-6": (5.00, 25.00),
-    "claude-sonnet-4-6": (1.00, 5.00),
-    "claude-haiku-4-5-20251001": (0.25, 1.25),
+# Per-MTok pricing [input, cached-input, output] for normalized benchmark cost
+# estimation when the Codex CLI omits billed cost from its JSON stream.
+_MODEL_PRICING: dict[str, tuple[float, float, float]] = {
+    "gpt-5-codex": (1.25, 0.125, 10.00),
+    "gpt-5.1-codex": (1.25, 0.125, 10.00),
+    "gpt-5.2-codex": (1.75, 0.175, 14.00),
+    "gpt-5.3-codex": (1.75, 0.175, 14.00),
+    "gpt-5.4": (2.50, 0.25, 15.00),
+    "gpt-5-mini": (0.25, 0.025, 2.00),
+    "gpt-5": (1.25, 0.125, 10.00),
+    "gpt-5.1": (1.25, 0.125, 10.00),
+    "gpt-5.2": (1.75, 0.175, 14.00),
+    "gpt-5.3": (1.75, 0.175, 14.00),
+    "claude-opus-4-6": (5.00, 5.00, 25.00),
+    "claude-sonnet-4-6": (1.00, 1.00, 5.00),
+    "claude-haiku-4-5-20251001": (0.25, 0.25, 1.25),
 }
 
 
@@ -43,12 +43,25 @@ def _as_int(value: Any) -> int:
     return int(value) if isinstance(value, (int, float)) else 0
 
 
-def estimate_cost(model: str | None, tokens_in: int | None, tokens_out: int | None) -> float | None:
+def estimate_cost(
+    model: str | None,
+    tokens_in: int | None,
+    tokens_out: int | None,
+    *,
+    cached_input_tokens: int = 0,
+) -> float | None:
     if not model or tokens_in is None or tokens_out is None:
         return None
-    for prefix, (in_rate, out_rate) in _MODEL_PRICING.items():
+    total_input_tokens = max(0, tokens_in)
+    cached_tokens = min(max(0, cached_input_tokens), total_input_tokens)
+    uncached_tokens = total_input_tokens - cached_tokens
+    for prefix, (in_rate, cached_in_rate, out_rate) in _MODEL_PRICING.items():
         if model.startswith(prefix):
-            return tokens_in * in_rate / 1_000_000 + tokens_out * out_rate / 1_000_000
+            return (
+                uncached_tokens * in_rate / 1_000_000
+                + cached_tokens * cached_in_rate / 1_000_000
+                + tokens_out * out_rate / 1_000_000
+            )
     return None
 
 
@@ -132,6 +145,7 @@ def usage_from_payload(payload: dict[str, Any] | None, *, model: str | None = No
             model,
             input_tokens,
             output_tokens,
+            cached_input_tokens=cached_input_tokens,
         )
         if cost_usd is not None:
             cost_source = "estimated"
