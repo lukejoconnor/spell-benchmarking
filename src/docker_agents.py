@@ -700,13 +700,19 @@ def codex_parse_usage(stdout: str, model: str | None = None) -> ParsedUsage | No
 def swe_agent_install_script() -> str:
     return r"""
 set -euo pipefail
-if command -v uv >/dev/null 2>&1; then
-  uv pip install --system -q mini-swe-agent
-elif command -v python3 >/dev/null 2>&1; then
-  python3 -m pip install -q mini-swe-agent
-else
-  python -m pip install -q mini-swe-agent
-fi
+export DEBIAN_FRONTEND=noninteractive
+
+# Install Python 3.11 for mini-swe-agent without touching the project Python.
+apt-get -o Acquire::AllowInsecureRepositories=true update -qq
+apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq software-properties-common >/dev/null
+add-apt-repository -y ppa:deadsnakes/ppa >/dev/null 2>&1
+apt-get -o Acquire::AllowInsecureRepositories=true update -qq
+apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq python3.11 python3.11-venv >/dev/null
+
+# Ensure pip is available before installing mini-swe-agent.
+python3.11 -m ensurepip -q >/dev/null 2>&1 || true
+python3.11 -m pip install -q mini-swe-agent
+
 echo "mini installed: $(mini --help >/dev/null 2>&1 && echo ok || echo missing)"
 """
 

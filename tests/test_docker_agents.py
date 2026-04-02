@@ -16,6 +16,7 @@ from src.docker_agents import (
     build_spell_init,
     codex_parse_usage,
     resolve_spell_model,
+    swe_agent_install_script,
     spell_env_vars,
 )
 
@@ -61,6 +62,15 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertEqual(usage.total_input_tokens, 6804)
         self.assertAlmostEqual(usage.cost_usd or 0.0, 0.065351, places=6)
         self.assertEqual(usage.cost_source, "estimated")
+
+    def test_swe_agent_install_script_uses_python311_and_deadsnakes(self) -> None:
+        script = swe_agent_install_script()
+
+        self.assertIn("add-apt-repository -y ppa:deadsnakes/ppa", script)
+        self.assertIn("python3.11 -m ensurepip -q", script)
+        self.assertIn("python3.11 -m pip install -q mini-swe-agent", script)
+        self.assertNotIn("uv pip install --system -q mini-swe-agent", script)
+
     def test_spell_env_vars_forwards_fireworks_api_key(self) -> None:
         with patch.dict(os.environ, {"FIREWORKS_API_KEY": "fw-test"}, clear=False):
             env = spell_env_vars("fireworks:glm-5")
