@@ -750,9 +750,12 @@ def swe_agent_run_command(
     parts: list[str] = ['export PATH="$HOME/.local/bin:$PATH"', "&&"]
     if workdir:
         parts.extend(["cd", shlex.quote(workdir), "&&"])
-    parts.extend(["mini", "-t", shlex.quote(prompt), "-m", shlex.quote(model), "-y", "--exit-immediately"])
+    # Wrap with script -qc to provide a pseudo-TTY; mini aborts if isatty(0) is false.
+    mini_parts = ["mini", "-t", shlex.quote(prompt), "-m", shlex.quote(model), "-y", "--exit-immediately"]
     if budget is not None:
-        parts.extend(["-l", str(budget)])
+        mini_parts.extend(["-l", str(budget)])
+    mini_cmd = " ".join(mini_parts)
+    parts.extend(["script", "-qc", shlex.quote(mini_cmd), "/dev/null"])
     return " ".join(parts)
 
 
