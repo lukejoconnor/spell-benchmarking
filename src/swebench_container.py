@@ -461,11 +461,14 @@ class SWEBenchContainer:
         timeout: int | None = None,
         env: dict[str, str] | None = None,
         workdir: str | None = None,
+        tty: bool = False,
     ):
         if not self.container_id:
             raise RuntimeError("Container not started")
 
         docker_cmd = ["docker", "exec"]
+        if tty:
+            docker_cmd.append("-t")
         if workdir:
             docker_cmd.extend(["-w", workdir])
         for key, value in (env or {}).items():

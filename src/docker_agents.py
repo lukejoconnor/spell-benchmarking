@@ -281,11 +281,14 @@ class DockerWorkspaceContainer:
         timeout: int | None = None,
         env: dict[str, str] | None = None,
         workdir: str | None = None,
+        tty: bool = False,
     ) -> ExecOutput:
         if not self.container_id:
             raise RuntimeError("Container not started")
 
         docker_cmd = ["docker", "exec"]
+        if tty:
+            docker_cmd.append("-t")
         if workdir:
             docker_cmd.extend(["-w", workdir])
         for key, value in (env or {}).items():
@@ -750,12 +753,9 @@ def swe_agent_run_command(
     parts: list[str] = ['export PATH="$HOME/.local/bin:$PATH"', "&&"]
     if workdir:
         parts.extend(["cd", shlex.quote(workdir), "&&"])
-    # Wrap with script -qc to provide a pseudo-TTY; mini aborts if isatty(0) is false.
-    mini_parts = ["mini", "-t", shlex.quote(prompt), "-m", shlex.quote(model), "-y", "--exit-immediately"]
+    parts.extend(["mini", "-t", shlex.quote(prompt), "-m", shlex.quote(model), "-y", "--exit-immediately"])
     if budget is not None:
-        mini_parts.extend(["-l", str(budget)])
-    mini_cmd = " ".join(mini_parts)
-    parts.extend(["script", "-qc", shlex.quote(mini_cmd), "/dev/null"])
+        parts.extend(["-l", str(budget)])
     return " ".join(parts)
 
 
@@ -1301,6 +1301,7 @@ def run_agent_in_container(
             ),
             timeout=timeout,
             env=env,
+            tty=True,  # mini-swe-agent requires isatty(0)
         )
         traj_path, traj = _load_swe_agent_trajectory(container, output.stdout)
         usage = swe_agent_parse_usage(output.stdout, container)
