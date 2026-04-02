@@ -243,6 +243,8 @@ Selected via `--split` and `--task-ids`. Tasks are loaded from the FeatureBench 
 - `spell` / `one_shot`: forwarded only for OpenAI/Codex-family providers (`openai`, `openai-tc`, `codex-msg`, `codex-tc`); Anthropic-backed Spell runs leave the field empty.
 - `swe_agent`: not currently benchmark-wired, so records leave the field empty.
 
+For SWE-bench container runs, `swe_agent` installs `mini-swe-agent` into an isolated user-local `uv`-managed Python 3.11 tool environment. This keeps the project/testbed Python environment unchanged.
+
 ## One-Off Files
 
 Exploratory scripts and ad hoc outputs should live under `scratch/batches/` rather than repo root.
