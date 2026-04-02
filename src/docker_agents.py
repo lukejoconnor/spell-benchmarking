@@ -281,14 +281,11 @@ class DockerWorkspaceContainer:
         timeout: int | None = None,
         env: dict[str, str] | None = None,
         workdir: str | None = None,
-        tty: bool = False,
     ) -> ExecOutput:
         if not self.container_id:
             raise RuntimeError("Container not started")
 
         docker_cmd = ["docker", "exec"]
-        if tty:
-            docker_cmd.append("-t")
         if workdir:
             docker_cmd.extend(["-w", workdir])
         for key, value in (env or {}).items():
@@ -730,6 +727,21 @@ fi
 
 uv python install 3.11 >/dev/null
 uv tool install -q --managed-python --python 3.11 mini-swe-agent >/dev/null
+
+# Create a PTY wrapper: mini requires isatty(0) but docker exec has no TTY.
+cat > "$HOME/.local/bin/pty-run" << 'PYEOF'
+#!/usr/bin/env python3
+import pty, os, sys
+status = pty.spawn(sys.argv[1:])
+sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
+PYEOF
+chmod +x "$HOME/.local/bin/pty-run"
+# Use the uv-managed python3.11 for the wrapper
+UV_PYTHON=$("$HOME/.local/bin/uv" python find 3.11 2>/dev/null || echo "")
+if [ -n "$UV_PYTHON" ]; then
+  sed -i "1s|.*|#!${UV_PYTHON}|" "$HOME/.local/bin/pty-run"
+fi
+
 echo "mini installed: $(mini --help >/dev/null 2>&1 && echo ok || echo missing)"
 """
 
@@ -753,7 +765,7 @@ def swe_agent_run_command(
     parts: list[str] = ['export PATH="$HOME/.local/bin:$PATH"', "&&"]
     if workdir:
         parts.extend(["cd", shlex.quote(workdir), "&&"])
-    parts.extend(["mini", "-t", shlex.quote(prompt), "-m", shlex.quote(model), "-y", "--exit-immediately"])
+    parts.extend(["pty-run", "mini", "-t", shlex.quote(prompt), "-m", shlex.quote(model), "-y", "--exit-immediately"])
     if budget is not None:
         parts.extend(["-l", str(budget)])
     return " ".join(parts)
@@ -1301,7 +1313,6 @@ def run_agent_in_container(
             ),
             timeout=timeout,
             env=env,
-            tty=True,  # mini-swe-agent requires isatty(0)
         )
         traj_path, traj = _load_swe_agent_trajectory(container, output.stdout)
         usage = swe_agent_parse_usage(output.stdout, container)
