@@ -16,6 +16,8 @@ from src.docker_agents import (
     build_spell_init,
     codex_parse_usage,
     resolve_spell_model,
+    swe_agent_install_script,
+    swe_agent_run_command,
     spell_env_vars,
 )
 
@@ -61,6 +63,27 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertEqual(usage.total_input_tokens, 6804)
         self.assertAlmostEqual(usage.cost_usd or 0.0, 0.065351, places=6)
         self.assertEqual(usage.cost_source, "estimated")
+
+    def test_swe_agent_install_script_uses_uv_managed_python_tool_runtime(self) -> None:
+        script = swe_agent_install_script()
+
+        self.assertIn('export PATH="$HOME/.local/bin:$PATH"', script)
+        self.assertIn("https://astral.sh/uv/install.sh", script)
+        self.assertIn('UV_UNMANAGED_INSTALL="$HOME/.local"', script)
+        self.assertIn("uv python install 3.11", script)
+        self.assertIn("uv tool install -q --managed-python --python 3.11 mini-swe-agent", script)
+        self.assertNotIn("python3 -m pip install -q --disable-pip-version-check uv", script)
+        self.assertNotIn("python -m pip install -q --disable-pip-version-check uv", script)
+        self.assertNotIn("uv pip install --system -q mini-swe-agent", script)
+        self.assertNotIn("python3.11 -m pip install -q mini-swe-agent", script)
+        self.assertNotIn("add-apt-repository -y ppa:deadsnakes/ppa", script)
+
+    def test_swe_agent_run_command_prefers_local_uv_tool_bin(self) -> None:
+        command = swe_agent_run_command("Solve it", model="anthropic/claude-opus-4-6")
+
+        self.assertTrue(command.startswith('export PATH="$HOME/.local/bin:$PATH" &&'))
+        self.assertIn("mini -t 'Solve it' -m anthropic/claude-opus-4-6 -y --exit-immediately", command)
+
     def test_spell_env_vars_forwards_fireworks_api_key(self) -> None:
         with patch.dict(os.environ, {"FIREWORKS_API_KEY": "fw-test"}, clear=False):
             env = spell_env_vars("fireworks:glm-5")
