@@ -729,18 +729,22 @@ uv python install 3.11 >/dev/null
 uv tool install -q --managed-python --python 3.11 mini-swe-agent >/dev/null
 
 # Create a PTY wrapper: mini requires isatty(0) but docker exec has no TTY.
-cat > "$HOME/.local/bin/pty-run" << 'PYEOF'
-#!/usr/bin/env python3
+UV_PYTHON=$("$HOME/.local/bin/uv" python find 3.11 2>/dev/null || echo "")
+cat > "$HOME/.local/bin/pty-run" << PYEOF
+#!${UV_PYTHON:-/usr/bin/env python3}
 import pty, os, sys
 status = pty.spawn(sys.argv[1:])
 sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
 PYEOF
 chmod +x "$HOME/.local/bin/pty-run"
-# Use the uv-managed python3.11 for the wrapper
-UV_PYTHON=$("$HOME/.local/bin/uv" python find 3.11 2>/dev/null || echo "")
-if [ -n "$UV_PYTHON" ]; then
-  sed -i "1s|.*|#!${UV_PYTHON}|" "$HOME/.local/bin/pty-run"
-fi
+
+# Pre-create mini config to skip the interactive setup wizard.
+# The wizard blocks on stdin even with -y --exit-immediately.
+mkdir -p "$HOME/.config/mini-swe-agent"
+cat > "$HOME/.config/mini-swe-agent/.env" << 'ENVEOF'
+# Pre-configured by benchmark harness — skip setup wizard
+MINI_SETUP_DONE=1
+ENVEOF
 
 echo "mini installed: $(mini --help >/dev/null 2>&1 && echo ok || echo missing)"
 """
