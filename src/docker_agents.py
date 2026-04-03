@@ -779,7 +779,9 @@ def swe_agent_run_command(
     parts: list[str] = [setup, "&&"]
     if workdir:
         parts.extend(["cd", shlex.quote(workdir), "&&"])
-    parts.extend(["pty-run", "mini", "-t", shlex.quote(prompt), "-m", shlex.quote(model), "-y", "--exit-immediately"])
+    # Try direct invocation first — the config file should skip the setup
+    # wizard that originally caused the TTY error. pty-run swallows output.
+    parts.extend(["mini", "-t", shlex.quote(prompt), "-m", shlex.quote(model), "-y", "--exit-immediately"])
     if budget is not None:
         parts.extend(["-l", str(budget)])
     return " ".join(parts)

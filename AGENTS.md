@@ -146,7 +146,6 @@ Condition semantics:
   - In the harness adapter, `codex` resolves to `gpt-5-codex` for stable Codex CLI compatibility.
 - `claude_code`: Claude Code CLI harness. `--reasoning-effort` maps to the CLI's `--effort` flag.
 - `swe_agent`: mini-swe-agent comparator. It does not currently expose a benchmark-wired reasoning-effort control, so records should leave this field empty.
-  - In SWE-bench containers, `mini-swe-agent` is installed into an isolated user-local `uv`-managed Python 3.11 tool environment so the repo-under-test environment stays unchanged.
 - `spell` (including SWE-bench workspaces): adapter injects local `-Sdeps` so `spell.benchmark-api` resolves even when `cwd` is a cloned repo workspace.
   - `reasoning_effort` currently applies only to OpenAI/Codex-family providers (`openai`, `openai-tc`, `codex-msg`, `codex-tc`), not Anthropic-backed Spell runs.
 
