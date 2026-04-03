@@ -727,6 +727,10 @@ fi
 
 uv python install 3.11 >/dev/null
 uv tool install -q --managed-python --python 3.11 mini-swe-agent >/dev/null
+
+# Configure mini via mini-extra to skip the interactive setup wizard.
+# The wizard blocks on stdin (no TTY in docker exec).
+mini-extra config set MSWEA_MODEL_NAME dummy 2>/dev/null || true
 echo "mini installed: $(mini --help >/dev/null 2>&1 && echo ok || echo missing)"
 """
 
