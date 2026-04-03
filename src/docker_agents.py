@@ -159,7 +159,7 @@ class ParsedUsage:
     def total_input_tokens(self) -> int | None:
         if self.input_tokens is None:
             return None
-        return self.input_tokens
+        return self.input_tokens + self.cached_input_tokens
 
 
 @dataclass(slots=True)
@@ -688,8 +688,13 @@ def codex_parse_usage(stdout: str, model: str | None = None) -> ParsedUsage | No
     usage = usage_from_events(events, model=model)
     if not usage:
         return None
+    uncached_input_tokens = (
+        max(usage.input_tokens - usage.cached_input_tokens, 0)
+        if usage.input_tokens is not None
+        else None
+    )
     return ParsedUsage(
-        input_tokens=usage.input_tokens,
+        input_tokens=uncached_input_tokens,
         cached_input_tokens=usage.cached_input_tokens,
         output_tokens=usage.output_tokens,
         cost_usd=usage.cost_usd,
@@ -933,9 +938,34 @@ def _escape_for_spell(value: str) -> str:
     )
 
 
+def _normalize_spell_trailing(trailing: str) -> str:
+    """Normalize shell-escaped bangs outside of Spell string literals."""
+    result: list[str] = []
+    in_string = False
+    i = 0
+    while i < len(trailing):
+        ch = trailing[i]
+        if ch == '"':
+            backslashes = 0
+            j = i - 1
+            while j >= 0 and trailing[j] == "\\":
+                backslashes += 1
+                j -= 1
+            if backslashes % 2 == 0:
+                in_string = not in_string
+            result.append(ch)
+        elif ch == "\\" and i + 1 < len(trailing) and trailing[i + 1] == "!" and not in_string:
+            result.append("!")
+            i += 1
+        else:
+            result.append(ch)
+        i += 1
+    return "".join(result)
+
+
 def build_spell_init(prompt: str, trailing: str | None = None) -> str:
     escaped_prompt = _escape_for_spell(prompt)
-    trailing_expr = trailing or "'(!extend)"
+    trailing_expr = _normalize_spell_trailing(trailing) if trailing else "'(!extend)"
     return (
         f'(quine completion (eval (do (quine prompt "{escaped_prompt}") '
         f"{trailing_expr})))"

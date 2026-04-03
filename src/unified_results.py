@@ -28,6 +28,7 @@ class UnifiedRunRecord:
     correct: bool | None
     tokens_in: int | None
     tokens_out: int | None
+    cached_input_tokens: int | None
     cost_usd: float | None
     latency_ms: float | None
     error_type: str | None

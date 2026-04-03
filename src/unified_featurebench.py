@@ -75,6 +75,7 @@ def run_unified_featurebench(
             response_text=result.response_text,
             tokens_in=result.usage.total_input_tokens if result.usage else None,
             tokens_out=result.usage.output_tokens if result.usage else None,
+            cached_input_tokens=result.usage.cached_input_tokens if result.usage else None,
             cost_usd=result.usage.cost_usd if result.usage else None,
             latency_ms=None,
             error_message=result.error_message,

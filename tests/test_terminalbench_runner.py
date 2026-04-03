@@ -183,6 +183,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             self.assertEqual(record.status, "resolved")
             self.assertTrue(record.correct)
             self.assertEqual(record.cost_usd, 0.42)
+            self.assertIsNone(record.cached_input_tokens)
             self.assertEqual(record.latency_ms, 2000.0)
             self.assertEqual(record.reasoning_effort, "medium")
             self.assertEqual(
@@ -288,6 +289,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             record = records[0]
             self.assertEqual(record.status, "unresolved")
             self.assertAlmostEqual(record.cost_usd or 0.0, 2.75625, places=6)
+            self.assertEqual(record.cached_input_tokens, 250_000)
             self.assertEqual(record.metadata["resolved_model"], "gpt-5.3-codex")
             self.assertEqual(record.metadata["cost_source"], "estimated")
 

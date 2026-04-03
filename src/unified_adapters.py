@@ -112,8 +112,9 @@ class RunResponse:
     response_text: str | None
     tokens_in: int | None
     tokens_out: int | None
-    cost_usd: float | None
-    latency_ms: float | None
+    cached_input_tokens: int | None = None
+    cost_usd: float | None = None
+    latency_ms: float | None = None
     error_message: str | None = None
     error_type: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -124,6 +125,19 @@ class RunnerAdapter(Protocol):
 
     def run(self, req: RunRequest) -> RunResponse:
         ...
+
+
+def _usage_int(value: Any) -> int:
+    return int(value) if isinstance(value, (int, float)) else 0
+
+
+def _spell_usage_breakdown(usage_total: dict[str, Any]) -> tuple[int | None, int | None]:
+    input_tokens = _usage_int(usage_total.get("input_tokens"))
+    cached_input_tokens = _usage_int(usage_total.get("cache_creation_input_tokens")) + _usage_int(
+        usage_total.get("cache_read_input_tokens")
+    )
+    total_input_tokens = input_tokens + cached_input_tokens
+    return (total_input_tokens or None, cached_input_tokens or None)
 
 
 class SpellAdapter:
@@ -166,13 +180,15 @@ class SpellAdapter:
         with _benchmark_run_cwd(req.workspace) as run_cwd:
             response = self.client.run(payload, timeout=req.timeout, cwd=run_cwd)
         usage_total = (response.usage or {}).get("total", {})
+        tokens_in, cached_input_tokens = _spell_usage_breakdown(usage_total)
 
         if response.ok:
             return RunResponse(
                 status="ok",
                 response_text=response.result,
-                tokens_in=usage_total.get("input_tokens"),
+                tokens_in=tokens_in,
                 tokens_out=usage_total.get("output_tokens"),
+                cached_input_tokens=cached_input_tokens,
                 cost_usd=usage_total.get("cost"),
                 latency_ms=response.latency_ms,
                 metadata={"trace_dir": response.trace_dir, "raw": response.raw},
@@ -181,8 +197,9 @@ class SpellAdapter:
         return RunResponse(
             status="timeout" if response.error_type == "timeout" else "error",
             response_text=response.result,
-            tokens_in=usage_total.get("input_tokens"),
+            tokens_in=tokens_in,
             tokens_out=usage_total.get("output_tokens"),
+            cached_input_tokens=cached_input_tokens,
             cost_usd=usage_total.get("cost"),
             latency_ms=response.latency_ms,
             error_message=response.error,
@@ -217,13 +234,15 @@ class OneShotAdapter:
         with _benchmark_run_cwd(req.workspace) as run_cwd:
             response = self.client.run(payload, timeout=req.timeout, cwd=run_cwd)
         usage_total = (response.usage or {}).get("total", {})
+        tokens_in, cached_input_tokens = _spell_usage_breakdown(usage_total)
 
         if response.ok:
             return RunResponse(
                 status="ok",
                 response_text=response.result,
-                tokens_in=usage_total.get("input_tokens"),
+                tokens_in=tokens_in,
                 tokens_out=usage_total.get("output_tokens"),
+                cached_input_tokens=cached_input_tokens,
                 cost_usd=usage_total.get("cost"),
                 latency_ms=response.latency_ms,
                 metadata={"raw": response.raw},
@@ -232,8 +251,9 @@ class OneShotAdapter:
         return RunResponse(
             status="timeout" if response.error_type == "timeout" else "error",
             response_text=response.result,
-            tokens_in=usage_total.get("input_tokens"),
+            tokens_in=tokens_in,
             tokens_out=usage_total.get("output_tokens"),
+            cached_input_tokens=cached_input_tokens,
             cost_usd=usage_total.get("cost"),
             latency_ms=response.latency_ms,
             error_message=response.error,
@@ -412,16 +432,14 @@ class ClaudeCodeAdapter:
                 result_event = event
                 break
 
-        def as_int(v: Any) -> int:
-            return int(v) if isinstance(v, (int, float)) else 0
-
         usage = result_event.get("usage", {}) if isinstance(result_event, dict) else {}
         if not isinstance(usage, dict):
             usage = {}
-        tokens_in = as_int(usage.get("input_tokens")) + as_int(usage.get("cache_creation_input_tokens")) + as_int(
+        cached_input_tokens = _usage_int(usage.get("cache_creation_input_tokens")) + _usage_int(
             usage.get("cache_read_input_tokens")
         )
-        tokens_out = as_int(usage.get("output_tokens"))
+        tokens_in = _usage_int(usage.get("input_tokens")) + cached_input_tokens
+        tokens_out = _usage_int(usage.get("output_tokens"))
         cost_raw = result_event.get("total_cost_usd") if isinstance(result_event, dict) else None
         cost_usd = float(cost_raw) if isinstance(cost_raw, (int, float)) else None
         response_text = str(result_event.get("result", "")) if isinstance(result_event, dict) else ""
@@ -457,6 +475,7 @@ class ClaudeCodeAdapter:
                 response_text=response_text,
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
+                cached_input_tokens=cached_input_tokens or None,
                 cost_usd=cost_usd,
                 latency_ms=latency_ms,
                 metadata=metadata,
@@ -471,6 +490,7 @@ class ClaudeCodeAdapter:
             response_text=response_text,
             tokens_in=tokens_in if result_event else None,
             tokens_out=tokens_out if result_event else None,
+            cached_input_tokens=(cached_input_tokens or None) if result_event else None,
             cost_usd=cost_usd,
             latency_ms=latency_ms,
             error_message=error_message,
@@ -660,6 +680,7 @@ class CodexAdapter:
         usage = usage_from_events(events, model=model)
         tokens_in = usage.total_input_tokens if usage else None
         tokens_out = usage.output_tokens if usage else None
+        cached_input_tokens = usage.cached_input_tokens if usage else None
         cost_usd = usage.cost_usd if usage else None
         thread_id = _extract_codex_thread_id(events)
 
@@ -692,6 +713,7 @@ class CodexAdapter:
             "requested_model": (req.model_spec or self.model_spec or "codex"),
             "resolved_model": model,
             "cost_source": usage.cost_source if usage else None,
+            "cached_input_tokens": cached_input_tokens,
             "reasoning_effort": reasoning_effort,
             "no_custom_config": codex_launcher != "codex",
             "thread_id": thread_id,
@@ -700,7 +722,7 @@ class CodexAdapter:
             "stderr": stderr[:4000],
             "trace_file": str(trace_file) if trace_file else None,
         }
-        metadata = {k: v for k, v in metadata.items() if v}
+        metadata = {k: v for k, v in metadata.items() if v is not None and v != [] and v != ""}
 
         if proc.returncode == 0:
             return RunResponse(
@@ -708,6 +730,7 @@ class CodexAdapter:
                 response_text=response_text,
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
+                cached_input_tokens=cached_input_tokens,
                 cost_usd=cost_usd,
                 latency_ms=latency_ms,
                 metadata=metadata,
@@ -719,6 +742,7 @@ class CodexAdapter:
             response_text=response_text,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
+            cached_input_tokens=cached_input_tokens,
             cost_usd=cost_usd,
             latency_ms=latency_ms,
             error_message=error_message,
