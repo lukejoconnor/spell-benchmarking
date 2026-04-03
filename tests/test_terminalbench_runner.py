@@ -287,7 +287,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             self.assertEqual(len(records), 1)
             record = records[0]
             self.assertEqual(record.status, "unresolved")
-            self.assertAlmostEqual(record.cost_usd or 0.0, 3.15, places=6)
+            self.assertAlmostEqual(record.cost_usd or 0.0, 2.75625, places=6)
             self.assertEqual(record.metadata["resolved_model"], "gpt-5.3-codex")
             self.assertEqual(record.metadata["cost_source"], "estimated")
 
