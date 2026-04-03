@@ -766,7 +766,17 @@ def swe_agent_run_command(
     budget: float | None = None,
     workdir: str | None = None,
 ) -> str:
-    parts: list[str] = ['export PATH="$HOME/.local/bin:$PATH"', "&&"]
+    # Write mini config at runtime with model + API keys from env.
+    # This prevents the interactive setup wizard from blocking.
+    setup = (
+        'export PATH="$HOME/.local/bin:$PATH" && '
+        'mkdir -p "$HOME/.config/mini-swe-agent" && '
+        'printf "MODEL_NAME=%s\\n" ' + shlex.quote(model) + ' > "$HOME/.config/mini-swe-agent/.env" && '
+        'for k in OPENAI_API_KEY ANTHROPIC_API_KEY FIREWORKS_API_KEY; do '
+        '  [ -n "${!k}" ] && printf "%s=%s\\n" "$k" "${!k}" >> "$HOME/.config/mini-swe-agent/.env"; '
+        'done'
+    )
+    parts: list[str] = [setup, "&&"]
     if workdir:
         parts.extend(["cd", shlex.quote(workdir), "&&"])
     parts.extend(["pty-run", "mini", "-t", shlex.quote(prompt), "-m", shlex.quote(model), "-y", "--exit-immediately"])
