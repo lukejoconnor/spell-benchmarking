@@ -57,17 +57,22 @@ class WebSearchCliRegressionTest(unittest.TestCase):
         if stubbed_client is not None and getattr(stubbed_client, "__file__", None) is None:
             sys.modules.pop("spell_benchmark_client", None)
 
-    def _ok_response(self):
+    def _ok_response(self, **overrides):
+        payload = {
+            "status": "ok",
+            "response_text": "42",
+            "tokens_in": None,
+            "tokens_out": None,
+            "cached_input_tokens": None,
+            "cost_usd": None,
+            "latency_ms": 1.0,
+            "error_message": None,
+            "error_type": None,
+            "metadata": {},
+        }
+        payload.update(overrides)
         return self.bench.RunResponse(
-            status="ok",
-            response_text="42",
-            tokens_in=None,
-            tokens_out=None,
-            cost_usd=None,
-            latency_ms=1.0,
-            error_message=None,
-            error_type=None,
-            metadata={},
+            **payload,
         )
 
     def _web_search_by_condition(self, requests):
@@ -287,6 +292,74 @@ class WebSearchCliRegressionTest(unittest.TestCase):
         self.assertEqual(len(seen), 1)
         self.assertIs(seen[0], True)
 
+    def test_featurebench_record_preserves_cached_input_tokens(self):
+        written_records = []
+
+        class DummyWorktree:
+            def __init__(self, path: Path):
+                self.path = path
+
+            def diff(self):
+                return ""
+
+            def changed_files(self):
+                return []
+
+            def remove(self):
+                return None
+
+        def fake_run_unified_featurebench(**_kwargs):
+            return (
+                self._ok_response(
+                    response_text="done",
+                    tokens_in=120,
+                    tokens_out=30,
+                    cached_input_tokens=17,
+                    metadata={"patch": "diff --git", "changed_files": ["demo.py"]},
+                ),
+                True,
+                [{"name": "pytest", "passed": True}],
+            )
+
+        def fake_append_jsonl(_path, record):
+            written_records.append(record)
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.object(
+                 self.bench,
+                 "load_tasks",
+                 return_value=[{"instance_id": "fb-1", "problem_statement": "do it", "repo": "demo"}],
+             ), \
+             patch.object(self.bench, "RepoCache", return_value=object()), \
+             patch.object(
+                 self.bench,
+                 "setup_workspace",
+                 side_effect=lambda cache, item, tag: DummyWorktree(Path(tempfile.mkdtemp(prefix="fb-test-"))),
+             ), \
+             patch.object(self.bench, "mask_functions"), \
+             patch.object(self.bench, "featurebench_format_prompt", return_value="featurebench prompt"), \
+             patch.object(self.bench, "run_unified_featurebench", side_effect=fake_run_unified_featurebench), \
+             patch.object(self.bench, "append_jsonl", side_effect=fake_append_jsonl), \
+             patch.object(self.bench, "_print_summary"):
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "featurebench",
+                    "--condition",
+                    "codex",
+                    "--codex-model",
+                    "codex",
+                    "--workspace-root",
+                    tmp_dir,
+                    "--output",
+                    str(Path(tmp_dir) / "out.jsonl"),
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(len(written_records), 1)
+        self.assertEqual(written_records[0].cached_input_tokens, 17)
+
     def test_scienceagentbench_web_search_flag_reaches_run_request(self):
         seen = []
         item = self.bench.ScienceAgentBenchItem(
@@ -334,6 +407,59 @@ class WebSearchCliRegressionTest(unittest.TestCase):
         self.assertEqual(len(seen), 1)
         self.assertIs(seen[0].web_search, True)
 
+    def test_scienceagentbench_record_preserves_cached_input_tokens(self):
+        written_records = []
+        item = self.bench.ScienceAgentBenchItem(
+            instance_id="sab-1",
+            domain="chemistry",
+            subtask_categories=["x"],
+            task_inst="Write code",
+            dataset_folder_tree="dataset/",
+            dataset_preview="",
+            domain_knowledge="",
+            gold_program_name="solution.py",
+            output_fname="outputs/result.csv",
+            eval_script_name="eval.py",
+            github_name="demo/repo",
+        )
+
+        class DummyAdapter:
+            def run(self, req):
+                return self_outer._ok_response(
+                    response_text="```python\nprint('hello')\n```",
+                    tokens_in=80,
+                    tokens_out=20,
+                    cached_input_tokens=13,
+                )
+
+        def fake_append_jsonl(_path, record):
+            written_records.append(record)
+
+        self_outer = self
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.object(self.bench, "load_scienceagentbench", return_value=[item]), \
+             patch.object(self.bench, "_build_adapter", return_value=DummyAdapter()), \
+             patch.object(self.bench, "append_jsonl", side_effect=fake_append_jsonl), \
+             patch.object(self.bench, "_print_summary"):
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "scienceagentbench",
+                    "--condition",
+                    "codex",
+                    "--codex-model",
+                    "codex",
+                    "--workspace-root",
+                    tmp_dir,
+                    "--output",
+                    str(Path(tmp_dir) / "out.jsonl"),
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(len(written_records), 1)
+        self.assertEqual(written_records[0].cached_input_tokens, 13)
+
     def test_exercism_dry_run_reports_web_search_flag(self):
         exercism_item = self.bench.ExercismItem(
             slug="two-fer",
@@ -361,6 +487,138 @@ class WebSearchCliRegressionTest(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn('"web_search": true', result.output)
+
+    def test_exercism_record_preserves_cached_input_tokens(self):
+        written_records = []
+        exercism_item = self.bench.ExercismItem(
+            slug="two-fer",
+            name="Two Fer",
+            difficulty=1,
+            instructions="Return a string",
+            stub_file="two_fer.py",
+            stub_content="def two_fer():\n    pass\n",
+            test_file="test_two_fer.py",
+            test_content="def test_placeholder():\n    assert True\n",
+            extra_files=[],
+        )
+        outcome = SimpleNamespace(
+            response=self._ok_response(
+                response_text="done",
+                tokens_in=60,
+                tokens_out=10,
+                cached_input_tokens=19,
+            ),
+            passed=False,
+            test_output="AssertionError",
+            attempts=1,
+        )
+
+        def fake_append_jsonl(_path, record):
+            written_records.append(record)
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.object(self.bench, "load_exercism", return_value=[exercism_item]), \
+             patch.object(self.bench, "run_unified_exercism", return_value=outcome), \
+             patch.object(self.bench, "append_jsonl", side_effect=fake_append_jsonl), \
+             patch.object(self.bench, "_print_summary"):
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "exercism",
+                    "--condition",
+                    "codex",
+                    "--codex-model",
+                    "codex",
+                    "--difficulty",
+                    "1",
+                    "--output",
+                    str(Path(tmp_dir) / "out.jsonl"),
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(len(written_records), 1)
+        self.assertEqual(written_records[0].cached_input_tokens, 19)
+
+    def test_exercism_one_shot_record_aggregates_cached_input_tokens(self):
+        written_records = []
+        exercism_item = self.bench.ExercismItem(
+            slug="two-fer",
+            name="Two Fer",
+            difficulty=1,
+            instructions="Return a string",
+            stub_file="two_fer.py",
+            stub_content="def two_fer():\n    pass\n",
+            test_file="test_two_fer.py",
+            test_content="def test_placeholder():\n    assert True\n",
+            extra_files=[],
+        )
+        responses = iter(
+            [
+                self._ok_response(
+                    response_text=(
+                        "```python\n"
+                        "def two_fer(name='you'):\n"
+                        "    return f'One for {name}, one for me.'\n"
+                        "```"
+                    ),
+                    tokens_in=40,
+                    tokens_out=10,
+                    cached_input_tokens=5,
+                    cost_usd=0.1,
+                    latency_ms=10.0,
+                ),
+                self._ok_response(
+                    response_text=(
+                        "```python\n"
+                        "def two_fer(name='you'):\n"
+                        "    return f'One for {name}, one for me.'\n"
+                        "```"
+                    ),
+                    tokens_in=30,
+                    tokens_out=12,
+                    cached_input_tokens=7,
+                    cost_usd=0.2,
+                    latency_ms=20.0,
+                ),
+            ]
+        )
+
+        class DummyAdapter:
+            def run(self, req):
+                return next(responses)
+
+        def fake_append_jsonl(_path, record):
+            written_records.append(record)
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.object(self.bench, "load_exercism", return_value=[exercism_item]), \
+             patch.object(self.bench, "_build_adapter", return_value=DummyAdapter()), \
+             patch.object(
+                 self.bench,
+                 "_run_exercism_pytest",
+                 side_effect=[(False, "first failure"), (True, "all good")],
+             ), \
+             patch.object(self.bench, "append_jsonl", side_effect=fake_append_jsonl), \
+             patch.object(self.bench, "_print_summary"):
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "exercism",
+                    "--condition",
+                    "one_shot",
+                    "--model",
+                    "openai:gpt-5.4",
+                    "--difficulty",
+                    "1",
+                    "--output",
+                    str(Path(tmp_dir) / "out.jsonl"),
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(len(written_records), 1)
+        self.assertEqual(written_records[0].cached_input_tokens, 12)
 
     def test_swebench_pro_dry_run_succeeds_without_unified_flag(self):
         pro_item = SimpleNamespace(instance_id="django__django-1")
@@ -469,6 +727,62 @@ class WebSearchCliRegressionTest(unittest.TestCase):
         self.assertEqual(events[0], ("ensure", self.bench.SCALE_PRO_EVAL_REPO_DEFAULT))
         self.assertEqual(events[1][0], "run")
         self.assertIn("Pro eval repo ready", result.output)
+
+    def test_swebench_record_preserves_cached_input_tokens(self):
+        written_records = []
+        lite_item = SimpleNamespace(
+            instance_id="django__django-1",
+            repo="django/django",
+            base_commit="abc123",
+            problem_statement="Fix it",
+            hints_text="",
+            metadata={},
+            raw_instance={},
+        )
+
+        def fake_run_unified_swebench(**_kwargs):
+            return self._ok_response(
+                response_text="done",
+                tokens_in=150,
+                tokens_out=40,
+                cached_input_tokens=23,
+                metadata={
+                    "docker": True,
+                    "patch": "diff --git",
+                    "changed_files": ["demo.py"],
+                },
+            )
+
+        def fake_append_jsonl(_path, record):
+            written_records.append(record)
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.object(self.bench, "load_swebench_lite", return_value=[lite_item]), \
+             patch.object(self.bench, "run_unified_swebench", side_effect=fake_run_unified_swebench), \
+             patch.object(self.bench, "append_jsonl", side_effect=fake_append_jsonl), \
+             patch.object(self.bench, "_print_summary"), \
+             patch.object(self.bench, "write_predictions_jsonl"), \
+             patch.object(self.bench, "_resolve_trace_dir", return_value=None):
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "swebench",
+                    "--dataset",
+                    "lite",
+                    "--condition",
+                    "codex",
+                    "--codex-model",
+                    "codex",
+                    "--n",
+                    "1",
+                    "--output",
+                    str(Path(tmp_dir) / "out.jsonl"),
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(len(written_records), 1)
+        self.assertEqual(written_records[0].cached_input_tokens, 23)
 
     def test_swebench_keep_images_skips_final_image_cleanup(self):
         lite_item = SimpleNamespace(
