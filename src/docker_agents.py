@@ -751,22 +751,19 @@ def swe_agent_run_command(
     budget: float | None = None,
     workdir: str | None = None,
 ) -> str:
-    # Write mini config at runtime with model + API keys from env vars.
-    # This prevents the interactive setup wizard from blocking on stdin.
-    # The trailing `; true` prevents the for-loop from returning non-zero
-    # when the last env var is unset, which would break the && chain.
-    setup = (
-        'export PATH="$HOME/.local/bin:$PATH" && '
-        'mkdir -p "$HOME/.config/mini-swe-agent" && '
-        'printf "MSWEA_MODEL_NAME=%s\\n" ' + shlex.quote(model) + ' > "$HOME/.config/mini-swe-agent/.env" && '
-        'for k in OPENAI_API_KEY ANTHROPIC_API_KEY FIREWORKS_API_KEY; do '
-        '  [ -n "${!k}" ] && printf "%s=%s\\n" "$k" "${!k}" >> "$HOME/.config/mini-swe-agent/.env"; '
-        'done; true'
-    )
-    parts: list[str] = [setup, "&&"]
+    parts: list[str] = ['export PATH="$HOME/.local/bin:$PATH"', "&&"]
     if workdir:
         parts.extend(["cd", shlex.quote(workdir), "&&"])
-    parts.extend(["mini", "-t", shlex.quote(prompt), "-m", shlex.quote(model), "-y", "--exit-immediately"])
+    # Use -c to pass a config key-value pair. Per --help: "If you set this
+    # option, the default config file will not be used." This bypasses the
+    # interactive setup wizard that blocks on stdin (no TTY in docker exec).
+    parts.extend([
+        "mini",
+        "-c", "model.model_name=" + shlex.quote(model),
+        "-t", shlex.quote(prompt),
+        "-m", shlex.quote(model),
+        "-y", "--exit-immediately",
+    ])
     if budget is not None:
         parts.extend(["-l", str(budget)])
     return " ".join(parts)
