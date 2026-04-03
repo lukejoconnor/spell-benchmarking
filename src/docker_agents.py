@@ -700,13 +700,33 @@ def codex_parse_usage(stdout: str, model: str | None = None) -> ParsedUsage | No
 def swe_agent_install_script() -> str:
     return r"""
 set -euo pipefail
-if command -v uv >/dev/null 2>&1; then
-  uv pip install --system -q mini-swe-agent
-elif command -v python3 >/dev/null 2>&1; then
-  python3 -m pip install -q mini-swe-agent
-else
-  python -m pip install -q mini-swe-agent
+export PATH="$HOME/.local/bin:$PATH"
+
+if ! command -v uv >/dev/null 2>&1; then
+  if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+    if command -v apt-get >/dev/null 2>&1; then
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get -o Acquire::AllowInsecureRepositories=true update -qq
+      apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq ca-certificates curl >/dev/null
+    elif command -v apk >/dev/null 2>&1; then
+      apk add --no-cache ca-certificates curl >/dev/null
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y -q ca-certificates curl >/dev/null
+    else
+      echo "Unable to install uv: curl/wget unavailable and unsupported package manager" >&2
+      exit 1
+    fi
+  fi
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh >/dev/null
+  else
+    wget -qO- https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh >/dev/null
+  fi
 fi
+
+uv python install 3.11 >/dev/null
+uv tool install -q --managed-python --python 3.11 mini-swe-agent >/dev/null
 echo "mini installed: $(mini --help >/dev/null 2>&1 && echo ok || echo missing)"
 """
 
