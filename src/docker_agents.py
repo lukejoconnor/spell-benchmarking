@@ -754,7 +754,7 @@ def swe_agent_run_command(
     setup = (
         'export PATH="$HOME/.local/bin:$PATH" && '
         'mkdir -p "$HOME/.config/mini-swe-agent" && '
-        'printf "MODEL_NAME=%s\\n" ' + shlex.quote(model) + ' > "$HOME/.config/mini-swe-agent/.env" && '
+        'printf "MSWEA_MODEL_NAME=%s\\n" ' + shlex.quote(model) + ' > "$HOME/.config/mini-swe-agent/.env" && '
         'for k in OPENAI_API_KEY ANTHROPIC_API_KEY FIREWORKS_API_KEY; do '
         '  [ -n "${!k}" ] && printf "%s=%s\\n" "$k" "${!k}" >> "$HOME/.config/mini-swe-agent/.env"; '
         'done; true'
