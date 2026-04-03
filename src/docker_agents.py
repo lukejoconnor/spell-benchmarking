@@ -700,52 +700,13 @@ def codex_parse_usage(stdout: str, model: str | None = None) -> ParsedUsage | No
 def swe_agent_install_script() -> str:
     return r"""
 set -euo pipefail
-export PATH="$HOME/.local/bin:$PATH"
-
-if ! command -v uv >/dev/null 2>&1; then
-  if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
-    if command -v apt-get >/dev/null 2>&1; then
-      export DEBIAN_FRONTEND=noninteractive
-      apt-get -o Acquire::AllowInsecureRepositories=true update -qq
-      apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq ca-certificates curl >/dev/null
-    elif command -v apk >/dev/null 2>&1; then
-      apk add --no-cache ca-certificates curl >/dev/null
-    elif command -v yum >/dev/null 2>&1; then
-      yum install -y -q ca-certificates curl >/dev/null
-    else
-      echo "Unable to install uv: curl/wget unavailable and unsupported package manager" >&2
-      exit 1
-    fi
-  fi
-
-  if command -v curl >/dev/null 2>&1; then
-    curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh >/dev/null
-  else
-    wget -qO- https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh >/dev/null
-  fi
+if command -v uv >/dev/null 2>&1; then
+  uv pip install --system -q mini-swe-agent
+elif command -v python3 >/dev/null 2>&1; then
+  python3 -m pip install -q mini-swe-agent
+else
+  python -m pip install -q mini-swe-agent
 fi
-
-uv python install 3.11 >/dev/null
-uv tool install -q --managed-python --python 3.11 mini-swe-agent >/dev/null
-
-# Create a PTY wrapper: mini requires isatty(0) but docker exec has no TTY.
-UV_PYTHON=$("$HOME/.local/bin/uv" python find 3.11 2>/dev/null || echo "")
-cat > "$HOME/.local/bin/pty-run" << PYEOF
-#!${UV_PYTHON:-/usr/bin/env python3}
-import pty, os, sys
-status = pty.spawn(sys.argv[1:])
-sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
-PYEOF
-chmod +x "$HOME/.local/bin/pty-run"
-
-# Pre-create mini config to skip the interactive setup wizard.
-# The wizard blocks on stdin even with -y --exit-immediately.
-mkdir -p "$HOME/.config/mini-swe-agent"
-cat > "$HOME/.config/mini-swe-agent/.env" << 'ENVEOF'
-# Pre-configured by benchmark harness — skip setup wizard
-MINI_SETUP_DONE=1
-ENVEOF
-
 echo "mini installed: $(mini --help >/dev/null 2>&1 && echo ok || echo missing)"
 """
 
@@ -766,21 +727,21 @@ def swe_agent_run_command(
     budget: float | None = None,
     workdir: str | None = None,
 ) -> str:
-    # Write mini config at runtime with model + API keys from env.
-    # This prevents the interactive setup wizard from blocking.
+    # Write mini config at runtime with model + API keys from env vars.
+    # This prevents the interactive setup wizard from blocking on stdin.
+    # The trailing `; true` prevents the for-loop from returning non-zero
+    # when the last env var is unset, which would break the && chain.
     setup = (
         'export PATH="$HOME/.local/bin:$PATH" && '
         'mkdir -p "$HOME/.config/mini-swe-agent" && '
         'printf "MODEL_NAME=%s\\n" ' + shlex.quote(model) + ' > "$HOME/.config/mini-swe-agent/.env" && '
         'for k in OPENAI_API_KEY ANTHROPIC_API_KEY FIREWORKS_API_KEY; do '
         '  [ -n "${!k}" ] && printf "%s=%s\\n" "$k" "${!k}" >> "$HOME/.config/mini-swe-agent/.env"; '
-        'done'
+        'done; true'
     )
     parts: list[str] = [setup, "&&"]
     if workdir:
         parts.extend(["cd", shlex.quote(workdir), "&&"])
-    # Try direct invocation first — the config file should skip the setup
-    # wizard that originally caused the TTY error. pty-run swallows output.
     parts.extend(["mini", "-t", shlex.quote(prompt), "-m", shlex.quote(model), "-y", "--exit-immediately"])
     if budget is not None:
         parts.extend(["-l", str(budget)])
