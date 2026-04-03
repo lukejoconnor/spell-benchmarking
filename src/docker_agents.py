@@ -728,9 +728,40 @@ fi
 uv python install 3.11 >/dev/null
 uv tool install -q --managed-python --python 3.11 mini-swe-agent >/dev/null
 
-# Configure mini via mini-extra to skip the interactive setup wizard.
-# The wizard blocks on stdin (no TTY in docker exec).
-mini-extra config set MSWEA_MODEL_NAME dummy 2>/dev/null || true
+# Create pty-run wrapper: mini has an interactive setup wizard that checks
+# isatty(0) and aborts without a TTY. This wrapper allocates a real PTY and
+# sends newlines to auto-answer the wizard prompts with empty values.
+UV_PYTHON=$("$HOME/.local/bin/uv" python find 3.11 2>/dev/null || echo python3)
+cat > "$HOME/.local/bin/pty-run" << PYEOF
+#!${UV_PYTHON}
+import pty, os, sys, time
+
+def main():
+    argv = sys.argv[1:]
+    if not argv:
+        sys.exit(1)
+    pid, master_fd = pty.fork()
+    if pid == 0:
+        os.execlp(argv[0], *argv)
+    # Send newlines to auto-answer any interactive setup prompts
+    time.sleep(1)
+    os.write(master_fd, b"\n\n\n\n\n\n\n\n\n\n")
+    # Forward child output to our stdout
+    while True:
+        try:
+            data = os.read(master_fd, 4096)
+        except OSError:
+            break
+        if not data:
+            break
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+    _, status = os.waitpid(pid, 0)
+    sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
+
+main()
+PYEOF
+chmod +x "$HOME/.local/bin/pty-run"
 echo "mini installed: $(mini --help >/dev/null 2>&1 && echo ok || echo missing)"
 """
 
@@ -754,12 +785,10 @@ def swe_agent_run_command(
     parts: list[str] = ['export PATH="$HOME/.local/bin:$PATH"', "&&"]
     if workdir:
         parts.extend(["cd", shlex.quote(workdir), "&&"])
-    # Use -c to pass a config key-value pair. Per --help: "If you set this
-    # option, the default config file will not be used." This bypasses the
-    # interactive setup wizard that blocks on stdin (no TTY in docker exec).
+    # Use pty-run to provide a real PTY (mini checks isatty(0)) and
+    # auto-answer the setup wizard with empty newlines.
     parts.extend([
-        "mini",
-        "-c", "model.model_name=" + shlex.quote(model),
+        "pty-run", "mini",
         "-t", shlex.quote(prompt),
         "-m", shlex.quote(model),
         "-y", "--exit-immediately",
