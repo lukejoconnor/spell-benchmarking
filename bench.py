@@ -554,6 +554,7 @@ def _mk_record(
         correct=correct,
         tokens_in=response.tokens_in,
         tokens_out=response.tokens_out,
+        cached_input_tokens=response.cached_input_tokens,
         cost_usd=response.cost_usd,
         latency_ms=response.latency_ms,
         error_type=response.error_type,

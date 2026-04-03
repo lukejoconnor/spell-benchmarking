@@ -346,6 +346,11 @@ def terminalbench_records_from_run(
         usage = usage_from_payload(agent_result if condition == "codex" else None, model=normalized_model)
         tokens_in = trial.get("total_input_tokens")
         tokens_out = trial.get("total_output_tokens")
+        cached_input_tokens = usage.cached_input_tokens if usage else agent_result.get("cached_input_tokens")
+        if not isinstance(cached_input_tokens, (int, float)):
+            cached_input_tokens = None
+        elif cached_input_tokens == 0:
+            cached_input_tokens = None
         cost_usd = usage.cost_usd if usage else agent_result.get("cost_usd")
 
         copied_trace_dir = None
@@ -390,6 +395,7 @@ def terminalbench_records_from_run(
                 correct=None if error_message else trial.get("is_resolved"),
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
+                cached_input_tokens=int(cached_input_tokens) if cached_input_tokens is not None else None,
                 cost_usd=cost_usd,
                 latency_ms=_latency_ms(trial.get("agent_started_at"), trial.get("agent_ended_at")),
                 error_type=error_type,

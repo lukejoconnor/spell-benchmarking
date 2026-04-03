@@ -102,6 +102,7 @@ def run_unified_exercism(
 
     total_tokens_in: int | None = 0
     total_tokens_out: int | None = 0
+    total_cached_input_tokens: int | None = 0
     total_cost = 0.0
     cost_known = False
     attempts = 0
@@ -131,6 +132,12 @@ def run_unified_exercism(
 
         first_tokens_in = first_result.usage.total_input_tokens if first_result.usage else None
         total_tokens_in = total_tokens_in + first_tokens_in if total_tokens_in is not None and first_tokens_in is not None else None
+        first_cached_input_tokens = first_result.usage.cached_input_tokens if first_result.usage else None
+        total_cached_input_tokens = (
+            total_cached_input_tokens + first_cached_input_tokens
+            if total_cached_input_tokens is not None and first_cached_input_tokens is not None
+            else None
+        )
         first_tokens_out = first_result.usage.output_tokens if first_result.usage else None
         total_tokens_out = total_tokens_out + first_tokens_out if total_tokens_out is not None and first_tokens_out is not None else None
         if first_result.usage and first_result.usage.cost_usd is not None:
@@ -161,6 +168,12 @@ def run_unified_exercism(
             )
             retry_tokens_in = retry_result.usage.total_input_tokens if retry_result.usage else None
             total_tokens_in = total_tokens_in + retry_tokens_in if total_tokens_in is not None and retry_tokens_in is not None else None
+            retry_cached_input_tokens = retry_result.usage.cached_input_tokens if retry_result.usage else None
+            total_cached_input_tokens = (
+                total_cached_input_tokens + retry_cached_input_tokens
+                if total_cached_input_tokens is not None and retry_cached_input_tokens is not None
+                else None
+            )
             retry_tokens_out = retry_result.usage.output_tokens if retry_result.usage else None
             total_tokens_out = total_tokens_out + retry_tokens_out if total_tokens_out is not None and retry_tokens_out is not None else None
             if retry_result.usage and retry_result.usage.cost_usd is not None:
@@ -178,6 +191,7 @@ def run_unified_exercism(
             response_text=current_result.response_text,
             tokens_in=total_tokens_in,
             tokens_out=total_tokens_out,
+            cached_input_tokens=total_cached_input_tokens,
             cost_usd=total_cost if cost_known else None,
             latency_ms=None,
             error_message=current_result.error_message,

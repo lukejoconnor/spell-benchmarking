@@ -13,6 +13,7 @@ if str(BENCHMARK_ROOT) not in sys.path:
 from src.docker_agents import (
     ExecOutput,
     _load_swe_agent_trajectory,
+    _normalize_spell_trailing,
     build_spell_init,
     codex_parse_usage,
     resolve_spell_model,
@@ -56,7 +57,7 @@ class DockerAgentsTests(unittest.TestCase):
 
         self.assertIsNotNone(usage)
         assert usage is not None
-        self.assertEqual(usage.input_tokens, 6804)
+        self.assertEqual(usage.input_tokens, 916)
         self.assertEqual(usage.cached_input_tokens, 5888)
         self.assertEqual(usage.total_input_tokens, 6804)
         self.assertAlmostEqual(usage.cost_usd or 0.0, 0.065351, places=6)

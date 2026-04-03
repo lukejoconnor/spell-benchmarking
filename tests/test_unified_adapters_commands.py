@@ -72,6 +72,8 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         self.assertIn("high", cmd)
         self.assertEqual(response.metadata.get("num_turns"), 2)
         self.assertEqual(response.metadata.get("session_id"), "sess-1")
+        self.assertEqual(response.tokens_in, 10)
+        self.assertIsNone(response.cached_input_tokens)
 
     @patch("src.unified_adapters.subprocess.run")
     def test_codex_adapter_uses_no_custom_wrapper(self, run_mock):
@@ -177,6 +179,8 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
             self.assertEqual(payload["item_id"], "item-1")
             self.assertEqual(payload["non_json_lines"], ["not-json-line"])
             self.assertEqual(response.tokens_in, 7)
+            self.assertEqual(response.cached_input_tokens, 4)
+            self.assertEqual(response.metadata.get("cached_input_tokens"), 4)
             self.assertEqual(response.metadata.get("cost_source"), "estimated")
 
     @patch("src.unified_adapters.subprocess.run")
@@ -241,6 +245,61 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         self.assertEqual(response.status, "ok")
         payload = client_run_mock.call_args.args[0]
         self.assertEqual(payload.get("format"), {"required": ["result"]})
+        self.assertEqual(response.tokens_in, 1)
+        self.assertIsNone(response.cached_input_tokens)
+
+    @patch("src.unified_adapters.SpellBenchmarkClient.run")
+    def test_spell_adapter_reports_total_and_cached_input_tokens(self, client_run_mock):
+        client_run_mock.return_value = SimpleNamespace(
+            ok=True,
+            result="42",
+            usage={
+                "total": {
+                    "input_tokens": 10,
+                    "cache_creation_input_tokens": 1,
+                    "cache_read_input_tokens": 2,
+                    "output_tokens": 3,
+                    "cost": 0.01,
+                }
+            },
+            latency_ms=1.0,
+            trace_dir=None,
+            raw={},
+            error=None,
+            error_type=None,
+        )
+        adapter = SpellAdapter(project_root=PROJECT_ROOT, model_spec="anthropic-tc:opus46")
+
+        response = adapter.run(_request("spell", "anthropic-tc:opus46"))
+
+        self.assertEqual(response.tokens_in, 13)
+        self.assertEqual(response.cached_input_tokens, 3)
+
+    @patch("src.unified_adapters.subprocess.run")
+    def test_claude_adapter_reports_total_and_cached_input_tokens(self, run_mock):
+        run_mock.return_value = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "type": "result",
+                    "result": "ok",
+                    "usage": {
+                        "input_tokens": 10,
+                        "cache_creation_input_tokens": 1,
+                        "cache_read_input_tokens": 2,
+                        "output_tokens": 4,
+                    },
+                    "total_cost_usd": 0.01,
+                }
+            ),
+            stderr="",
+        )
+
+        adapter = ClaudeCodeAdapter(model="sonnet", budget=1.0)
+        response = adapter.run(_request("claude_code", "claude_code:sonnet"))
+
+        self.assertEqual(response.tokens_in, 13)
+        self.assertEqual(response.cached_input_tokens, 3)
 
     @patch("src.unified_adapters.SpellBenchmarkClient.run")
     def test_spell_adapter_skips_default_format_for_software(self, client_run_mock):
