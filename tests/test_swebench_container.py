@@ -266,6 +266,7 @@ def test_prewarm_swebench_env_images_dedupes_specs_and_uses_requested_workers() 
 
     with (
         patch("src.swebench_container.make_test_spec", side_effect=fake_make_test_spec),
+        patch("src.swebench_container._maybe_patch_swebench_builder") as patch_builder_mock,
         patch("src.swebench_container.docker.from_env", return_value=docker_client),
         patch(
             "src.swebench_container.build_env_images",
@@ -284,6 +285,7 @@ def test_prewarm_swebench_env_images_dedupes_specs_and_uses_requested_workers() 
         "sweb.env.shared:latest",
         "sweb.env.unique:latest",
     ]
+    patch_builder_mock.assert_called_once_with()
     assert build_mock.call_args.kwargs == {"force_rebuild": False, "max_workers": 3}
     assert result.unique_env_count == 2
     assert result.built_env_count == 2

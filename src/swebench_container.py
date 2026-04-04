@@ -312,6 +312,8 @@ def prewarm_swebench_env_images(
     if max_workers < 1:
         raise ValueError("max_workers must be at least 1")
 
+    _maybe_patch_swebench_builder()
+
     specs = _unique_env_test_specs(
         items,
         instance_image_tag=instance_image_tag,
