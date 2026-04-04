@@ -53,6 +53,12 @@ class SameContainerEvalResult:
 
 
 @dataclass(slots=True)
+class SWEBenchEnvPrewarmResult:
+    unique_env_count: int
+    built_env_count: int
+
+
+@dataclass(slots=True)
 class SWEBenchContainerSetupError(Exception):
     stage: str
     detail: str
@@ -262,6 +268,87 @@ def _normalize_failed_env_build(failed_payloads: list[tuple[Any, ...]]) -> SWEBe
     return _normalize_setup_error(stage="build_env_images", detail=detail, log_path=log_path)
 
 
+def _make_standard_test_spec(
+    item: SWEBenchItem,
+    *,
+    instance_image_tag: str = "latest",
+    env_image_tag: str = "latest",
+) -> TestSpec:
+    return make_test_spec(
+        item.raw_instance,
+        namespace=None,
+        env_image_tag=env_image_tag,
+        instance_image_tag=instance_image_tag,
+        arch="x86_64",
+    )
+
+
+def _unique_env_test_specs(
+    items: list[SWEBenchItem],
+    *,
+    instance_image_tag: str = "latest",
+    env_image_tag: str = "latest",
+) -> list[TestSpec]:
+    specs_by_env: dict[str, TestSpec] = {}
+    for item in items:
+        if (item.raw_instance or {}).get("dockerhub_tag"):
+            continue
+        spec = _make_standard_test_spec(
+            item,
+            instance_image_tag=instance_image_tag,
+            env_image_tag=env_image_tag,
+        )
+        specs_by_env.setdefault(_env_build_lock_key(spec), spec)
+    return list(specs_by_env.values())
+
+
+def prewarm_swebench_env_images(
+    items: list[SWEBenchItem],
+    *,
+    instance_image_tag: str = "latest",
+    env_image_tag: str = "latest",
+    max_workers: int = 1,
+) -> SWEBenchEnvPrewarmResult:
+    if max_workers < 1:
+        raise ValueError("max_workers must be at least 1")
+
+    specs = _unique_env_test_specs(
+        items,
+        instance_image_tag=instance_image_tag,
+        env_image_tag=env_image_tag,
+    )
+    if not specs:
+        return SWEBenchEnvPrewarmResult(unique_env_count=0, built_env_count=0)
+
+    docker_client = docker.from_env()
+    try:
+        successful, failed = build_env_images(
+            docker_client,
+            specs,
+            force_rebuild=False,
+            max_workers=max_workers,
+        )
+    except BuildImageError as exc:
+        raise _normalize_build_image_error(exc, stage="build_env_images") from exc
+    except SWEBenchContainerSetupError:
+        raise
+    except Exception as exc:
+        raise _normalize_setup_error(
+            stage="build_env_images",
+            detail=str(exc) or "Unknown env image build failure",
+        ) from exc
+    finally:
+        docker_client.close()
+
+    if failed:
+        raise _normalize_failed_env_build(failed)
+
+    return SWEBenchEnvPrewarmResult(
+        unique_env_count=len(specs),
+        built_env_count=len(successful),
+    )
+
+
 class SWEBenchContainer:
     """Container backed by official SWE-bench instance images."""
 
@@ -314,12 +401,10 @@ class SWEBenchContainer:
 
     def _start_standard_container(self) -> None:
         self._docker_client = docker.from_env()
-        self._test_spec = make_test_spec(
-            self.item.raw_instance,
-            namespace=None,
+        self._test_spec = _make_standard_test_spec(
+            self.item,
             env_image_tag=self.env_image_tag,
             instance_image_tag=self.instance_image_tag,
-            arch="x86_64",
         )
 
         log_dir = Path(tempfile.mkdtemp(prefix=f"swebench-build-{uuid.uuid4().hex[:8]}-"))
@@ -366,7 +451,12 @@ class SWEBenchContainer:
                 self.item.instance_id,
             )
             try:
-                _, failed = build_env_images(self._docker_client, [self._test_spec], False, False, 1)
+                _, failed = build_env_images(
+                    self._docker_client,
+                    [self._test_spec],
+                    force_rebuild=False,
+                    max_workers=1,
+                )
                 if failed:
                     raise _normalize_failed_env_build(failed)
             except BuildImageError as exc:

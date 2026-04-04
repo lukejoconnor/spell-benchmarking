@@ -784,6 +784,116 @@ class WebSearchCliRegressionTest(unittest.TestCase):
         self.assertEqual(len(written_records), 1)
         self.assertEqual(written_records[0].cached_input_tokens, 23)
 
+    def test_swebench_prewarm_runs_before_generation(self):
+        lite_item = SimpleNamespace(
+            instance_id="django__django-1",
+            repo="django/django",
+            base_commit="abc123",
+            problem_statement="Fix it",
+            hints_text="",
+            metadata={},
+            raw_instance={},
+        )
+        events = []
+
+        def fake_prewarm(items, **kwargs):
+            events.append(("prewarm", [item.instance_id for item in items], kwargs))
+            return SimpleNamespace(unique_env_count=1, built_env_count=1)
+
+        def fake_run_unified_swebench(**kwargs):
+            events.append(("run", kwargs["condition"]))
+            return self._ok_response(metadata={"docker": True, "patch": "", "changed_files": []})
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.object(self.bench, "load_swebench_lite", return_value=[lite_item]), \
+             patch.object(self.bench, "prewarm_swebench_env_images", side_effect=fake_prewarm), \
+             patch.object(self.bench, "run_unified_swebench", side_effect=fake_run_unified_swebench), \
+             patch.object(self.bench, "append_jsonl"), \
+             patch.object(self.bench, "_print_summary"), \
+             patch.object(self.bench, "write_predictions_jsonl"), \
+             patch.object(self.bench, "_resolve_trace_dir", return_value=None):
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "swebench",
+                    "--dataset",
+                    "lite",
+                    "--condition",
+                    "codex",
+                    "--codex-model",
+                    "codex",
+                    "--n",
+                    "1",
+                    "--prewarm-envs",
+                    "--env-build-workers",
+                    "3",
+                    "--output",
+                    str(Path(tmp_dir) / "out.jsonl"),
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(
+            events,
+            [
+                (
+                    "prewarm",
+                    ["django__django-1"],
+                    {
+                        "instance_image_tag": "latest",
+                        "env_image_tag": "latest",
+                        "max_workers": 3,
+                    },
+                ),
+                ("run", "codex"),
+            ],
+        )
+        self.assertIn("Prewarm summary: 1 unique env image, 1 built this run", result.output)
+
+    def test_swebench_prewarm_only_skips_generation(self):
+        lite_item = SimpleNamespace(
+            instance_id="django__django-1",
+            repo="django/django",
+            base_commit="abc123",
+            problem_statement="Fix it",
+            hints_text="",
+            metadata={},
+            raw_instance={},
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.object(self.bench, "load_swebench_lite", return_value=[lite_item]), \
+             patch.object(
+                 self.bench,
+                 "prewarm_swebench_env_images",
+                 return_value=SimpleNamespace(unique_env_count=1, built_env_count=0),
+             ) as prewarm_mock, \
+             patch.object(self.bench, "run_unified_swebench") as run_mock, \
+             patch.object(self.bench, "_resolve_trace_dir", return_value=None):
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "swebench",
+                    "--dataset",
+                    "lite",
+                    "--condition",
+                    "codex",
+                    "--codex-model",
+                    "codex",
+                    "--n",
+                    "1",
+                    "--prewarm-envs",
+                    "--prewarm-only",
+                    "--output",
+                    str(Path(tmp_dir) / "out.jsonl"),
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        prewarm_mock.assert_called_once()
+        run_mock.assert_not_called()
+        self.assertIn("Prewarm summary: 1 unique env image, 0 built this run", result.output)
+
     def test_swebench_keep_images_skips_final_image_cleanup(self):
         lite_item = SimpleNamespace(
             instance_id="django__django-1",
@@ -1066,6 +1176,9 @@ class WebSearchCliRegressionTest(unittest.TestCase):
         self.assertNotIn("--keep-workspaces", swebench_help.output)
         self.assertIn("--clean-eval / --no-clean-eval", swebench_help.output)
         self.assertIn("--keep-images / --no-keep-images", swebench_help.output)
+        self.assertIn("--prewarm-envs / --no-prewarm-envs", swebench_help.output)
+        self.assertIn("--env-build-workers INTEGER", swebench_help.output)
+        self.assertIn("--prewarm-only", swebench_help.output)
         self.assertNotIn("--unified", featurebench_help.output)
         self.assertNotIn("--unified", exercism_help.output)
 

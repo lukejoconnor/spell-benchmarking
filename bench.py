@@ -59,7 +59,11 @@ from src.featurebench_lib import (
     setup_workspace,
 )
 from src.swebench_output import write_predictions_jsonl
-from src.swebench_container import SWEBenchContainerSetupError, remove_swebench_instance_image
+from src.swebench_container import (
+    SWEBenchContainerSetupError,
+    prewarm_swebench_env_images,
+    remove_swebench_instance_image,
+)
 from src.workspace import RepoCache
 from src.unified_exercism import format_unified_exercism_prompt, run_unified_exercism
 from src.unified_featurebench import run_unified_featurebench
@@ -1283,6 +1287,25 @@ def run_general(
 @click.option("--eval-instance-image-tag", default="latest", show_default=True)
 @click.option("--eval-env-image-tag", default="latest", show_default=True)
 @click.option(
+    "--prewarm-envs/--no-prewarm-envs",
+    default=False,
+    show_default=True,
+    help="Prebuild unique SWE-bench env images once before item generation",
+)
+@click.option(
+    "--env-build-workers",
+    type=int,
+    default=1,
+    show_default=True,
+    help="Parallel workers for SWE-bench env-image prewarm",
+)
+@click.option(
+    "--prewarm-only",
+    is_flag=True,
+    default=False,
+    help="Build env images for the selected SWE-bench items, then exit without generation",
+)
+@click.option(
     "--eval-final-cache-level",
     type=click.Choice(["none", "base", "env", "instance"]),
     default="base",
@@ -1384,6 +1407,9 @@ def run_swebench(
     eval_namespace: str,
     eval_instance_image_tag: str,
     eval_env_image_tag: str,
+    prewarm_envs: bool,
+    env_build_workers: int,
+    prewarm_only: bool,
     eval_final_cache_level: str,
     eval_final_clean: bool,
     pro_eval_repo: str,
@@ -1457,6 +1483,8 @@ def run_swebench(
         click.echo(f"Name: {name}")
     click.echo("Container mode: official SWE-bench instance images")
     click.echo(f"Loaded {len(items)} items")
+    if env_build_workers < 1:
+        raise click.ClickException("--env-build-workers must be at least 1")
     if dry_run:
         spell_resolution = None
         if "spell" in conditions:
@@ -1496,6 +1524,9 @@ def run_swebench(
                     "eval_namespace": eval_namespace,
                     "eval_instance_image_tag": eval_instance_image_tag,
                     "eval_env_image_tag": eval_env_image_tag,
+                    "prewarm_envs": prewarm_envs,
+                    "env_build_workers": env_build_workers,
+                    "prewarm_only": prewarm_only,
                     "eval_final_cache_level": eval_final_cache_level,
                     "eval_final_clean": eval_final_clean,
                     "pro_eval_repo": pro_eval_repo,
@@ -1519,6 +1550,29 @@ def run_swebench(
     if dataset == "pro":
         ensure_scale_pro_eval_repo(pro_eval_repo)
         click.echo(f"Pro eval repo ready: {pro_eval_repo}")
+
+    if backend != "docker" and (prewarm_envs or prewarm_only):
+        raise click.ClickException("SWE-bench env prewarm is only supported with the docker backend")
+
+    if prewarm_envs or prewarm_only:
+        click.echo(
+            f"Prewarming SWE-bench env images with {env_build_workers} worker"
+            f"{'' if env_build_workers == 1 else 's'}"
+        )
+        prewarm_result = prewarm_swebench_env_images(
+            items,
+            instance_image_tag=eval_instance_image_tag,
+            env_image_tag=eval_env_image_tag,
+            max_workers=env_build_workers,
+        )
+        click.echo(
+            "Prewarm summary: "
+            f"{prewarm_result.unique_env_count} unique env image"
+            f"{'' if prewarm_result.unique_env_count == 1 else 's'}, "
+            f"{prewarm_result.built_env_count} built this run"
+        )
+        if prewarm_only:
+            return
 
     trace_dir = _resolve_trace_dir(run_id, trace)
     if trace_dir:

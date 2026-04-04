@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -9,6 +10,10 @@ from unittest.mock import patch
 import pytest
 from swebench.harness.docker_build import BuildImageError
 
+BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
+if str(BENCHMARK_ROOT) not in sys.path:
+    sys.path.insert(0, str(BENCHMARK_ROOT))
+
 from src.swebench_container import (
     SWEBenchContainer,
     SWEBenchContainerSetupError,
@@ -16,6 +21,7 @@ from src.swebench_container import (
     _env_exports_from_dockerfiles,
     _normalize_build_image_error,
     _parse_string_list,
+    prewarm_swebench_env_images,
 )
 from src.datasets import SWEBenchItem
 
@@ -222,7 +228,7 @@ def test_build_with_auto_env_serializes_shared_env_rebuilds(tmp_path: Path) -> N
             )
         return SimpleNamespace(id=f"container-{run_id}")
 
-    def fake_build_env_images(docker_client, specs, *_args):
+    def fake_build_env_images(docker_client, specs, *_args, **_kwargs):
         del docker_client, specs
         nonlocal build_env_call_count
         with state_lock:
@@ -244,3 +250,82 @@ def test_build_with_auto_env_serializes_shared_env_rebuilds(tmp_path: Path) -> N
 
     assert build_env_call_count == 1
     assert all(result.id.startswith("container-") for result in results)
+
+
+def test_prewarm_swebench_env_images_dedupes_specs_and_uses_requested_workers() -> None:
+    item_a = _make_item(instance_id="item-a", raw_instance={"instance_id": "item-a"})
+    item_b = _make_item(instance_id="item-b", raw_instance={"instance_id": "item-b"})
+    pro_item = _make_item(instance_id="item-pro", raw_instance={"dockerhub_tag": "repo.tag"})
+    docker_client = SimpleNamespace(close=lambda: None)
+
+    def fake_make_test_spec(raw_instance, **_kwargs):
+        key = "sweb.env.shared:latest"
+        if raw_instance["instance_id"] == "item-b":
+            key = "sweb.env.unique:latest"
+        return SimpleNamespace(env_image_key=key, instance_image_key=f"{key}.instance")
+
+    with (
+        patch("src.swebench_container.make_test_spec", side_effect=fake_make_test_spec),
+        patch("src.swebench_container.docker.from_env", return_value=docker_client),
+        patch(
+            "src.swebench_container.build_env_images",
+            return_value=([("shared",), ("unique",)], []),
+        ) as build_mock,
+    ):
+        result = prewarm_swebench_env_images(
+            [item_a, item_b, pro_item],
+            instance_image_tag="instance-tag",
+            env_image_tag="env-tag",
+            max_workers=3,
+        )
+
+    _, specs = build_mock.call_args.args[:2]
+    assert [spec.env_image_key for spec in specs] == [
+        "sweb.env.shared:latest",
+        "sweb.env.unique:latest",
+    ]
+    assert build_mock.call_args.kwargs == {"force_rebuild": False, "max_workers": 3}
+    assert result.unique_env_count == 2
+    assert result.built_env_count == 2
+
+
+def test_prewarm_swebench_env_images_surfaces_failed_build_logs(tmp_path: Path) -> None:
+    item = _make_item(instance_id="item-a", raw_instance={"instance_id": "item-a"})
+    env_build_dir = tmp_path / "env-build"
+    env_build_dir.mkdir()
+    log_path = env_build_dir / "build_image.log"
+    log_path.write_text("step 1 ok\nstep 2 failed: gcc missing\n", encoding="utf-8")
+    docker_client = SimpleNamespace(close=lambda: None)
+
+    with (
+        patch(
+            "src.swebench_container.make_test_spec",
+            return_value=SimpleNamespace(
+                env_image_key="sweb.env.shared:latest",
+                instance_image_key="sweb.eval.shared:latest",
+            ),
+        ),
+        patch("src.swebench_container.docker.from_env", return_value=docker_client),
+        patch(
+            "src.swebench_container.build_env_images",
+            return_value=(
+                [],
+                [
+                    (
+                        "sweb.env.shared:latest",
+                        {"setup_env.sh": "echo hi"},
+                        "FROM python:3.11",
+                        "linux/amd64",
+                        object(),
+                        env_build_dir,
+                    )
+                ],
+            ),
+        ),
+    ):
+        with pytest.raises(SWEBenchContainerSetupError) as excinfo:
+            prewarm_swebench_env_images([item], max_workers=2)
+
+    assert excinfo.value.stage == "build_env_images"
+    assert excinfo.value.log_path == str(log_path)
+    assert excinfo.value.log_tail == "step 1 ok\nstep 2 failed: gcc missing"
