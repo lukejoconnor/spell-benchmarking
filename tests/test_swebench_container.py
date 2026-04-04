@@ -210,6 +210,7 @@ def test_build_with_auto_env_serializes_shared_env_rebuilds(tmp_path: Path) -> N
     state_lock = threading.Lock()
     attempt_counts: dict[int, int] = {}
     build_env_call_count = 0
+    build_env_kwargs: list[dict[str, object]] = []
 
     def fake_build_container(test_spec, docker_client, run_id, logger, *_args):
         del test_spec, docker_client, logger
@@ -233,6 +234,7 @@ def test_build_with_auto_env_serializes_shared_env_rebuilds(tmp_path: Path) -> N
         nonlocal build_env_call_count
         with state_lock:
             build_env_call_count += 1
+            build_env_kwargs.append(dict(_kwargs))
         return [], []
 
     with (
@@ -249,6 +251,7 @@ def test_build_with_auto_env_serializes_shared_env_rebuilds(tmp_path: Path) -> N
             results = [future.result() for future in futures]
 
     assert build_env_call_count == 1
+    assert build_env_kwargs == [{"force_rebuild": False, "max_workers": 1}]
     assert all(result.id.startswith("container-") for result in results)
 
 
