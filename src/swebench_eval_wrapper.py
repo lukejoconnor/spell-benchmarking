@@ -135,6 +135,7 @@ def _patch_pip_version_pin() -> None:
     _PIP_PIN_APPLIED = True
 
     from swebench.harness.test_spec import python as py_module
+    from swebench.harness.test_spec import create_scripts as cs_module
 
     _original_make_repo_script = py_module.make_repo_script_list_py
 
@@ -148,6 +149,8 @@ def _patch_pip_version_pin() -> None:
         return commands
 
     py_module.make_repo_script_list_py = _patched_make_repo_script_list_py
+    # Also patch the re-exported reference in create_scripts (imported by name)
+    cs_module.make_repo_script_list_py = _patched_make_repo_script_list_py
 
 
 def main() -> None:
