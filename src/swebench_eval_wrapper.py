@@ -110,12 +110,44 @@ def _maybe_patch_swebench_builder() -> None:
         mode = "auto"
 
     use_cli = mode == "cli" or (mode == "auto" and platform.system() == "Darwin")
-    if not use_cli:
+    if use_cli:
+        from swebench.harness import docker_build as db
+
+        db.build_image = _build_image_via_cli
+
+    _patch_pip_version_pin()
+
+
+_PIP_PIN_APPLIED = False
+
+
+def _patch_pip_version_pin() -> None:
+    """Pin pip<24 in instance setup scripts to avoid PEP 660 and removed-flag errors.
+
+    Pip 24+ removed the --no-use-pep517 flag and the legacy editable-install
+    fallback.  The SWE-bench harness generates install commands that rely on
+    both, so we inject ``pip install 'pip<24'`` after conda activation in every
+    instance setup script.
+    """
+    global _PIP_PIN_APPLIED
+    if _PIP_PIN_APPLIED:
         return
+    _PIP_PIN_APPLIED = True
 
-    from swebench.harness import docker_build as db
+    from swebench.harness.test_spec import python as py_module
 
-    db.build_image = _build_image_via_cli
+    _original_make_repo_script = py_module.make_repo_script_list_py
+
+    def _patched_make_repo_script_list_py(specs, repo, repo_directory, base_commit, env_name):
+        commands = _original_make_repo_script(specs, repo, repo_directory, base_commit, env_name)
+        # Insert pip downgrade right after 'conda activate ...'
+        for i, cmd in enumerate(commands):
+            if cmd.startswith("conda activate "):
+                commands.insert(i + 1, "python -m pip install 'pip<24' -qq")
+                break
+        return commands
+
+    py_module.make_repo_script_list_py = _patched_make_repo_script_list_py
 
 
 def main() -> None:
