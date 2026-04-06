@@ -196,7 +196,12 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
                     json.dumps(
                         {
                             "type": "turn.completed",
-                            "usage": {"input_tokens": 1_000, "cached_input_tokens": 100, "output_tokens": 200},
+                            "usage": {
+                                "input_tokens": 1_000,
+                                "cached_input_tokens": 100,
+                                "output_tokens": 200,
+                                "cost_usd": 0.01,
+                            },
                         }
                     ),
                     "non-json-line",
@@ -246,10 +251,10 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
             response = adapter.run(_request("codex", "gpt-5.4"))
 
             self.assertEqual(response.status, "ok")
-            self.assertAlmostEqual(response.cost_usd or 0.0, 0.010525, places=8)
+            self.assertAlmostEqual(response.cost_usd or 0.0, 0.01, places=8)
             self.assertEqual(response.metadata["reasoning_output_tokens"], 350)
             self.assertEqual(response.metadata["rollout_status"], "ok")
-            self.assertEqual(response.metadata["cost_source"], "estimated_with_reasoning")
+            self.assertEqual(response.metadata["cost_source"], "reported")
             self.assertEqual(response.metadata["raw"]["events"][0]["type"], "thread.started")
             self.assertEqual(response.metadata["raw"]["non_json_lines"], ["non-json-line"])
             self.assertEqual(response.metadata["raw"]["rollout_token_count"]["total_token_usage"]["reasoning_output_tokens"], 350)

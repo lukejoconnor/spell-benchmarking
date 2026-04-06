@@ -182,7 +182,7 @@ class CodexUsageTests(unittest.TestCase):
         self.assertEqual(usage.reasoning_output_tokens, 183)
         self.assertEqual(usage.cost_source, "estimated")
 
-    def test_merge_codex_usage_prefers_rollout(self) -> None:
+    def test_merge_codex_usage_uses_rollout_estimate_when_stream_lacks_reported_cost(self) -> None:
         stream = usage_from_payload(
             {
                 "input_tokens": 1_000,
@@ -207,6 +207,34 @@ class CodexUsageTests(unittest.TestCase):
         assert merged is not None
         self.assertEqual(merged.reasoning_output_tokens, 350)
         self.assertEqual(merged.cost_source, "estimated_with_reasoning")
+
+    def test_merge_codex_usage_preserves_reported_stream_cost(self) -> None:
+        stream = usage_from_payload(
+            {
+                "input_tokens": 1_000,
+                "cached_input_tokens": 100,
+                "output_tokens": 200,
+                "cost_usd": 0.01,
+            },
+            model="gpt-5.4",
+        )
+        rollout = usage_from_payload(
+            {
+                "input_tokens": 1_000,
+                "cached_input_tokens": 100,
+                "output_tokens": 200,
+                "reasoning_output_tokens": 350,
+            },
+            model="gpt-5.4",
+        )
+
+        merged = merge_codex_usage(stream, rollout, model="gpt-5.4")
+
+        self.assertIsNotNone(merged)
+        assert merged is not None
+        self.assertEqual(merged.reasoning_output_tokens, 350)
+        self.assertAlmostEqual(merged.cost_usd or 0.0, 0.01, places=8)
+        self.assertEqual(merged.cost_source, "reported")
 
 
 if __name__ == "__main__":

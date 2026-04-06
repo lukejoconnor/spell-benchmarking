@@ -257,14 +257,33 @@ def merge_codex_usage(
     model: str | None = None,
 ) -> CodexUsage | None:
     del model
+    if stream is None:
+        return rollout
     if rollout is None:
         return stream
-    if rollout.reasoning_output_tokens is None or rollout.cost_source != "estimated":
+
+    if stream.cost_source == "reported":
+        return CodexUsage(
+            input_tokens=stream.input_tokens,
+            cached_input_tokens=stream.cached_input_tokens or rollout.cached_input_tokens,
+            output_tokens=stream.output_tokens,
+            reasoning_output_tokens=stream.reasoning_output_tokens
+            if stream.reasoning_output_tokens is not None
+            else rollout.reasoning_output_tokens,
+            cost_usd=stream.cost_usd,
+            cost_source=stream.cost_source,
+        )
+
+    if rollout.reasoning_output_tokens is None:
+        return rollout if rollout.cost_source == "reported" else stream
+
+    if rollout.cost_source != "estimated":
         return rollout
+
     return CodexUsage(
-        input_tokens=rollout.input_tokens,
-        cached_input_tokens=rollout.cached_input_tokens,
-        output_tokens=rollout.output_tokens,
+        input_tokens=stream.input_tokens if stream.input_tokens is not None else rollout.input_tokens,
+        cached_input_tokens=rollout.cached_input_tokens or stream.cached_input_tokens,
+        output_tokens=stream.output_tokens if stream.output_tokens is not None else rollout.output_tokens,
         reasoning_output_tokens=rollout.reasoning_output_tokens,
         cost_usd=rollout.cost_usd,
         cost_source="estimated_with_reasoning",
