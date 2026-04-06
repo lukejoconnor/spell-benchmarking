@@ -103,13 +103,14 @@ class ClaudeCodeAgent(DockerExecAgent):
             setting_sources=self._setting_sources,
         )
 
-    def _parse_usage(self, stdout: str) -> ParsedUsage | None:
+    def _parse_usage(self, stdout: str, *, container=None, workdir: str | None = None) -> ParsedUsage | None:
         """Parse usage from Claude Code stream-json output.
 
         The final result event contains:
         {"type": "result", "cost_usd": X, "total_cost_usd": Y,
          "usage": {"input_tokens": N, "output_tokens": M}}
         """
+        del container, workdir
         usage = cc_parse_usage(stdout)
         if not usage:
             logger.warning("No result event found in Claude Code output")

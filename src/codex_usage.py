@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -29,6 +30,7 @@ class CodexUsage:
     input_tokens: int | None = None
     cached_input_tokens: int = 0
     output_tokens: int | None = None
+    reasoning_output_tokens: int | None = None
     cost_usd: float | None = None
     cost_source: str | None = None
 
@@ -49,18 +51,20 @@ def estimate_cost(
     tokens_out: int | None,
     *,
     cached_input_tokens: int = 0,
+    reasoning_output_tokens: int | None = None,
 ) -> float | None:
     if not model or tokens_in is None or tokens_out is None:
         return None
     total_input_tokens = max(0, tokens_in)
     cached_tokens = min(max(0, cached_input_tokens), total_input_tokens)
     uncached_tokens = total_input_tokens - cached_tokens
+    total_output_tokens = max(0, tokens_out) + max(0, reasoning_output_tokens or 0)
     for prefix, (in_rate, cached_in_rate, out_rate) in _MODEL_PRICING.items():
         if model.startswith(prefix):
             return (
                 uncached_tokens * in_rate / 1_000_000
                 + cached_tokens * cached_in_rate / 1_000_000
-                + tokens_out * out_rate / 1_000_000
+                + total_output_tokens * out_rate / 1_000_000
             )
     return None
 
@@ -97,6 +101,7 @@ def _has_usage_keys(value: dict[str, Any]) -> bool:
             "cached_input_tokens",
             "cache_creation_input_tokens",
             "cache_read_input_tokens",
+            "reasoning_output_tokens",
             "total_cost_usd",
             "cost_usd",
             "cost",
@@ -131,6 +136,8 @@ def usage_from_payload(payload: dict[str, Any] | None, *, model: str | None = No
 
     output_raw = payload.get("output_tokens")
     output_tokens = int(output_raw) if isinstance(output_raw, (int, float)) else None
+    reasoning_raw = payload.get("reasoning_output_tokens")
+    reasoning_output_tokens = int(reasoning_raw) if isinstance(reasoning_raw, (int, float)) else None
 
     cost_raw = payload.get("total_cost_usd")
     if cost_raw is None:
@@ -146,17 +153,19 @@ def usage_from_payload(payload: dict[str, Any] | None, *, model: str | None = No
             input_tokens,
             output_tokens,
             cached_input_tokens=cached_input_tokens,
+            reasoning_output_tokens=reasoning_output_tokens,
         )
         if cost_usd is not None:
             cost_source = "estimated"
 
-    if input_tokens is None and output_tokens is None and cost_usd is None:
+    if input_tokens is None and output_tokens is None and reasoning_output_tokens is None and cost_usd is None:
         return None
 
     return CodexUsage(
         input_tokens=input_tokens,
         cached_input_tokens=cached_input_tokens,
         output_tokens=output_tokens,
+        reasoning_output_tokens=reasoning_output_tokens,
         cost_usd=cost_usd,
         cost_source=cost_source,
     )
@@ -164,3 +173,99 @@ def usage_from_payload(payload: dict[str, Any] | None, *, model: str | None = No
 
 def usage_from_events(events: list[dict[str, Any]], *, model: str | None = None) -> CodexUsage | None:
     return usage_from_payload(usage_payload_from_events(events), model=model)
+
+
+def extract_codex_thread_id(events: list[dict[str, Any]]) -> str | None:
+    for event in events:
+        if event.get("type") != "thread.started":
+            continue
+        thread_id = event.get("thread_id")
+        if isinstance(thread_id, str) and thread_id:
+            return thread_id
+        thread = event.get("thread")
+        if isinstance(thread, dict):
+            nested_thread_id = thread.get("id")
+            if isinstance(nested_thread_id, str) and nested_thread_id:
+                return nested_thread_id
+    return None
+
+
+def parse_codex_rollout(text: str) -> dict[str, Any] | None:
+    session_id: str | None = None
+    latest_info: dict[str, Any] | None = None
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            event = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+
+        if event.get("type") == "session_meta":
+            payload = event.get("payload")
+            if isinstance(payload, dict):
+                payload_id = payload.get("id")
+                if isinstance(payload_id, str) and payload_id:
+                    session_id = payload_id
+            continue
+
+        payload = event
+        if event.get("type") == "event_msg":
+            nested_payload = event.get("payload")
+            if not isinstance(nested_payload, dict):
+                continue
+            payload = nested_payload
+
+        if payload.get("type") != "token_count":
+            continue
+
+        info = payload.get("info")
+        if not isinstance(info, dict):
+            continue
+        total_token_usage = info.get("total_token_usage")
+        if not isinstance(total_token_usage, dict):
+            continue
+
+        latest_info = {
+            "total_token_usage": total_token_usage,
+            "last_token_usage": info.get("last_token_usage"),
+            "model_context_window": info.get("model_context_window"),
+            "session_id": session_id,
+        }
+
+    return latest_info
+
+
+def usage_from_rollout(text: str, *, model: str | None = None) -> CodexUsage | None:
+    parsed = parse_codex_rollout(text)
+    if not parsed:
+        return None
+    payload = parsed.get("total_token_usage")
+    if not isinstance(payload, dict):
+        return None
+    return usage_from_payload(payload, model=model)
+
+
+def merge_codex_usage(
+    stream: CodexUsage | None,
+    rollout: CodexUsage | None,
+    *,
+    model: str | None = None,
+) -> CodexUsage | None:
+    del model
+    if rollout is None:
+        return stream
+    if rollout.reasoning_output_tokens is None or rollout.cost_source != "estimated":
+        return rollout
+    return CodexUsage(
+        input_tokens=rollout.input_tokens,
+        cached_input_tokens=rollout.cached_input_tokens,
+        output_tokens=rollout.output_tokens,
+        reasoning_output_tokens=rollout.reasoning_output_tokens,
+        cost_usd=rollout.cost_usd,
+        cost_source="estimated_with_reasoning",
+    )

@@ -17,12 +17,20 @@ from typing import Any, Callable, Protocol
 
 from .docker_agents import (
     build_spell_init,
+    filter_codex_raw_events,
     swe_agent_env_vars,
     swe_agent_run_command,
     _extract_swe_agent_cost,
     _extract_swe_agent_response,
 )
-from .codex_usage import normalize_codex_model, usage_from_events
+from .codex_usage import (
+    extract_codex_thread_id,
+    merge_codex_usage,
+    normalize_codex_model,
+    parse_codex_rollout,
+    usage_from_events,
+    usage_from_rollout,
+)
 
 BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 
@@ -537,15 +545,6 @@ def _extract_codex_error(events: list[dict[str, Any]], stderr: str, return_code:
     return stderr or f"Exit code {return_code}"
 
 
-def _extract_codex_thread_id(events: list[dict[str, Any]]) -> str | None:
-    for event in events:
-        if event.get("type") == "thread.started":
-            thread_id = event.get("thread_id")
-            if isinstance(thread_id, str):
-                return thread_id
-    return None
-
-
 def _extract_codex_response_text(events: list[dict[str, Any]]) -> str:
     def content_text(v: Any) -> str:
         if isinstance(v, str):
@@ -603,12 +602,22 @@ def _load_swe_agent_trajectory(search_dir: Path) -> tuple[Path | None, dict[str,
     return path, data if isinstance(data, dict) else None
 
 
+def _find_codex_rollout_for_thread(sessions_root: Path, thread_id: str | None) -> Path | None:
+    if not thread_id or not sessions_root.exists():
+        return None
+    matches = list(sessions_root.rglob(f"rollout-*-{thread_id}.jsonl"))
+    if not matches:
+        return None
+    return max(matches, key=lambda path: path.stat().st_mtime)
+
+
 class CodexAdapter:
     condition = "codex"
 
-    def __init__(self, project_root: Path, model_spec: str = "codex"):
+    def __init__(self, project_root: Path, model_spec: str = "codex", sessions_root: Path | None = None):
         self.project_root = project_root
         self.model_spec = model_spec
+        self.sessions_root = sessions_root or (Path.home() / ".codex" / "sessions")
 
     def run(self, req: RunRequest) -> RunResponse:
         model = normalize_codex_model(req.model_spec, self.model_spec)
@@ -642,7 +651,6 @@ class CodexAdapter:
             *base_cmd,
             "exec",
             "--json",
-            "--ephemeral",
             "--skip-git-repo-check",
             "-m",
             model,
@@ -677,12 +685,33 @@ class CodexAdapter:
         stdout = (proc.stdout or "").strip()
         stderr = (proc.stderr or "").strip()
         events, non_json_lines = _parse_jsonl_events(stdout)
-        usage = usage_from_events(events, model=model)
+        filtered_events = filter_codex_raw_events(events)
+        stream_usage = usage_from_events(events, model=model)
+        thread_id = extract_codex_thread_id(events)
+        rollout_path = _find_codex_rollout_for_thread(self.sessions_root, thread_id)
+        rollout_text = None
+        if rollout_path is not None and rollout_path.exists():
+            try:
+                rollout_text = rollout_path.read_text(encoding="utf-8")
+            except OSError:
+                rollout_text = None
+        rollout_info = parse_codex_rollout(rollout_text) if rollout_text else None
+        rollout_usage = usage_from_rollout(rollout_text, model=model) if rollout_text else None
+        usage = merge_codex_usage(stream_usage, rollout_usage, model=model)
         tokens_in = usage.total_input_tokens if usage else None
         tokens_out = usage.output_tokens if usage else None
         cached_input_tokens = usage.cached_input_tokens if usage else None
         cost_usd = usage.cost_usd if usage else None
-        thread_id = _extract_codex_thread_id(events)
+        reasoning_output_tokens = usage.reasoning_output_tokens if usage else None
+
+        if thread_id is None:
+            rollout_status = "missing_thread_id"
+        elif rollout_path is None:
+            rollout_status = "missing"
+        elif rollout_info is None:
+            rollout_status = "no_token_count_event"
+        else:
+            rollout_status = "ok"
 
         response_text = ""
         if last_msg_path.exists():
@@ -714,11 +743,19 @@ class CodexAdapter:
             "resolved_model": model,
             "cost_source": usage.cost_source if usage else None,
             "cached_input_tokens": cached_input_tokens,
+            "reasoning_output_tokens": reasoning_output_tokens,
             "reasoning_effort": reasoning_effort,
             "no_custom_config": codex_launcher != "codex",
             "thread_id": thread_id,
-            "events_tail": events[-20:],
-            "non_json_stdout_tail": non_json_lines[-20:],
+            "rollout_path": str(rollout_path) if rollout_path else None,
+            "rollout_token_count": rollout_info,
+            "rollout_status": rollout_status,
+            "raw": {
+                "events": filtered_events,
+                "non_json_lines": non_json_lines,
+                "rollout_token_count": rollout_info,
+                "rollout_path": str(rollout_path) if rollout_path else None,
+            },
             "stderr": stderr[:4000],
             "trace_file": str(trace_file) if trace_file else None,
         }

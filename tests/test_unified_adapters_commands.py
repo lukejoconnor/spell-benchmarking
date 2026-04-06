@@ -86,6 +86,7 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         cmd = run_mock.call_args.args[0]
         self.assertEqual(cmd[0], str(CODEX_NO_CUSTOM_SCRIPT))
         self.assertIn("exec", cmd)
+        self.assertNotIn("--ephemeral", cmd)
         disabled_idx = cmd.index('web_search="disabled"')
         exec_idx = cmd.index("exec")
         self.assertLess(disabled_idx, exec_idx)
@@ -182,6 +183,108 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
             self.assertEqual(response.cached_input_tokens, 4)
             self.assertEqual(response.metadata.get("cached_input_tokens"), 4)
             self.assertEqual(response.metadata.get("cost_source"), "estimated")
+
+    @patch("src.unified_adapters.subprocess.run")
+    def test_codex_adapter_recovers_reasoning_tokens_from_rollout(self, run_mock):
+        run_mock.return_value = SimpleNamespace(
+            returncode=0,
+            stdout="\n".join(
+                [
+                    json.dumps({"type": "thread.started", "thread_id": "thread-1"}),
+                    json.dumps({"type": "turn.started"}),
+                    json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "OK"}}),
+                    json.dumps(
+                        {
+                            "type": "turn.completed",
+                            "usage": {"input_tokens": 1_000, "cached_input_tokens": 100, "output_tokens": 200},
+                        }
+                    ),
+                    "non-json-line",
+                ]
+            ),
+            stderr="",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sessions_root = Path(tmp_dir) / "sessions"
+            rollout_dir = sessions_root / "2026" / "04" / "06"
+            rollout_dir.mkdir(parents=True, exist_ok=True)
+            rollout_path = rollout_dir / "rollout-2026-04-06T10-08-30-thread-1.jsonl"
+            rollout_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"type": "session_meta", "payload": {"id": "thread-1"}}),
+                        json.dumps(
+                            {
+                                "type": "event_msg",
+                                "payload": {
+                                    "type": "token_count",
+                                    "info": {
+                                        "total_token_usage": {
+                                            "input_tokens": 1_000,
+                                            "cached_input_tokens": 100,
+                                            "output_tokens": 200,
+                                            "reasoning_output_tokens": 350,
+                                        },
+                                        "last_token_usage": {
+                                            "input_tokens": 1_000,
+                                            "cached_input_tokens": 100,
+                                            "output_tokens": 200,
+                                            "reasoning_output_tokens": 350,
+                                        },
+                                        "model_context_window": 258_400,
+                                    },
+                                },
+                            }
+                        ),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            adapter = CodexAdapter(project_root=PROJECT_ROOT, model_spec="gpt-5.4", sessions_root=sessions_root)
+            response = adapter.run(_request("codex", "gpt-5.4"))
+
+            self.assertEqual(response.status, "ok")
+            self.assertAlmostEqual(response.cost_usd or 0.0, 0.010525, places=8)
+            self.assertEqual(response.metadata["reasoning_output_tokens"], 350)
+            self.assertEqual(response.metadata["rollout_status"], "ok")
+            self.assertEqual(response.metadata["cost_source"], "estimated_with_reasoning")
+            self.assertEqual(response.metadata["raw"]["events"][0]["type"], "thread.started")
+            self.assertEqual(response.metadata["raw"]["non_json_lines"], ["non-json-line"])
+            self.assertEqual(response.metadata["raw"]["rollout_token_count"]["total_token_usage"]["reasoning_output_tokens"], 350)
+            self.assertEqual(response.metadata["raw"]["rollout_path"], str(rollout_path))
+
+    @patch("src.unified_adapters.subprocess.run")
+    def test_codex_adapter_handles_missing_rollout(self, run_mock):
+        run_mock.return_value = SimpleNamespace(
+            returncode=0,
+            stdout="\n".join(
+                [
+                    json.dumps({"type": "thread.started", "thread_id": "thread-1"}),
+                    json.dumps(
+                        {
+                            "type": "turn.completed",
+                            "usage": {"input_tokens": 1_000, "cached_input_tokens": 100, "output_tokens": 200},
+                        }
+                    ),
+                ]
+            ),
+            stderr="",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = CodexAdapter(
+                project_root=PROJECT_ROOT,
+                model_spec="gpt-5.4",
+                sessions_root=Path(tmp_dir) / "sessions",
+            )
+            response = adapter.run(_request("codex", "gpt-5.4"))
+
+            self.assertEqual(response.status, "ok")
+            self.assertAlmostEqual(response.cost_usd or 0.0, 0.005275, places=8)
+            self.assertEqual(response.metadata["rollout_status"], "missing")
+            self.assertEqual(response.metadata["cost_source"], "estimated")
 
     @patch("src.unified_adapters.subprocess.run")
     def test_swe_agent_adapter_reads_trajectory_and_writes_trace(self, run_mock):

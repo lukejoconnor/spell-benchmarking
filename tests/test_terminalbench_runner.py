@@ -293,6 +293,63 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             self.assertEqual(record.metadata["resolved_model"], "gpt-5.3-codex")
             self.assertEqual(record.metadata["cost_source"], "estimated")
 
+    def test_terminalbench_records_preserve_codex_agent_reasoning_cost_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            run_dir = root / "results" / "codex_reasoning"
+            trial_dir = run_dir / "hello-world" / "hello-world.1-of-1.codex_reasoning"
+            agent_log_dir = trial_dir / "agent-logs"
+            agent_log_dir.mkdir(parents=True, exist_ok=True)
+            (agent_log_dir / "result.json").write_text(
+                json.dumps(
+                    {
+                        "input_tokens": 900,
+                        "cached_input_tokens": 100,
+                        "output_tokens": 200,
+                        "reasoning_output_tokens": 350,
+                        "total_input_tokens": 1_000,
+                        "cost_usd": 0.009775,
+                        "cost_source": "estimated_with_reasoning",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (run_dir / "results.json").write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "trial_name": "hello-world.1-of-1.codex_reasoning",
+                                "task_id": "hello-world",
+                                "is_resolved": True,
+                                "failure_mode": "none",
+                                "parser_results": {"check": "passed"},
+                                "total_input_tokens": 1_000,
+                                "total_output_tokens": 200,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            records = terminalbench_records_from_run(
+                run_dir=run_dir,
+                run_id="terminalbench_reasoning",
+                condition="codex",
+                dataset="terminal-bench-core==0.1.1",
+                model_spec="openai/gpt-5.4",
+                name=None,
+                agent_file=None,
+            )
+
+            self.assertEqual(len(records), 1)
+            record = records[0]
+            self.assertEqual(record.status, "resolved")
+            self.assertAlmostEqual(record.cost_usd or 0.0, 0.009775, places=8)
+            self.assertEqual(record.metadata["cost_source"], "estimated_with_reasoning")
+            self.assertEqual(record.metadata["reasoning_output_tokens"], 350)
+
 
 if __name__ == "__main__":
     unittest.main()

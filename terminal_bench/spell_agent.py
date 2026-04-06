@@ -149,7 +149,8 @@ class SpellAgent(DockerExecAgent):
     def _extract_response_json(self, stdout: str) -> dict | None:
         return spell_parse_benchmark_response(stdout)
 
-    def _parse_usage(self, stdout: str) -> ParsedUsage | None:
+    def _parse_usage(self, stdout: str, *, container=None, workdir: str | None = None) -> ParsedUsage | None:
+        del container, workdir
         usage = spell_parse_usage(stdout)
         if not usage:
             logger.warning("No benchmark-api JSON response found in Spell stdout")

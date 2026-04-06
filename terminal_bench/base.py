@@ -132,6 +132,7 @@ class DockerExecAgent(BaseAgent):
             "input_tokens": usage.input_tokens if usage else 0,
             "cached_input_tokens": usage.cached_input_tokens if usage else 0,
             "output_tokens": usage.output_tokens if usage else 0,
+            "reasoning_output_tokens": usage.reasoning_output_tokens if usage else None,
             "total_input_tokens": usage.total_input_tokens if usage else 0,
             "cost_usd": usage.cost_usd if usage else None,
             "cost_source": usage.cost_source if usage else None,
@@ -153,7 +154,7 @@ class DockerExecAgent(BaseAgent):
         ...
 
     @abstractmethod
-    def _parse_usage(self, stdout: str) -> ParsedUsage | None:
+    def _parse_usage(self, stdout: str, *, container=None, workdir: str | None = None) -> ParsedUsage | None:
         """Parse token usage from the agent's structured stdout."""
         ...
 
@@ -215,7 +216,7 @@ class DockerExecAgent(BaseAgent):
         )
 
         # Parse usage
-        usage = self._parse_usage(result.stdout)
+        usage = self._parse_usage(result.stdout, container=container, workdir=workdir)
         if usage:
             cached_str = f" cached={usage.cached_input_tokens:,}" if usage.cached_input_tokens else ""
             logger.info(

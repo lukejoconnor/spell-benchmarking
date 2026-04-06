@@ -27,7 +27,15 @@ from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Any, Callable, Literal
 
-from .codex_usage import normalize_codex_model, usage_from_events
+from .codex_usage import (
+    CodexUsage,
+    extract_codex_thread_id,
+    merge_codex_usage,
+    normalize_codex_model,
+    parse_codex_rollout,
+    usage_from_events,
+    usage_from_rollout,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +160,7 @@ class ParsedUsage:
     input_tokens: int | None = None
     cached_input_tokens: int = 0
     output_tokens: int | None = None
+    reasoning_output_tokens: int | None = None
     cost_usd: float | None = None
     cost_source: str | None = None
 
@@ -661,7 +670,6 @@ def codex_run_command(
     model: str,
     workdir: str | None = None,
     web_search: bool = False,
-    ephemeral: bool = True,
     reasoning_effort: str | None = None,
 ) -> str:
     parts = ['[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"', "&&"]
@@ -676,16 +684,12 @@ def codex_run_command(
         parts.extend(["-c", shlex.quote(f'model_reasoning_effort="{reasoning_effort}"')])
     parts.append("exec")
     parts.extend(["--json"])
-    if ephemeral:
-        parts.append("--ephemeral")
     parts.extend(["--skip-git-repo-check", "--sandbox", "danger-full-access"])
     parts.extend(["-m", shlex.quote(model), shlex.quote(prompt)])
     return " ".join(parts)
 
 
-def codex_parse_usage(stdout: str, model: str | None = None) -> ParsedUsage | None:
-    events = parse_jsonl_events(stdout)
-    usage = usage_from_events(events, model=model)
+def _parsed_usage_from_codex_usage(usage: CodexUsage | None) -> ParsedUsage | None:
     if not usage:
         return None
     uncached_input_tokens = (
@@ -697,9 +701,60 @@ def codex_parse_usage(stdout: str, model: str | None = None) -> ParsedUsage | No
         input_tokens=uncached_input_tokens,
         cached_input_tokens=usage.cached_input_tokens,
         output_tokens=usage.output_tokens,
+        reasoning_output_tokens=usage.reasoning_output_tokens,
         cost_usd=usage.cost_usd,
         cost_source=usage.cost_source,
     )
+
+
+def codex_parse_usage(
+    stdout: str,
+    model: str | None = None,
+    *,
+    rollout_text: str | None = None,
+) -> ParsedUsage | None:
+    events = parse_jsonl_events(stdout)
+    stream_usage = usage_from_events(events, model=model)
+    rollout_usage = usage_from_rollout(rollout_text, model=model) if rollout_text else None
+    usage = merge_codex_usage(stream_usage, rollout_usage, model=model)
+    return _parsed_usage_from_codex_usage(usage)
+
+
+def filter_codex_raw_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    allowed_types = {"thread.started", "turn.started", "turn.completed", "turn.failed", "error", "session.ended"}
+    return [event for event in events if event.get("type") in allowed_types]
+
+
+def _read_codex_rollout_from_exec(
+    exec_fn: Callable[..., ExecOutput],
+    thread_id: str | None,
+) -> tuple[str | None, str | None]:
+    if not thread_id:
+        return None, None
+
+    rollout_name = f"rollout-*-{thread_id}.jsonl"
+    find_cmd = (
+        "for base in /root/.codex/sessions \"$HOME/.codex/sessions\"; do "
+        "[ -d \"$base\" ] || continue; "
+        f"find \"$base\" -type f -name {shlex.quote(rollout_name)} 2>/dev/null; "
+        "done | head -1"
+    )
+    find_result = exec_fn(find_cmd, timeout=30, workdir="/")
+    rollout_path = find_result.stdout.strip() if find_result.exit_code == 0 else ""
+    if not rollout_path:
+        return None, None
+
+    cat_result = exec_fn(f"cat {shlex.quote(rollout_path)}", timeout=60, workdir="/")
+    if cat_result.exit_code != 0:
+        return rollout_path, None
+    return rollout_path, cat_result.stdout
+
+
+def _read_codex_rollout_from_container(
+    container: DockerWorkspaceContainer,
+    thread_id: str | None,
+) -> tuple[str | None, str | None]:
+    return _read_codex_rollout_from_exec(container.exec_run, thread_id)
 
 
 def swe_agent_install_script() -> str:
@@ -1284,16 +1339,48 @@ def run_agent_in_container(
             timeout=timeout,
             env=env,
         )
-        usage = codex_parse_usage(output.stdout, model=resolved_model)
-        metadata = {"resolved_model": resolved_model}
+        events = parse_jsonl_events(output.stdout)
+        filtered_events = filter_codex_raw_events(events)
+        stream_usage = usage_from_events(events, model=resolved_model)
+        thread_id = extract_codex_thread_id(events)
+        rollout_path, rollout_text = _read_codex_rollout_from_container(container, thread_id)
+        rollout_info = parse_codex_rollout(rollout_text) if rollout_text else None
+        rollout_usage = usage_from_rollout(rollout_text, model=resolved_model) if rollout_text else None
+        merged_usage = merge_codex_usage(stream_usage, rollout_usage, model=resolved_model)
+        usage = _parsed_usage_from_codex_usage(merged_usage)
+
+        if thread_id is None:
+            rollout_status = "missing_thread_id"
+        elif rollout_path is None:
+            rollout_status = "missing"
+        elif rollout_info is None:
+            rollout_status = "no_token_count_event"
+        else:
+            rollout_status = "ok"
+
+        metadata = {
+            "resolved_model": resolved_model,
+            "thread_id": thread_id,
+            "rollout_path": rollout_path,
+            "rollout_token_count": rollout_info,
+            "rollout_status": rollout_status,
+            "reasoning_output_tokens": usage.reasoning_output_tokens if usage else None,
+        }
         if usage and usage.cost_source:
             metadata["cost_source"] = usage.cost_source
+        raw = {
+            "events": filtered_events,
+            "rollout_token_count": rollout_info,
+            "rollout_path": rollout_path,
+        }
+        raw = {key: value for key, value in raw.items() if value is not None}
         return AgentRunResult(
             output=output,
             usage=usage,
             error_message=output.stderr[:2000] if output.exit_code != 0 else None,
             error_type="codex_cli_error" if output.exit_code != 0 else None,
             metadata=metadata,
+            raw=raw or None,
         )
 
     if condition == "swe_agent":

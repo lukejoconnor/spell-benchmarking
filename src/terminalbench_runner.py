@@ -351,7 +351,11 @@ def terminalbench_records_from_run(
             cached_input_tokens = None
         elif cached_input_tokens == 0:
             cached_input_tokens = None
-        cost_usd = usage.cost_usd if usage else agent_result.get("cost_usd")
+        agent_cost_usd = agent_result.get("cost_usd")
+        cost_usd = agent_cost_usd if isinstance(agent_cost_usd, (int, float)) else (usage.cost_usd if usage else None)
+        reasoning_output_tokens = agent_result.get("reasoning_output_tokens")
+        if not isinstance(reasoning_output_tokens, (int, float)):
+            reasoning_output_tokens = usage.reasoning_output_tokens if usage else None
 
         copied_trace_dir = None
         if condition == "spell":
@@ -371,7 +375,8 @@ def terminalbench_records_from_run(
             "tb_agent_result": agent_result or None,
             "trace_dir": copied_trace_dir,
             "resolved_model": normalized_model if condition == "codex" else None,
-            "cost_source": usage.cost_source if usage else agent_result.get("cost_source"),
+            "cost_source": agent_result.get("cost_source") or (usage.cost_source if usage else None),
+            "reasoning_output_tokens": reasoning_output_tokens if condition == "codex" else None,
             "versions": benchmark_git_versions(),
         }
         metadata = {key: value for key, value in metadata.items() if value is not None}
