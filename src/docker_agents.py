@@ -28,7 +28,6 @@ from pathlib import PurePosixPath
 from typing import Any, Callable, Literal
 
 from .codex_usage import (
-    CodexUsage,
     extract_codex_thread_id,
     merge_codex_usage,
     normalize_codex_model,
@@ -36,8 +35,11 @@ from .codex_usage import (
     usage_from_events,
     usage_from_rollout,
 )
+from .usage_accounting import UsageBreakdown
 
 logger = logging.getLogger(__name__)
+
+ParsedUsage = UsageBreakdown
 
 DEFAULT_IMAGE = "python:3.11-slim"
 DEFAULT_WORKDIR = "/workspace"
@@ -156,25 +158,9 @@ class ExecOutput:
 
 
 @dataclass(slots=True)
-class ParsedUsage:
-    input_tokens: int | None = None
-    cached_input_tokens: int = 0
-    output_tokens: int | None = None
-    reasoning_output_tokens: int | None = None
-    cost_usd: float | None = None
-    cost_source: str | None = None
-
-    @property
-    def total_input_tokens(self) -> int | None:
-        if self.input_tokens is None:
-            return None
-        return self.input_tokens + self.cached_input_tokens
-
-
-@dataclass(slots=True)
 class AgentRunResult:
     output: ExecOutput
-    usage: ParsedUsage | None = None
+    usage: UsageBreakdown | None = None
     response_text: str | None = None
     error_message: str | None = None
     error_type: str | None = None
@@ -595,7 +581,7 @@ def cc_run_command(
     return " ".join(parts)
 
 
-def cc_parse_usage(stdout: str) -> ParsedUsage | None:
+def cc_parse_usage(stdout: str) -> UsageBreakdown | None:
     events = parse_jsonl_events(stdout)
     result_event = None
     for event in reversed(events):
@@ -610,17 +596,23 @@ def cc_parse_usage(stdout: str) -> ParsedUsage | None:
     def _int(value: Any) -> int:
         return int(value) if isinstance(value, (int, float)) else 0
 
-    input_tokens = _int(usage.get("input_tokens", 0))
-    cached = _int(usage.get("cache_creation_input_tokens", 0)) + _int(usage.get("cache_read_input_tokens", 0))
+    total_input_tokens = (
+        _int(usage.get("input_tokens", 0))
+        + _int(usage.get("cache_creation_input_tokens", 0))
+        + _int(usage.get("cache_read_input_tokens", 0))
+    )
+    cached = _int(usage.get("cache_read_input_tokens", 0))
+    cache_write = _int(usage.get("cache_creation_input_tokens", 0))
     output_tokens = _int(usage.get("output_tokens", 0))
     cost = result_event.get("total_cost_usd")
     if cost is None:
         cost = result_event.get("cost_usd")
     cost_usd = float(cost) if isinstance(cost, (int, float)) else None
-    return ParsedUsage(
-        input_tokens=input_tokens,
+    return UsageBreakdown(
+        uncached_input_tokens=max(total_input_tokens - cached - cache_write, 0),
         cached_input_tokens=cached,
-        output_tokens=output_tokens,
+        cache_write_input_tokens=cache_write,
+        visible_output_tokens=output_tokens,
         cost_usd=cost_usd,
     )
 
@@ -689,35 +681,16 @@ def codex_run_command(
     return " ".join(parts)
 
 
-def _parsed_usage_from_codex_usage(usage: CodexUsage | None) -> ParsedUsage | None:
-    if not usage:
-        return None
-    uncached_input_tokens = (
-        max(usage.input_tokens - usage.cached_input_tokens, 0)
-        if usage.input_tokens is not None
-        else None
-    )
-    return ParsedUsage(
-        input_tokens=uncached_input_tokens,
-        cached_input_tokens=usage.cached_input_tokens,
-        output_tokens=usage.output_tokens,
-        reasoning_output_tokens=usage.reasoning_output_tokens,
-        cost_usd=usage.cost_usd,
-        cost_source=usage.cost_source,
-    )
-
-
 def codex_parse_usage(
     stdout: str,
     model: str | None = None,
     *,
     rollout_text: str | None = None,
-) -> ParsedUsage | None:
+) -> UsageBreakdown | None:
     events = parse_jsonl_events(stdout)
     stream_usage = usage_from_events(events, model=model)
     rollout_usage = usage_from_rollout(rollout_text, model=model) if rollout_text else None
-    usage = merge_codex_usage(stream_usage, rollout_usage, model=model)
-    return _parsed_usage_from_codex_usage(usage)
+    return merge_codex_usage(stream_usage, rollout_usage, model=model)
 
 
 def filter_codex_raw_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -918,7 +891,7 @@ def _load_swe_agent_trajectory(container: DockerWorkspaceContainer, stdout: str)
     return None, None
 
 
-def swe_agent_parse_usage(stdout: str, container: DockerWorkspaceContainer) -> ParsedUsage | None:
+def swe_agent_parse_usage(stdout: str, container: DockerWorkspaceContainer) -> UsageBreakdown | None:
     _path, traj = _load_swe_agent_trajectory(container, stdout)
     if not traj:
         return None
@@ -926,7 +899,7 @@ def swe_agent_parse_usage(stdout: str, container: DockerWorkspaceContainer) -> P
     cost_usd = _extract_swe_agent_cost(traj)
     if cost_usd is None:
         return None
-    return ParsedUsage(cost_usd=cost_usd)
+    return UsageBreakdown(cost_usd=cost_usd)
 
 
 def resolve_spell_model(model_name: str | None) -> str:
@@ -1223,7 +1196,7 @@ def copy_spell_traces_to_host(
     return None
 
 
-def spell_parse_usage(stdout: str) -> ParsedUsage | None:
+def spell_parse_usage(stdout: str) -> UsageBreakdown | None:
     parsed = spell_parse_benchmark_response(stdout)
     if not parsed:
         return None
@@ -1233,15 +1206,27 @@ def spell_parse_usage(stdout: str) -> ParsedUsage | None:
     def _int(value: Any) -> int:
         return int(value) if isinstance(value, (int, float)) else 0
 
-    input_tokens = _int(usage.get("input_tokens", 0))
-    cached = _int(usage.get("cache_creation_input_tokens", 0)) + _int(usage.get("cache_read_input_tokens", 0))
-    output_tokens = _int(usage.get("output_tokens", 0))
+    uncached_input_tokens = _int(usage.get("uncached_input_tokens", 0))
+    cached = _int(usage.get("cached_input_tokens", 0))
+    cache_write = _int(usage.get("cache_write_input_tokens", 0))
+    visible_output_tokens = _int(usage.get("visible_output_tokens", 0))
+    reasoning_output_tokens = _int(usage.get("reasoning_output_tokens", 0))
+
+    if not any((uncached_input_tokens, cached, cache_write, visible_output_tokens, reasoning_output_tokens)):
+        uncached_input_tokens = _int(usage.get("input_tokens", 0))
+        cached = _int(usage.get("cache_read_input_tokens", 0))
+        cache_write = _int(usage.get("cache_creation_input_tokens", 0))
+        visible_output_tokens = _int(usage.get("output_tokens", 0))
+
+    total_input_tokens = uncached_input_tokens + cached + cache_write
     cost = usage.get("cost")
     cost_usd = float(cost) if isinstance(cost, (int, float)) else None
-    return ParsedUsage(
-        input_tokens=input_tokens,
+    return UsageBreakdown(
+        uncached_input_tokens=max(total_input_tokens - cached - cache_write, 0),
         cached_input_tokens=cached,
-        output_tokens=output_tokens,
+        cache_write_input_tokens=cache_write,
+        visible_output_tokens=visible_output_tokens,
+        reasoning_output_tokens=reasoning_output_tokens,
         cost_usd=cost_usd,
     )
 

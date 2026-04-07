@@ -16,6 +16,7 @@ from .codex_usage import normalize_codex_model, usage_from_payload
 from .docker_agents import discover_spell_root
 from .provenance import benchmark_git_versions
 from .reasoning_effort import effective_reasoning_effort
+from .usage_accounting import usage_from_totals, usage_record_fields
 from .unified_results import UnifiedRunRecord, now_iso
 
 TERMINALBENCH_DATASET = "terminal-bench-core==0.1.1"
@@ -356,6 +357,17 @@ def terminalbench_records_from_run(
         reasoning_output_tokens = agent_result.get("reasoning_output_tokens")
         if not isinstance(reasoning_output_tokens, (int, float)):
             reasoning_output_tokens = usage.reasoning_output_tokens if usage else None
+        record_usage = usage or usage_from_totals(
+            total_input_tokens=int(tokens_in) if isinstance(tokens_in, (int, float)) else None,
+            total_output_tokens=int(tokens_out) if isinstance(tokens_out, (int, float)) else None,
+            cached_input_tokens=int(cached_input_tokens) if isinstance(cached_input_tokens, (int, float)) else 0,
+            reasoning_output_tokens=(
+                int(reasoning_output_tokens) if isinstance(reasoning_output_tokens, (int, float)) else 0
+            ),
+            cost_usd=cost_usd,
+            cost_source=agent_result.get("cost_source"),
+        )
+        usage_fields = usage_record_fields(record_usage)
 
         copied_trace_dir = None
         if condition == "spell":
@@ -398,9 +410,11 @@ def terminalbench_records_from_run(
                 patch=None,
                 answer_extracted=None,
                 correct=None if error_message else trial.get("is_resolved"),
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-                cached_input_tokens=int(cached_input_tokens) if cached_input_tokens is not None else None,
+                uncached_input_tokens=usage_fields["uncached_input_tokens"],
+                cached_input_tokens=usage_fields["cached_input_tokens"],
+                cache_write_input_tokens=usage_fields["cache_write_input_tokens"],
+                visible_output_tokens=usage_fields["visible_output_tokens"],
+                reasoning_output_tokens=usage_fields["reasoning_output_tokens"],
                 cost_usd=cost_usd,
                 latency_ms=_latency_ms(trial.get("agent_started_at"), trial.get("agent_ended_at")),
                 error_type=error_type,

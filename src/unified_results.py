@@ -26,9 +26,11 @@ class UnifiedRunRecord:
     patch: str | None
     answer_extracted: str | None
     correct: bool | None
-    tokens_in: int | None
-    tokens_out: int | None
+    uncached_input_tokens: int | None
     cached_input_tokens: int | None
+    cache_write_input_tokens: int | None
+    visible_output_tokens: int | None
+    reasoning_output_tokens: int | None
     cost_usd: float | None
     latency_ms: float | None
     error_type: str | None
@@ -36,6 +38,20 @@ class UnifiedRunRecord:
     metadata: dict[str, Any]
     name: str | None = None
     reasoning_effort: str | None = None
+
+    @property
+    def tokens_in(self) -> int | None:
+        values = (
+            self.uncached_input_tokens,
+            self.cached_input_tokens,
+            self.cache_write_input_tokens,
+        )
+        present = [value for value in values if value is not None]
+        return sum(present) if present else None
+
+    @property
+    def tokens_out(self) -> int | None:
+        return self.visible_output_tokens
 
 
 def now_iso() -> str:

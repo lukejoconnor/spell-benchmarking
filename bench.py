@@ -81,6 +81,7 @@ from src.unified_adapters import (
 )
 from src.provenance import BENCHMARK_ROOT, benchmark_git_versions, resolve_spell_root
 from src.reasoning_effort import effective_reasoning_effort
+from src.usage_accounting import usage_record_fields
 from src.unified_results import (
     UnifiedRunRecord,
     append_jsonl,
@@ -540,6 +541,7 @@ def _mk_record(
 ) -> UnifiedRunRecord:
     provider, model = _provider_model_for_condition(condition, model_spec)
     recorded_reasoning_effort = effective_reasoning_effort(condition, model_spec, reasoning_effort)
+    usage_fields = usage_record_fields(response.usage)
     return UnifiedRunRecord(
         run_id=run_id,
         timestamp=now_iso(),
@@ -556,9 +558,11 @@ def _mk_record(
         patch=patch,
         answer_extracted=answer_extracted,
         correct=correct,
-        tokens_in=response.tokens_in,
-        tokens_out=response.tokens_out,
-        cached_input_tokens=response.cached_input_tokens,
+        uncached_input_tokens=usage_fields["uncached_input_tokens"],
+        cached_input_tokens=usage_fields["cached_input_tokens"],
+        cache_write_input_tokens=usage_fields["cache_write_input_tokens"],
+        visible_output_tokens=usage_fields["visible_output_tokens"],
+        reasoning_output_tokens=usage_fields["reasoning_output_tokens"],
         cost_usd=response.cost_usd,
         latency_ms=response.latency_ms,
         error_type=response.error_type,

@@ -27,9 +27,7 @@ def _response_from_container_run(
     return RunResponse(
         status=status,
         response_text=result.response_text,
-        tokens_in=usage.total_input_tokens if usage else None,
-        tokens_out=usage.output_tokens if usage else None,
-        cached_input_tokens=usage.cached_input_tokens if usage else None,
+        usage=usage,
         cost_usd=usage.cost_usd if usage else None,
         latency_ms=None,
         error_message=result.error_message,

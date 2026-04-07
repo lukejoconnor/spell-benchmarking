@@ -31,6 +31,7 @@ from .codex_usage import (
     usage_from_events,
     usage_from_rollout,
 )
+from .usage_accounting import UsageBreakdown, usage_from_totals
 
 BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 
@@ -118,14 +119,31 @@ class RunRequest:
 class RunResponse:
     status: str
     response_text: str | None
-    tokens_in: int | None
-    tokens_out: int | None
+    tokens_in: int | None = None
+    tokens_out: int | None = None
     cached_input_tokens: int | None = None
+    usage: UsageBreakdown | None = None
     cost_usd: float | None = None
     latency_ms: float | None = None
     error_message: str | None = None
     error_type: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.usage is None and (
+            self.tokens_in is not None or self.tokens_out is not None or self.cached_input_tokens is not None
+        ):
+            self.usage = usage_from_totals(
+                total_input_tokens=self.tokens_in,
+                total_output_tokens=self.tokens_out,
+                cached_input_tokens=self.cached_input_tokens or 0,
+                cost_usd=self.cost_usd,
+            )
+        elif self.usage is not None:
+            self.tokens_in = self.usage.total_input_tokens
+            self.tokens_out = self.usage.output_tokens or None
+            total_cached_tokens = self.usage.cached_input_tokens + self.usage.cache_write_input_tokens
+            self.cached_input_tokens = total_cached_tokens or None
 
 
 class RunnerAdapter(Protocol):
@@ -139,13 +157,35 @@ def _usage_int(value: Any) -> int:
     return int(value) if isinstance(value, (int, float)) else 0
 
 
-def _spell_usage_breakdown(usage_total: dict[str, Any]) -> tuple[int | None, int | None]:
-    input_tokens = _usage_int(usage_total.get("input_tokens"))
-    cached_input_tokens = _usage_int(usage_total.get("cache_creation_input_tokens")) + _usage_int(
-        usage_total.get("cache_read_input_tokens")
+def _spell_usage_breakdown(usage_total: dict[str, Any]) -> UsageBreakdown | None:
+    uncached_input_tokens = _usage_int(usage_total.get("uncached_input_tokens"))
+    cached_input_tokens = _usage_int(usage_total.get("cached_input_tokens"))
+    cache_write_input_tokens = _usage_int(usage_total.get("cache_write_input_tokens"))
+    visible_output_tokens = _usage_int(usage_total.get("visible_output_tokens"))
+    reasoning_output_tokens = _usage_int(usage_total.get("reasoning_output_tokens"))
+
+    if not any(
+        (
+            uncached_input_tokens,
+            cached_input_tokens,
+            cache_write_input_tokens,
+            visible_output_tokens,
+            reasoning_output_tokens,
+        )
+    ):
+        uncached_input_tokens = _usage_int(usage_total.get("input_tokens"))
+        cached_input_tokens = _usage_int(usage_total.get("cache_read_input_tokens"))
+        cache_write_input_tokens = _usage_int(usage_total.get("cache_creation_input_tokens"))
+        visible_output_tokens = _usage_int(usage_total.get("output_tokens"))
+
+    return usage_from_totals(
+        total_input_tokens=uncached_input_tokens + cached_input_tokens + cache_write_input_tokens,
+        total_output_tokens=visible_output_tokens + reasoning_output_tokens,
+        cached_input_tokens=cached_input_tokens,
+        cache_write_input_tokens=cache_write_input_tokens,
+        reasoning_output_tokens=reasoning_output_tokens,
+        cost_usd=(float(usage_total["cost"]) if isinstance(usage_total.get("cost"), (int, float)) else None),
     )
-    total_input_tokens = input_tokens + cached_input_tokens
-    return (total_input_tokens or None, cached_input_tokens or None)
 
 
 class SpellAdapter:
@@ -188,15 +228,13 @@ class SpellAdapter:
         with _benchmark_run_cwd(req.workspace) as run_cwd:
             response = self.client.run(payload, timeout=req.timeout, cwd=run_cwd)
         usage_total = (response.usage or {}).get("total", {})
-        tokens_in, cached_input_tokens = _spell_usage_breakdown(usage_total)
+        usage = _spell_usage_breakdown(usage_total)
 
         if response.ok:
             return RunResponse(
                 status="ok",
                 response_text=response.result,
-                tokens_in=tokens_in,
-                tokens_out=usage_total.get("output_tokens"),
-                cached_input_tokens=cached_input_tokens,
+                usage=usage,
                 cost_usd=usage_total.get("cost"),
                 latency_ms=response.latency_ms,
                 metadata={"trace_dir": response.trace_dir, "raw": response.raw},
@@ -205,9 +243,7 @@ class SpellAdapter:
         return RunResponse(
             status="timeout" if response.error_type == "timeout" else "error",
             response_text=response.result,
-            tokens_in=tokens_in,
-            tokens_out=usage_total.get("output_tokens"),
-            cached_input_tokens=cached_input_tokens,
+            usage=usage,
             cost_usd=usage_total.get("cost"),
             latency_ms=response.latency_ms,
             error_message=response.error,
@@ -242,15 +278,13 @@ class OneShotAdapter:
         with _benchmark_run_cwd(req.workspace) as run_cwd:
             response = self.client.run(payload, timeout=req.timeout, cwd=run_cwd)
         usage_total = (response.usage or {}).get("total", {})
-        tokens_in, cached_input_tokens = _spell_usage_breakdown(usage_total)
+        usage = _spell_usage_breakdown(usage_total)
 
         if response.ok:
             return RunResponse(
                 status="ok",
                 response_text=response.result,
-                tokens_in=tokens_in,
-                tokens_out=usage_total.get("output_tokens"),
-                cached_input_tokens=cached_input_tokens,
+                usage=usage,
                 cost_usd=usage_total.get("cost"),
                 latency_ms=response.latency_ms,
                 metadata={"raw": response.raw},
@@ -259,9 +293,7 @@ class OneShotAdapter:
         return RunResponse(
             status="timeout" if response.error_type == "timeout" else "error",
             response_text=response.result,
-            tokens_in=tokens_in,
-            tokens_out=usage_total.get("output_tokens"),
-            cached_input_tokens=cached_input_tokens,
+            usage=usage,
             cost_usd=usage_total.get("cost"),
             latency_ms=response.latency_ms,
             error_message=response.error,
@@ -337,8 +369,7 @@ class SweAgentAdapter:
                     return RunResponse(
                         status="ok",
                         response_text=response_text or None,
-                        tokens_in=None,
-                        tokens_out=None,
+                        usage=None,
                         cost_usd=cost_usd,
                         latency_ms=latency_ms,
                         metadata=metadata,
@@ -352,8 +383,7 @@ class SweAgentAdapter:
                 return RunResponse(
                     status="error",
                     response_text=response_text or None,
-                    tokens_in=None,
-                    tokens_out=None,
+                    usage=None,
                     cost_usd=cost_usd,
                     latency_ms=latency_ms,
                     error_message=error_message,
@@ -364,8 +394,7 @@ class SweAgentAdapter:
             return RunResponse(
                 status="timeout",
                 response_text="",
-                tokens_in=None,
-                tokens_out=None,
+                usage=None,
                 cost_usd=None,
                 latency_ms=(time.time() - start) * 1000,
                 error_message=f"Timeout ({req.timeout}s)",
@@ -421,8 +450,7 @@ class ClaudeCodeAdapter:
             return RunResponse(
                 status="timeout",
                 response_text="",
-                tokens_in=None,
-                tokens_out=None,
+                usage=None,
                 cost_usd=None,
                 latency_ms=(time.time() - start) * 1000,
                 error_message=f"Timeout ({req.timeout}s)",
@@ -443,11 +471,18 @@ class ClaudeCodeAdapter:
         usage = result_event.get("usage", {}) if isinstance(result_event, dict) else {}
         if not isinstance(usage, dict):
             usage = {}
-        cached_input_tokens = _usage_int(usage.get("cache_creation_input_tokens")) + _usage_int(
-            usage.get("cache_read_input_tokens")
+        cache_write_input_tokens = _usage_int(usage.get("cache_creation_input_tokens"))
+        cached_input_tokens = _usage_int(usage.get("cache_read_input_tokens"))
+        response_usage = usage_from_totals(
+            total_input_tokens=(
+                _usage_int(usage.get("input_tokens"))
+                + cache_write_input_tokens
+                + cached_input_tokens
+            ),
+            total_output_tokens=_usage_int(usage.get("output_tokens")),
+            cached_input_tokens=cached_input_tokens,
+            cache_write_input_tokens=cache_write_input_tokens,
         )
-        tokens_in = _usage_int(usage.get("input_tokens")) + cached_input_tokens
-        tokens_out = _usage_int(usage.get("output_tokens"))
         cost_raw = result_event.get("total_cost_usd") if isinstance(result_event, dict) else None
         cost_usd = float(cost_raw) if isinstance(cost_raw, (int, float)) else None
         response_text = str(result_event.get("result", "")) if isinstance(result_event, dict) else ""
@@ -481,9 +516,7 @@ class ClaudeCodeAdapter:
             return RunResponse(
                 status="ok",
                 response_text=response_text,
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-                cached_input_tokens=cached_input_tokens or None,
+                usage=response_usage,
                 cost_usd=cost_usd,
                 latency_ms=latency_ms,
                 metadata=metadata,
@@ -496,9 +529,7 @@ class ClaudeCodeAdapter:
         return RunResponse(
             status="error",
             response_text=response_text,
-            tokens_in=tokens_in if result_event else None,
-            tokens_out=tokens_out if result_event else None,
-            cached_input_tokens=(cached_input_tokens or None) if result_event else None,
+            usage=response_usage if result_event else None,
             cost_usd=cost_usd,
             latency_ms=latency_ms,
             error_message=error_message,
@@ -673,8 +704,7 @@ class CodexAdapter:
             return RunResponse(
                 status="timeout",
                 response_text="",
-                tokens_in=None,
-                tokens_out=None,
+                usage=None,
                 cost_usd=None,
                 latency_ms=(time.time() - start) * 1000,
                 error_message=f"Timeout ({req.timeout}s)",
@@ -698,8 +728,6 @@ class CodexAdapter:
         rollout_info = parse_codex_rollout(rollout_text) if rollout_text else None
         rollout_usage = usage_from_rollout(rollout_text, model=model) if rollout_text else None
         usage = merge_codex_usage(stream_usage, rollout_usage, model=model)
-        tokens_in = usage.total_input_tokens if usage else None
-        tokens_out = usage.output_tokens if usage else None
         cached_input_tokens = usage.cached_input_tokens if usage else None
         cost_usd = usage.cost_usd if usage else None
         reasoning_output_tokens = usage.reasoning_output_tokens if usage else None
@@ -765,9 +793,7 @@ class CodexAdapter:
             return RunResponse(
                 status="ok",
                 response_text=response_text,
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-                cached_input_tokens=cached_input_tokens,
+                usage=usage,
                 cost_usd=cost_usd,
                 latency_ms=latency_ms,
                 metadata=metadata,
@@ -777,9 +803,7 @@ class CodexAdapter:
         return RunResponse(
             status="error",
             response_text=response_text,
-            tokens_in=tokens_in,
-            tokens_out=tokens_out,
-            cached_input_tokens=cached_input_tokens,
+            usage=usage,
             cost_usd=cost_usd,
             latency_ms=latency_ms,
             error_message=error_message,
@@ -815,8 +839,7 @@ def run_requests_parallel(
                 resp = RunResponse(
                     status="error",
                     response_text="",
-                    tokens_in=None,
-                    tokens_out=None,
+                    usage=None,
                     cost_usd=None,
                     latency_ms=0.0,
                     error_message=str(exc),

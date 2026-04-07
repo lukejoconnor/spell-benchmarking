@@ -8,6 +8,7 @@ from pathlib import Path
 from .datasets import ExercismItem
 from .docker_agents import DockerWorkspaceContainer, run_agent_in_container
 from .unified_adapters import RunResponse
+from .usage_accounting import usage_from_totals
 
 EXERCISM_CONTAINER_WORKDIR = "/workspace"
 EXERCISM_PYTEST_TIMEOUT = 60
@@ -189,9 +190,11 @@ def run_unified_exercism(
         last_response = RunResponse(
             status=status,
             response_text=current_result.response_text,
-            tokens_in=total_tokens_in,
-            tokens_out=total_tokens_out,
-            cached_input_tokens=total_cached_input_tokens,
+            usage=usage_from_totals(
+                total_input_tokens=total_tokens_in,
+                total_output_tokens=total_tokens_out,
+                cached_input_tokens=total_cached_input_tokens or 0,
+            ),
             cost_usd=total_cost if cost_known else None,
             latency_ms=None,
             error_message=current_result.error_message,
