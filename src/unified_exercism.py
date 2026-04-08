@@ -8,7 +8,7 @@ from pathlib import Path
 from .datasets import ExercismItem
 from .docker_agents import DockerWorkspaceContainer, run_agent_in_container
 from .unified_adapters import RunResponse
-from .usage_accounting import usage_from_totals
+from .usage_accounting import sum_usages
 
 EXERCISM_CONTAINER_WORKDIR = "/workspace"
 EXERCISM_PYTEST_TIMEOUT = 60
@@ -101,15 +101,13 @@ def run_unified_exercism(
 ) -> UnifiedExercismOutcome:
     _ensure_git_repo(workspace)
 
-    total_tokens_in: int | None = 0
-    total_tokens_out: int | None = 0
-    total_cached_input_tokens: int | None = 0
     total_cost = 0.0
     cost_known = False
     attempts = 0
     test_output = ""
     passed = False
     last_response: RunResponse | None = None
+    total_usage = None
 
     with DockerWorkspaceContainer(workspace, container_workdir=EXERCISM_CONTAINER_WORKDIR) as container:
         attempts = 1
@@ -131,16 +129,7 @@ def run_unified_exercism(
             init=init,
         )
 
-        first_tokens_in = first_result.usage.total_input_tokens if first_result.usage else None
-        total_tokens_in = total_tokens_in + first_tokens_in if total_tokens_in is not None and first_tokens_in is not None else None
-        first_cached_input_tokens = first_result.usage.cached_input_tokens if first_result.usage else None
-        total_cached_input_tokens = (
-            total_cached_input_tokens + first_cached_input_tokens
-            if total_cached_input_tokens is not None and first_cached_input_tokens is not None
-            else None
-        )
-        first_tokens_out = first_result.usage.output_tokens if first_result.usage else None
-        total_tokens_out = total_tokens_out + first_tokens_out if total_tokens_out is not None and first_tokens_out is not None else None
+        total_usage = sum_usages(total_usage, first_result.usage)
         if first_result.usage and first_result.usage.cost_usd is not None:
             total_cost += first_result.usage.cost_usd
             cost_known = True
@@ -167,16 +156,7 @@ def run_unified_exercism(
                 trace_subdir="attempt-2" if trace_dir is not None else None,
                 init=None,
             )
-            retry_tokens_in = retry_result.usage.total_input_tokens if retry_result.usage else None
-            total_tokens_in = total_tokens_in + retry_tokens_in if total_tokens_in is not None and retry_tokens_in is not None else None
-            retry_cached_input_tokens = retry_result.usage.cached_input_tokens if retry_result.usage else None
-            total_cached_input_tokens = (
-                total_cached_input_tokens + retry_cached_input_tokens
-                if total_cached_input_tokens is not None and retry_cached_input_tokens is not None
-                else None
-            )
-            retry_tokens_out = retry_result.usage.output_tokens if retry_result.usage else None
-            total_tokens_out = total_tokens_out + retry_tokens_out if total_tokens_out is not None and retry_tokens_out is not None else None
+            total_usage = sum_usages(total_usage, retry_result.usage)
             if retry_result.usage and retry_result.usage.cost_usd is not None:
                 total_cost += retry_result.usage.cost_usd
                 cost_known = True
@@ -190,11 +170,7 @@ def run_unified_exercism(
         last_response = RunResponse(
             status=status,
             response_text=current_result.response_text,
-            usage=usage_from_totals(
-                total_input_tokens=total_tokens_in,
-                total_output_tokens=total_tokens_out,
-                cached_input_tokens=total_cached_input_tokens or 0,
-            ),
+            usage=total_usage,
             cost_usd=total_cost if cost_known else None,
             latency_ms=None,
             error_message=current_result.error_message,

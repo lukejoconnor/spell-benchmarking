@@ -140,7 +140,7 @@ class RunResponse:
                 cost_usd=self.cost_usd,
             )
         elif self.usage is not None:
-            self.tokens_in = self.usage.total_input_tokens
+            self.tokens_in = self.usage.total_input_tokens or None
             self.tokens_out = self.usage.output_tokens or None
             total_cached_tokens = self.usage.cached_input_tokens + self.usage.cache_write_input_tokens
             self.cached_input_tokens = total_cached_tokens or None

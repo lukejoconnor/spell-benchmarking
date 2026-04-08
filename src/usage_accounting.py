@@ -136,11 +136,13 @@ def usage_from_totals(
     cache_write = max(0, cache_write_input_tokens)
     total_out = max(0, total_output_tokens or 0)
     reasoning = max(0, reasoning_output_tokens)
+    if total_output_tokens is not None:
+        reasoning = min(reasoning, total_out)
     return UsageBreakdown(
         uncached_input_tokens=max(total_in - cached - cache_write, 0),
         cached_input_tokens=cached,
         cache_write_input_tokens=cache_write,
-        visible_output_tokens=total_out,
+        visible_output_tokens=max(total_out - reasoning, 0),
         reasoning_output_tokens=reasoning,
         cost_usd=cost_usd,
         cost_source=cost_source,

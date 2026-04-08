@@ -81,7 +81,7 @@ from src.unified_adapters import (
 )
 from src.provenance import BENCHMARK_ROOT, benchmark_git_versions, resolve_spell_root
 from src.reasoning_effort import effective_reasoning_effort
-from src.usage_accounting import usage_record_fields
+from src.usage_accounting import sum_usages, usage_record_fields
 from src.unified_results import (
     UnifiedRunRecord,
     append_jsonl,
@@ -570,6 +570,24 @@ def _mk_record(
         metadata={**(metadata or {}), **response.metadata, "versions": benchmark_git_versions()},
         name=name,
         reasoning_effort=recorded_reasoning_effort,
+    )
+
+
+def _rewrap_response(
+    response: RunResponse,
+    *,
+    status: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> RunResponse:
+    return RunResponse(
+        status=status or response.status,
+        response_text=response.response_text,
+        usage=response.usage,
+        cost_usd=response.cost_usd,
+        latency_ms=response.latency_ms,
+        error_message=response.error_message,
+        error_type=response.error_type,
+        metadata=metadata if metadata is not None else response.metadata,
     )
 
 
@@ -1657,16 +1675,9 @@ def run_swebench(
                     status = resp.status
                     if status == "ok":
                         status = "patch_generated" if patch.strip() else "no_patch"
-                    resp = RunResponse(
+                    resp = _rewrap_response(
+                        resp,
                         status=status,
-                        response_text=resp.response_text,
-                        tokens_in=resp.tokens_in,
-                        tokens_out=resp.tokens_out,
-                        cached_input_tokens=resp.cached_input_tokens,
-                        cost_usd=resp.cost_usd,
-                        latency_ms=resp.latency_ms,
-                        error_message=resp.error_message,
-                        error_type=resp.error_type,
                         metadata={**resp.metadata, "changed_files": changed_files},
                     )
 
@@ -2145,16 +2156,9 @@ def run_featurebench(
                     else:
                         status = "no_patch"
 
-                resp = RunResponse(
+                resp = _rewrap_response(
+                    resp,
                     status=status,
-                    response_text=resp.response_text,
-                    tokens_in=resp.tokens_in,
-                    tokens_out=resp.tokens_out,
-                    cached_input_tokens=resp.cached_input_tokens,
-                    cost_usd=resp.cost_usd,
-                    latency_ms=resp.latency_ms,
-                    error_message=resp.error_message,
-                    error_type=resp.error_type,
                     metadata={**resp.metadata, "changed_files": changed_files, "test_results": test_results},
                 )
 
@@ -2707,9 +2711,7 @@ def run_scienceagentbench(
                     response=RunResponse(
                         status=status,
                         response_text=resp.response_text,
-                        tokens_in=resp.tokens_in,
-                        tokens_out=resp.tokens_out,
-                        cached_input_tokens=resp.cached_input_tokens,
+                        usage=resp.usage,
                         cost_usd=resp.cost_usd,
                         latency_ms=resp.latency_ms,
                         error_message=resp.error_message or syntax_error or exec_error,
@@ -3055,16 +3057,9 @@ def run_exercism(
                             swe_agent_model=swe_agent_model,
                         ),
                         agent_file=spell_resolution.agent_file if (spell_resolution and cond == "spell") else None,
-                        response=RunResponse(
+                        response=_rewrap_response(
+                            last_resp,
                             status=status,
-                            response_text=last_resp.response_text,
-                            tokens_in=last_resp.tokens_in,
-                            tokens_out=last_resp.tokens_out,
-                            cached_input_tokens=last_resp.cached_input_tokens,
-                            cost_usd=last_resp.cost_usd,
-                            latency_ms=last_resp.latency_ms,
-                            error_message=last_resp.error_message,
-                            error_type=last_resp.error_type,
                             metadata={**last_resp.metadata, "test_output": outcome.test_output[-2000:]},
                         ),
                         response_text=last_resp.response_text,
@@ -3090,9 +3085,6 @@ def run_exercism(
 
                 test_path = ws / item.test_file
                 total_cost = 0.0
-                total_tokens_in = 0
-                total_tokens_out = 0
-                total_cached_input_tokens = 0
                 attempt = 0
                 passed = False
 
@@ -3138,9 +3130,6 @@ def run_exercism(
                         (ws / item.stub_file).write_text(code, encoding="utf-8")
 
                 total_cost += resp1.cost_usd or 0.0
-                total_tokens_in += resp1.tokens_in or 0
-                total_tokens_out += resp1.tokens_out or 0
-                total_cached_input_tokens += resp1.cached_input_tokens or 0
 
                 passed, test_output = _run_exercism_pytest(test_path)
 
@@ -3177,9 +3166,6 @@ def run_exercism(
                             (ws / item.stub_file).write_text(code, encoding="utf-8")
 
                     total_cost += resp2.cost_usd or 0.0
-                    total_tokens_in += resp2.tokens_in or 0
-                    total_tokens_out += resp2.tokens_out or 0
-                    total_cached_input_tokens += resp2.cached_input_tokens or 0
 
                     passed, test_output = _run_exercism_pytest(test_path)
 
@@ -3203,11 +3189,7 @@ def run_exercism(
                     response=RunResponse(
                         status=status,
                         response_text=last_resp.response_text,
-                        tokens_in=total_tokens_in if total_tokens_in else None,
-                        tokens_out=total_tokens_out if total_tokens_out else None,
-                        cached_input_tokens=(
-                            total_cached_input_tokens if total_cached_input_tokens else None
-                        ),
+                        usage=sum_usages(resp1.usage, resp2.usage),
                         cost_usd=total_cost if total_cost else None,
                         latency_ms=latency_ms,
                         error_message=last_resp.error_message,

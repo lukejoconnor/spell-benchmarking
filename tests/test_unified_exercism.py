@@ -94,6 +94,92 @@ class UnifiedExercismTests(unittest.TestCase):
         self.assertIsNone(outcome.response.tokens_out)
         self.assertEqual(outcome.response.cost_usd, 0.75)
 
+    @patch("src.unified_exercism._ensure_git_repo")
+    @patch("src.unified_exercism._run_pytest")
+    @patch("src.unified_exercism.run_agent_in_container")
+    @patch("src.unified_exercism.DockerWorkspaceContainer")
+    def test_retry_sums_full_usage_breakdown(
+        self,
+        container_cls,
+        run_agent_mock,
+        run_pytest_mock,
+        ensure_git_repo_mock,
+    ) -> None:
+        del ensure_git_repo_mock
+        container = MagicMock()
+        container.initial_commit = "base-sha"
+        container.diff.return_value = "diff --git a/foo b/foo"
+        container.changed_files.return_value = ["foo.py"]
+
+        container_cm = MagicMock()
+        container_cm.__enter__.return_value = container
+        container_cm.__exit__.return_value = False
+        container_cls.return_value = container_cm
+
+        run_agent_mock.side_effect = [
+            SimpleNamespace(
+                output=ExecOutput(exit_code=0, stdout="", stderr="", timed_out=False),
+                usage=ParsedUsage(
+                    uncached_input_tokens=100,
+                    cached_input_tokens=20,
+                    cache_write_input_tokens=5,
+                    visible_output_tokens=30,
+                    reasoning_output_tokens=10,
+                    cost_usd=0.25,
+                ),
+                response_text="first",
+                error_message=None,
+                error_type=None,
+                raw={"ok": True},
+            ),
+            SimpleNamespace(
+                output=ExecOutput(exit_code=0, stdout="", stderr="", timed_out=False),
+                usage=ParsedUsage(
+                    uncached_input_tokens=50,
+                    cached_input_tokens=7,
+                    cache_write_input_tokens=3,
+                    visible_output_tokens=25,
+                    reasoning_output_tokens=5,
+                    cost_usd=0.5,
+                ),
+                response_text="second",
+                error_message=None,
+                error_type=None,
+                raw={"ok": True},
+            ),
+        ]
+        run_pytest_mock.side_effect = [
+            (False, "first failure"),
+            (True, "passed"),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            outcome = run_unified_exercism(
+                condition="swe_agent",
+                item=_item(),
+                workspace=Path(tmp_dir),
+                model_spec="anthropic/claude-opus-4-6",
+                timeout=30,
+                init=None,
+                agent_file=None,
+                budget=2.0,
+                depth=4,
+                max_tokens=None,
+                reasoning_effort="high",
+                web_search=False,
+                trace=True,
+                trace_dir=Path(tmp_dir) / "traces",
+                no_retry=False,
+            )
+
+        assert outcome.response.usage is not None
+        self.assertEqual(outcome.response.usage.uncached_input_tokens, 150)
+        self.assertEqual(outcome.response.usage.cached_input_tokens, 27)
+        self.assertEqual(outcome.response.usage.cache_write_input_tokens, 8)
+        self.assertEqual(outcome.response.usage.visible_output_tokens, 55)
+        self.assertEqual(outcome.response.usage.reasoning_output_tokens, 15)
+        self.assertEqual(outcome.response.cost_usd, 0.75)
+
 
 if __name__ == "__main__":
     unittest.main()

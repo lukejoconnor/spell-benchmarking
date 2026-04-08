@@ -42,6 +42,7 @@ bench = _import_bench_with_stubbed_client()
 from src.datasets import BenchmarkItem
 from src.provenance import benchmark_git_versions
 from src.unified_adapters import RunResponse, build_spell_init
+from src.usage_accounting import UsageBreakdown
 
 
 def teardown_module(_module) -> None:
@@ -177,6 +178,38 @@ class GeneralLoadingRegressionTest(unittest.TestCase):
                 "benchmarking": {"commit": "bench-sha", "branch": "HEAD", "dirty": True},
             },
         )
+
+    def test_rewrap_response_preserves_usage_breakdown(self):
+        response = RunResponse(
+            status="ok",
+            response_text="done",
+            usage=UsageBreakdown(
+                uncached_input_tokens=120,
+                cached_input_tokens=30,
+                cache_write_input_tokens=10,
+                visible_output_tokens=40,
+                reasoning_output_tokens=15,
+            ),
+            cost_usd=0.12,
+            latency_ms=50.0,
+            metadata={"trace_dir": "/tmp/trace"},
+        )
+
+        rewritten = bench._rewrap_response(
+            response,
+            status="patch_generated",
+            metadata={**response.metadata, "changed_files": ["foo.py"]},
+        )
+
+        assert rewritten.usage is not None
+        self.assertEqual(rewritten.status, "patch_generated")
+        self.assertEqual(rewritten.usage.visible_output_tokens, 40)
+        self.assertEqual(rewritten.usage.reasoning_output_tokens, 15)
+        self.assertEqual(rewritten.usage.cache_write_input_tokens, 10)
+        self.assertEqual(rewritten.tokens_in, 160)
+        self.assertEqual(rewritten.tokens_out, 40)
+        self.assertEqual(rewritten.cached_input_tokens, 40)
+        self.assertEqual(rewritten.metadata["changed_files"], ["foo.py"])
 
     def test_benchmark_git_versions_dedupes_standalone_checkout(self):
         benchmark_git_versions.cache_clear()
