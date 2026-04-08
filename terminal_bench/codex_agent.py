@@ -28,7 +28,6 @@ try:
         resolve_codex_model,
         usage_from_events,
         usage_from_rollout,
-        _parsed_usage_from_codex_usage,
         _read_codex_rollout_from_exec,
     )
 except ImportError:
@@ -45,7 +44,6 @@ except ImportError:
         resolve_codex_model,
         usage_from_events,
         usage_from_rollout,
-        _parsed_usage_from_codex_usage,
         _read_codex_rollout_from_exec,
     )
 
@@ -110,7 +108,7 @@ class CodexAgent(DockerExecAgent):
                 logger.warning("Codex rollout had no usable token_count payload: %s", rollout_path)
             stream_usage = usage_from_events(events, model=self._resolve_model())
             rollout_usage = usage_from_rollout(rollout_text, model=self._resolve_model()) if rollout_text else None
-            usage = _parsed_usage_from_codex_usage(merge_codex_usage(stream_usage, rollout_usage, model=self._resolve_model()))
+            usage = merge_codex_usage(stream_usage, rollout_usage, model=self._resolve_model())
         if not usage:
             logger.warning("No usage data found in Codex output")
         return usage

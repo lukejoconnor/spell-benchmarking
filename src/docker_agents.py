@@ -1332,7 +1332,7 @@ def run_agent_in_container(
         rollout_info = parse_codex_rollout(rollout_text) if rollout_text else None
         rollout_usage = usage_from_rollout(rollout_text, model=resolved_model) if rollout_text else None
         merged_usage = merge_codex_usage(stream_usage, rollout_usage, model=resolved_model)
-        usage = _parsed_usage_from_codex_usage(merged_usage)
+        usage = merged_usage
 
         if thread_id is None:
             rollout_status = "missing_thread_id"
