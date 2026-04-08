@@ -45,7 +45,7 @@ DEFAULT_IMAGE = "python:3.11-slim"
 DEFAULT_WORKDIR = "/workspace"
 SPELL_AGENT_IN_CONTAINER = "/opt/spell/config/agents/io-tc.agent.edn"
 SPELL_SDEPS = '{:deps {local/spell {:local/root "/opt/spell"}}}'
-SPELL_BUNDLE_PATHS = ("deps.edn", "src", "config")
+SPELL_BUNDLE_PATHS = ("deps.edn", "src", "config", "data")
 
 CC_ALLOWED_TOOLS = [
     "Bash", "Edit", "Write", "Read", "Glob", "Grep",
