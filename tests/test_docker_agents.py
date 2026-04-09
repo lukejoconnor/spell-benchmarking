@@ -13,10 +13,11 @@ if str(BENCHMARK_ROOT) not in sys.path:
 
 from src.docker_agents import (
     AgentRunResult,
-    CODEX_RUNTIME_HOME,
+    CODEX_RUNTIME_CODEX_HOME,
     CODEX_RUNTIME_NPM_CACHE,
     CODEX_RUNTIME_NPM_PREFIX,
     ExecOutput,
+    NVM_NODE_INSTALL,
     _read_codex_rollout_from_exec,
     _load_swe_agent_trajectory,
     _normalize_spell_trailing,
@@ -77,23 +78,26 @@ class DockerAgentsTests(unittest.TestCase):
     def test_codex_env_vars_redirect_runtime_to_tmp(self) -> None:
         env = codex_env_vars()
 
-        self.assertEqual(env["HOME"], CODEX_RUNTIME_HOME)
+        self.assertEqual(env["CODEX_HOME"], CODEX_RUNTIME_CODEX_HOME)
         self.assertEqual(env["NPM_CONFIG_PREFIX"], CODEX_RUNTIME_NPM_PREFIX)
         self.assertEqual(env["NPM_CONFIG_CACHE"], CODEX_RUNTIME_NPM_CACHE)
         self.assertEqual(env["npm_config_cache"], CODEX_RUNTIME_NPM_CACHE)
+        self.assertNotIn("HOME", env)
 
     def test_codex_install_script_uses_tmp_runtime_paths(self) -> None:
         script = codex_install_script(version="latest")
 
-        self.assertIn(f'export HOME="${{HOME:-{CODEX_RUNTIME_HOME}}}"', script)
+        self.assertIn(f'export CODEX_HOME="${{CODEX_HOME:-{CODEX_RUNTIME_CODEX_HOME}}}"', script)
         self.assertIn(f'export NPM_CONFIG_PREFIX="${{NPM_CONFIG_PREFIX:-{CODEX_RUNTIME_NPM_PREFIX}}}"', script)
         self.assertIn("npm install -g @openai/codex@latest", script)
         self.assertNotIn("$HOME/.nvm/nvm.sh", script)
+        self.assertIn('> "$CODEX_HOME/auth.json"', script)
 
-    def test_codex_run_command_sets_tmp_runtime_before_exec(self) -> None:
+    def test_codex_run_command_sets_tmp_runtime_before_exec_without_overriding_home(self) -> None:
         cmd = codex_run_command("Return 42.", model="gpt-5-codex")
 
-        self.assertIn(f'export HOME="${{HOME:-{CODEX_RUNTIME_HOME}}}"', cmd)
+        self.assertIn(f'export CODEX_HOME="${{CODEX_HOME:-{CODEX_RUNTIME_CODEX_HOME}}}"', cmd)
+        self.assertNotIn('export HOME="${HOME:-', cmd)
         self.assertIn('source "$NVM_DIR/nvm.sh"', cmd)
         self.assertIn("codex -c 'web_search=\"disabled\"' exec", cmd)
 
@@ -107,7 +111,7 @@ class DockerAgentsTests(unittest.TestCase):
                 return ExecOutput(
                     exit_code=0,
                     stdout=(
-                        f"{CODEX_RUNTIME_HOME}/.codex/sessions/2026/04/06/"
+                        f"{CODEX_RUNTIME_CODEX_HOME}/sessions/2026/04/06/"
                         "rollout-2026-04-06T10-08-30-thread-1.jsonl\n"
                     ),
                     stderr="",
@@ -120,10 +124,16 @@ class DockerAgentsTests(unittest.TestCase):
 
         self.assertEqual(
             rollout_path,
-            f"{CODEX_RUNTIME_HOME}/.codex/sessions/2026/04/06/rollout-2026-04-06T10-08-30-thread-1.jsonl",
+            f"{CODEX_RUNTIME_CODEX_HOME}/sessions/2026/04/06/rollout-2026-04-06T10-08-30-thread-1.jsonl",
         )
         self.assertEqual(rollout_text, '{"type":"session_meta"}\n')
-        self.assertIn(f"{CODEX_RUNTIME_HOME}/.codex/sessions", calls[0])
+        self.assertIn(f"{CODEX_RUNTIME_CODEX_HOME}/sessions", calls[0])
+
+    def test_nvm_install_exports_profile_for_installer_shell(self) -> None:
+        script = NVM_NODE_INSTALL
+
+        self.assertIn("export PROFILE=/dev/null", script)
+        self.assertNotIn("PROFILE=/dev/null curl", script)
 
     def test_spell_env_vars_forwards_fireworks_api_key(self) -> None:
         with patch.dict(os.environ, {"FIREWORKS_API_KEY": "fw-test"}, clear=False):
@@ -217,7 +227,7 @@ class DockerAgentsTests(unittest.TestCase):
                     return ExecOutput(
                         exit_code=0,
                         stdout=(
-                            f"{CODEX_RUNTIME_HOME}/.codex/sessions/2026/04/06/"
+                            f"{CODEX_RUNTIME_CODEX_HOME}/sessions/2026/04/06/"
                             "rollout-2026-04-06T10-08-30-thread-1.jsonl\n"
                         ),
                         stderr="",
@@ -244,7 +254,7 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertEqual(result.metadata["cost_source"], "estimated_with_reasoning")
         self.assertEqual(
             result.raw["rollout_path"],
-            f"{CODEX_RUNTIME_HOME}/.codex/sessions/2026/04/06/rollout-2026-04-06T10-08-30-thread-1.jsonl",
+            f"{CODEX_RUNTIME_CODEX_HOME}/sessions/2026/04/06/rollout-2026-04-06T10-08-30-thread-1.jsonl",
         )
 
 

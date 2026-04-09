@@ -559,7 +559,8 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         cmd = container.exec_run.call_args.args[0]
         self.assertIn("codex -c 'web_search=\"disabled\"' exec", cmd)
         self.assertNotIn("codex --search exec", cmd)
-        self.assertIn('export HOME="${HOME:-/tmp/bench-agent-runtime/codex/home}"', cmd)
+        self.assertIn('export CODEX_HOME="${CODEX_HOME:-/tmp/bench-agent-runtime/codex/home}"', cmd)
+        self.assertNotIn('export HOME="${HOME:-', cmd)
 
 
 if __name__ == "__main__":

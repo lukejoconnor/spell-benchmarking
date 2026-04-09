@@ -47,7 +47,7 @@ SPELL_AGENT_IN_CONTAINER = "/opt/spell/config/agents/io-tc.agent.edn"
 SPELL_SDEPS = '{:deps {local/spell {:local/root "/opt/spell"}}}'
 SPELL_BUNDLE_PATHS = ("deps.edn", "src", "config", "data")
 CODEX_RUNTIME_ROOT = "/tmp/bench-agent-runtime/codex"
-CODEX_RUNTIME_HOME = f"{CODEX_RUNTIME_ROOT}/home"
+CODEX_RUNTIME_CODEX_HOME = f"{CODEX_RUNTIME_ROOT}/home"
 CODEX_RUNTIME_NVM_DIR = f"{CODEX_RUNTIME_ROOT}/nvm"
 CODEX_RUNTIME_NPM_PREFIX = f"{CODEX_RUNTIME_ROOT}/npm-global"
 CODEX_RUNTIME_NPM_CACHE = f"{CODEX_RUNTIME_ROOT}/npm-cache"
@@ -82,7 +82,8 @@ if [ -d "$NVM_DIR" ]; then
     fi
 fi
 apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq curl >/dev/null 2>&1
-PROFILE=/dev/null curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash
+export PROFILE=/dev/null
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash
 source "$NVM_DIR/nvm.sh"
 nvm install 22
 echo "node installed: $(node --version)"
@@ -646,7 +647,7 @@ def _load_codex_auth_b64() -> str | None:
 def codex_runtime_env_vars() -> dict[str, str]:
     return {
         "CODEX_RUNTIME_ROOT": CODEX_RUNTIME_ROOT,
-        "HOME": CODEX_RUNTIME_HOME,
+        "CODEX_HOME": CODEX_RUNTIME_CODEX_HOME,
         "NVM_DIR": CODEX_RUNTIME_NVM_DIR,
         "NPM_CONFIG_PREFIX": CODEX_RUNTIME_NPM_PREFIX,
         "NPM_CONFIG_CACHE": CODEX_RUNTIME_NPM_CACHE,
@@ -657,12 +658,12 @@ def codex_runtime_env_vars() -> dict[str, str]:
 def _codex_runtime_shell_setup() -> str:
     return f"""
 export CODEX_RUNTIME_ROOT="${{CODEX_RUNTIME_ROOT:-{CODEX_RUNTIME_ROOT}}}"
-export HOME="${{HOME:-{CODEX_RUNTIME_HOME}}}"
+export CODEX_HOME="${{CODEX_HOME:-{CODEX_RUNTIME_CODEX_HOME}}}"
 export NVM_DIR="${{NVM_DIR:-{CODEX_RUNTIME_NVM_DIR}}}"
 export NPM_CONFIG_PREFIX="${{NPM_CONFIG_PREFIX:-{CODEX_RUNTIME_NPM_PREFIX}}}"
 export NPM_CONFIG_CACHE="${{NPM_CONFIG_CACHE:-{CODEX_RUNTIME_NPM_CACHE}}}"
 export npm_config_cache="${{npm_config_cache:-$NPM_CONFIG_CACHE}}"
-mkdir -p "$HOME/.codex" "$NVM_DIR" "$NPM_CONFIG_PREFIX" "$npm_config_cache"
+mkdir -p "$CODEX_HOME" "$NVM_DIR" "$NPM_CONFIG_PREFIX" "$npm_config_cache"
 export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
 """.strip()
 
@@ -674,9 +675,9 @@ def codex_install_script(*, version: str | None = None) -> str:
 [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
 npm install -g @openai/codex@{resolved_version}
 if [ -n "${{CODEX_AUTH_JSON_B64:-}}" ]; then
-  printf '%s' "$CODEX_AUTH_JSON_B64" | base64 -d > "$HOME/.codex/auth.json"
+  printf '%s' "$CODEX_AUTH_JSON_B64" | base64 -d > "$CODEX_HOME/auth.json"
 elif [ -n "${{OPENAI_API_KEY:-}}" ]; then
-  echo '{{"OPENAI_API_KEY": "'$OPENAI_API_KEY'"}}' > "$HOME/.codex/auth.json"
+  echo '{{"OPENAI_API_KEY": "'$OPENAI_API_KEY'"}}' > "$CODEX_HOME/auth.json"
 fi
 echo "codex installed: $(codex --version 2>/dev/null || echo unknown)"
 """
@@ -748,7 +749,7 @@ def _read_codex_rollout_from_exec(
 
     rollout_name = f"rollout-*-{thread_id}.jsonl"
     find_cmd = (
-        f"for base in {shlex.quote(CODEX_RUNTIME_HOME + '/.codex/sessions')} \"$HOME/.codex/sessions\" /root/.codex/sessions; do "
+        f"for base in {shlex.quote(CODEX_RUNTIME_CODEX_HOME + '/sessions')} \"$CODEX_HOME/sessions\" \"$HOME/.codex/sessions\" /root/.codex/sessions; do "
         "[ -d \"$base\" ] || continue; "
         f"find \"$base\" -type f -name {shlex.quote(rollout_name)} 2>/dev/null; "
         "done | head -1"
