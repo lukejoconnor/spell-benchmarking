@@ -263,6 +263,7 @@ The `--model` flag uses a `provider:model` format that determines both the trans
 | `codex-msg` | Codex messages | `io-msg.agent.edn` | `codex-msg:gpt-5.3-codex` |
 | `codex-tc` | Codex tool-call | `io-tc.agent.edn` | `codex-tc:gpt-5.3-codex` |
 | `openai` | OpenAI Chat | `io-msg.agent.edn` | `openai:o3` |
+| `openai-tc` | OpenAI tool-call | `io-tc.agent.edn` | `openai-tc:gpt-5.4` |
 
 ### Model Aliases
 
@@ -309,7 +310,7 @@ The agent is selected automatically based on the provider prefix:
 |----------------|----------------|---------------|
 | `anthropic-pf` | prefill | `config/agents/io-pf.agent.edn` |
 | `codex-msg`, `openai` | message | `config/agents/io-msg.agent.edn` |
-| `anthropic-tc`, `codex-tc` | toolcall | `config/agents/io-tc.agent.edn` |
+| `anthropic-tc`, `codex-tc`, `openai-tc` | toolcall | `config/agents/io-tc.agent.edn` |
 
 Each agent inherits from a base agent (e.g., `base-tc.agent.edn`) and adds the `io` namespace for file access. The agent determines the system prompt and available namespaces but not the model — the model comes from the `--model` flag.
 

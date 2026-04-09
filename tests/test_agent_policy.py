@@ -22,6 +22,7 @@ class AgentPolicyTests(unittest.TestCase):
     def test_detect_spell_mode(self) -> None:
         self.assertEqual(detect_spell_mode("codex-msg:gpt-5.3-codex"), "msg")
         self.assertEqual(detect_spell_mode("codex-tc:gpt-5.3-codex"), "tc")
+        self.assertEqual(detect_spell_mode("openai-tc:gpt-5.4"), "tc")
         self.assertEqual(detect_spell_mode("anthropic-tc:claude-sonnet-4-5-20250929"), "tc")
         self.assertEqual(detect_spell_mode("anthropic-pf:claude-sonnet-4-5-20250929"), "msg")
         self.assertEqual(detect_spell_mode("gpt-5.3-codex"), "msg")
@@ -46,6 +47,19 @@ class AgentPolicyTests(unittest.TestCase):
             project_root=PROJECT_ROOT,
             bench_kind="general",
             model_spec="codex-tc:gpt-5.3-codex",
+            item_datasets={"longbench_short"},
+        )
+        self.assertEqual(resolved.spell_mode, "tc")
+        self.assertEqual(resolved.family, "general_longcontext")
+        self.assertEqual(resolved.source, "default")
+        self.assertEqual(resolved.policy_key, "tc:tc")
+        self.assertTrue(resolved.agent_file.endswith("config/agents/io-tc.agent.edn"))
+
+    def test_resolve_default_general_longcontext_openai_tc(self) -> None:
+        resolved = resolve_spell_agent(
+            project_root=PROJECT_ROOT,
+            bench_kind="general",
+            model_spec="openai-tc:gpt-5.4",
             item_datasets={"longbench_short"},
         )
         self.assertEqual(resolved.spell_mode, "tc")
