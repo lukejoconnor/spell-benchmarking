@@ -45,6 +45,8 @@ class _PwdResult:
 
 
 class _FakeContainer:
+    id = "fakecontainer123456"
+
     def exec_run(self, cmd):
         self.last_exec = cmd
         return _PwdResult()
