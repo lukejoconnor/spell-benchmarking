@@ -46,6 +46,11 @@ DEFAULT_WORKDIR = "/workspace"
 SPELL_AGENT_IN_CONTAINER = "/opt/spell/config/agents/io-tc.agent.edn"
 SPELL_SDEPS = '{:deps {local/spell {:local/root "/opt/spell"}}}'
 SPELL_BUNDLE_PATHS = ("deps.edn", "src", "config", "data")
+CODEX_RUNTIME_ROOT = "/tmp/bench-agent-runtime/codex"
+CODEX_RUNTIME_CODEX_HOME = f"{CODEX_RUNTIME_ROOT}/home"
+CODEX_RUNTIME_NVM_DIR = f"{CODEX_RUNTIME_ROOT}/nvm"
+CODEX_RUNTIME_NPM_PREFIX = f"{CODEX_RUNTIME_ROOT}/npm-global"
+CODEX_RUNTIME_NPM_CACHE = f"{CODEX_RUNTIME_ROOT}/npm-cache"
 
 CC_ALLOWED_TOOLS = [
     "Bash", "Edit", "Write", "Read", "Glob", "Grep",
@@ -67,16 +72,19 @@ LITELLM_TO_SPELL_MODEL = {
 
 NVM_NODE_INSTALL = r"""
 set -e
-if [ -d "$HOME/.nvm" ]; then
-    source "$HOME/.nvm/nvm.sh" 2>/dev/null || true
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+mkdir -p "$(dirname "$NVM_DIR")"
+if [ -d "$NVM_DIR" ]; then
+    source "$NVM_DIR/nvm.sh" 2>/dev/null || true
     if command -v node >/dev/null 2>&1; then
         echo "node already installed: $(node --version)"
         exit 0
     fi
 fi
 apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq curl >/dev/null 2>&1
+export PROFILE=/dev/null
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash
-source "$HOME/.nvm/nvm.sh"
+source "$NVM_DIR/nvm.sh"
 nvm install 22
 echo "node installed: $(node --version)"
 """
@@ -413,10 +421,14 @@ class DockerWorkspaceContainer:
         self.stop()
 
 
-def install_nvm_node(container: DockerWorkspaceContainer) -> bool:
+def install_nvm_node(
+    container: DockerWorkspaceContainer,
+    *,
+    env: dict[str, str] | None = None,
+) -> bool:
     max_attempts = 2
     for attempt in range(1, max_attempts + 1):
-        result = container.exec_run(NVM_NODE_INSTALL, timeout=300)
+        result = container.exec_run(NVM_NODE_INSTALL, timeout=300, env=env)
         if result.exit_code == 0:
             return True
         logger.error("NVM/Node install failed (attempt %s): %s", attempt, result.stderr[:500])
@@ -427,6 +439,7 @@ def install_nvm_node(container: DockerWorkspaceContainer) -> bool:
         "apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq nodejs npm >/dev/null 2>&1 && "
         'echo "node installed via apt: $(node --version 2>/dev/null || echo missing)"',
         timeout=300,
+        env=env,
         workdir="/",
     )
     return fallback.exit_code == 0
@@ -466,13 +479,18 @@ def container_exec(
     )
 
 
-def install_nvm_node_exec(exec_fn: Callable[..., ExecOutput]) -> bool:
-    result = exec_fn(NVM_NODE_INSTALL, timeout=300)
+def install_nvm_node_exec(
+    exec_fn: Callable[..., ExecOutput],
+    *,
+    env: dict[str, str] | None = None,
+) -> bool:
+    result = exec_fn(NVM_NODE_INSTALL, timeout=300, env=env)
     if result.exit_code == 0:
         return True
     fallback = exec_fn(
         "apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq nodejs npm >/dev/null 2>&1",
         timeout=300,
+        env=env,
         workdir="/",
     )
     return fallback.exit_code == 0
@@ -626,23 +644,47 @@ def _load_codex_auth_b64() -> str | None:
     return base64.b64encode(path.read_bytes()).decode("ascii")
 
 
+def codex_runtime_env_vars() -> dict[str, str]:
+    return {
+        "CODEX_RUNTIME_ROOT": CODEX_RUNTIME_ROOT,
+        "CODEX_HOME": CODEX_RUNTIME_CODEX_HOME,
+        "NVM_DIR": CODEX_RUNTIME_NVM_DIR,
+        "NPM_CONFIG_PREFIX": CODEX_RUNTIME_NPM_PREFIX,
+        "NPM_CONFIG_CACHE": CODEX_RUNTIME_NPM_CACHE,
+        "npm_config_cache": CODEX_RUNTIME_NPM_CACHE,
+    }
+
+
+def _codex_runtime_shell_setup() -> str:
+    return f"""
+export CODEX_RUNTIME_ROOT="${{CODEX_RUNTIME_ROOT:-{CODEX_RUNTIME_ROOT}}}"
+export CODEX_HOME="${{CODEX_HOME:-{CODEX_RUNTIME_CODEX_HOME}}}"
+export NVM_DIR="${{NVM_DIR:-{CODEX_RUNTIME_NVM_DIR}}}"
+export NPM_CONFIG_PREFIX="${{NPM_CONFIG_PREFIX:-{CODEX_RUNTIME_NPM_PREFIX}}}"
+export NPM_CONFIG_CACHE="${{NPM_CONFIG_CACHE:-{CODEX_RUNTIME_NPM_CACHE}}}"
+export npm_config_cache="${{npm_config_cache:-$NPM_CONFIG_CACHE}}"
+mkdir -p "$CODEX_HOME" "$NVM_DIR" "$NPM_CONFIG_PREFIX" "$npm_config_cache"
+export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
+""".strip()
+
+
 def codex_install_script(*, version: str | None = None) -> str:
     resolved_version = version or "latest"
     return f"""
-[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"
+{_codex_runtime_shell_setup()}
+[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
 npm install -g @openai/codex@{resolved_version}
-mkdir -p "$HOME/.codex"
 if [ -n "${{CODEX_AUTH_JSON_B64:-}}" ]; then
-  printf '%s' "$CODEX_AUTH_JSON_B64" | base64 -d > "$HOME/.codex/auth.json"
+  printf '%s' "$CODEX_AUTH_JSON_B64" | base64 -d > "$CODEX_HOME/auth.json"
 elif [ -n "${{OPENAI_API_KEY:-}}" ]; then
-  echo '{{"OPENAI_API_KEY": "'$OPENAI_API_KEY'"}}' > "$HOME/.codex/auth.json"
+  echo '{{"OPENAI_API_KEY": "'$OPENAI_API_KEY'"}}' > "$CODEX_HOME/auth.json"
 fi
 echo "codex installed: $(codex --version 2>/dev/null || echo unknown)"
 """
 
 
 def codex_env_vars() -> dict[str, str]:
-    env: dict[str, str] = {}
+    env = codex_runtime_env_vars()
     api_key = os.environ.get("OPENAI_API_KEY")
     if api_key:
         env["OPENAI_API_KEY"] = api_key
@@ -664,7 +706,7 @@ def codex_run_command(
     web_search: bool = False,
     reasoning_effort: str | None = None,
 ) -> str:
-    parts = ['[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"', "&&"]
+    parts = [_codex_runtime_shell_setup(), "&&", '[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"', "&&"]
     if workdir:
         parts.extend(["cd", shlex.quote(workdir), "&&"])
     parts.append("codex")
@@ -707,7 +749,7 @@ def _read_codex_rollout_from_exec(
 
     rollout_name = f"rollout-*-{thread_id}.jsonl"
     find_cmd = (
-        "for base in /root/.codex/sessions \"$HOME/.codex/sessions\"; do "
+        f"for base in {shlex.quote(CODEX_RUNTIME_CODEX_HOME + '/sessions')} \"$CODEX_HOME/sessions\" \"$HOME/.codex/sessions\" /root/.codex/sessions; do "
         "[ -d \"$base\" ] || continue; "
         f"find \"$base\" -type f -name {shlex.quote(rollout_name)} 2>/dev/null; "
         "done | head -1"
@@ -1238,13 +1280,15 @@ def _install_agent_runtime(
     version: str | None = None,
     model_spec: str | None = None,
 ) -> bool:
-    if condition in {"claude_code", "codex"} and not install_nvm_node(container):
-        return False
-
     if condition == "claude_code":
+        if not install_nvm_node(container):
+            return False
         return run_install_script(container, cc_install_script(version=version), env=cc_env_vars(model=model_spec))
     if condition == "codex":
-        return run_install_script(container, codex_install_script(version=version), env=codex_env_vars())
+        env = codex_env_vars()
+        if not install_nvm_node(container, env=env):
+            return False
+        return run_install_script(container, codex_install_script(version=version), env=env)
     if condition == "swe_agent":
         return run_install_script(container, swe_agent_install_script(), env=swe_agent_env_vars())
     if condition == "spell":
