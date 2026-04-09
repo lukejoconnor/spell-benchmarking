@@ -131,9 +131,10 @@ class DockerExecAgent(BaseAgent):
             "latency_s": round(latency_s, 1),
             "input_tokens": usage.input_tokens if usage else 0,
             "cached_input_tokens": usage.cached_input_tokens if usage else 0,
-            "output_tokens": usage.output_tokens if usage else 0,
+            "visible_output_tokens": usage.output_tokens if usage else 0,
             "reasoning_output_tokens": usage.reasoning_output_tokens if usage else None,
             "total_input_tokens": usage.total_input_tokens if usage else 0,
+            "total_output_tokens": usage.total_output_tokens if usage else 0,
             "cost_usd": usage.cost_usd if usage else None,
             "cost_source": usage.cost_source if usage else None,
         }
@@ -233,6 +234,6 @@ class DockerExecAgent(BaseAgent):
 
         return AgentResult(
             total_input_tokens=usage.total_input_tokens if usage else 0,
-            total_output_tokens=usage.output_tokens if usage else 0,
+            total_output_tokens=usage.total_output_tokens if usage else 0,
             failure_mode=failure,
         )

@@ -23,9 +23,12 @@ def estimate_cost(
     cache_write_input_tokens: int = 0,
     reasoning_output_tokens: int | None = None,
 ) -> float | None:
+    total_output_tokens = None
+    if tokens_out is not None:
+        total_output_tokens = tokens_out + max(reasoning_output_tokens or 0, 0)
     usage = usage_from_totals(
         total_input_tokens=tokens_in,
-        total_output_tokens=tokens_out,
+        total_output_tokens=total_output_tokens,
         cached_input_tokens=cached_input_tokens,
         cache_write_input_tokens=cache_write_input_tokens,
         reasoning_output_tokens=reasoning_output_tokens or 0,
@@ -97,10 +100,16 @@ def usage_from_payload(payload: dict[str, Any] | None, *, model: str | None = No
     if total_input_tokens is None and isinstance(alt_total_input_raw, (int, float)):
         total_input_tokens = int(alt_total_input_raw)
 
-    visible_output_raw = payload.get("output_tokens")
+    visible_output_raw = payload.get("visible_output_tokens")
+    if visible_output_raw is None:
+        visible_output_raw = payload.get("output_tokens")
     visible_output_tokens = int(visible_output_raw) if isinstance(visible_output_raw, (int, float)) else None
+    total_output_raw = payload.get("total_output_tokens")
+    total_output_tokens = int(total_output_raw) if isinstance(total_output_raw, (int, float)) else None
     reasoning_raw = payload.get("reasoning_output_tokens")
     reasoning_output_tokens = int(reasoning_raw) if isinstance(reasoning_raw, (int, float)) else 0
+    if total_output_tokens is None and visible_output_tokens is not None:
+        total_output_tokens = visible_output_tokens + reasoning_output_tokens
 
     cost_raw = payload.get("total_cost_usd")
     if cost_raw is None:
@@ -112,7 +121,7 @@ def usage_from_payload(payload: dict[str, Any] | None, *, model: str | None = No
 
     usage = usage_from_totals(
         total_input_tokens=total_input_tokens,
-        total_output_tokens=visible_output_tokens,
+        total_output_tokens=total_output_tokens,
         cached_input_tokens=cached_input_tokens,
         cache_write_input_tokens=cache_write_input_tokens,
         reasoning_output_tokens=reasoning_output_tokens,

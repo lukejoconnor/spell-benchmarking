@@ -89,8 +89,30 @@ class CodexUsageTests(unittest.TestCase):
 
         self.assertIsNotNone(usage)
         assert usage is not None
+        self.assertEqual(usage.visible_output_tokens, 200)
+        self.assertEqual(usage.total_output_tokens, 500)
         self.assertEqual(usage.reasoning_output_tokens, 300)
         self.assertAlmostEqual(usage.cost_usd or 0.0, 0.009775, places=8)
+        self.assertEqual(usage.cost_source, "estimated")
+
+    def test_usage_from_payload_prefers_explicit_visible_and_total_output_fields(self) -> None:
+        usage = usage_from_payload(
+            {
+                "input_tokens": 1_000,
+                "cached_input_tokens": 100,
+                "visible_output_tokens": 200,
+                "total_output_tokens": 550,
+                "reasoning_output_tokens": 350,
+            },
+            model="gpt-5.4",
+        )
+
+        self.assertIsNotNone(usage)
+        assert usage is not None
+        self.assertEqual(usage.visible_output_tokens, 200)
+        self.assertEqual(usage.total_output_tokens, 550)
+        self.assertEqual(usage.reasoning_output_tokens, 350)
+        self.assertAlmostEqual(usage.cost_usd or 0.0, 0.010525, places=8)
         self.assertEqual(usage.cost_source, "estimated")
 
     def test_parse_codex_rollout_picks_latest_non_null_info(self) -> None:

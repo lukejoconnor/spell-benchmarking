@@ -349,7 +349,7 @@ def terminalbench_records_from_run(
         error_type = _error_type_for_trial(trial)
         error_message = _error_message_for_trial(trial)
         agent_result = _load_agent_result(run_dir, task_id, trial_name)
-        usage = usage_from_payload(agent_result if condition == "codex" else None, model=normalized_model)
+        usage = usage_from_payload(agent_result, model=normalized_model)
         tokens_in = trial.get("total_input_tokens")
         tokens_out = trial.get("total_output_tokens")
         cached_input_tokens = usage.cached_input_tokens if usage else agent_result.get("cached_input_tokens")

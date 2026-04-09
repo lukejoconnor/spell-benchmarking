@@ -196,6 +196,62 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             copied_trace = Path(record.metadata["trace_dir"])
             self.assertTrue((copied_trace / "trace-1" / "tree.txt").exists())
 
+    def test_terminalbench_records_recover_spell_visible_and_reasoning_output_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            run_dir = root / "results" / "spell_demo"
+            trial_dir = run_dir / "conda-env-conflict-resolution" / "conda-env-conflict-resolution.1-of-1.spell_demo"
+            agent_log_dir = trial_dir / "agent-logs"
+            agent_log_dir.mkdir(parents=True, exist_ok=True)
+            (agent_log_dir / "result.json").write_text(
+                json.dumps(
+                    {
+                        "input_tokens": 39_382,
+                        "cached_input_tokens": 0,
+                        "output_tokens": 1_123,
+                        "reasoning_output_tokens": 17_869,
+                        "total_input_tokens": 39_382,
+                        "cost_usd": 0.324007,
+                        "cost_source": "reported",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (run_dir / "results.json").write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "trial_name": "conda-env-conflict-resolution.1-of-1.spell_demo",
+                                "task_id": "conda-env-conflict-resolution",
+                                "is_resolved": True,
+                                "failure_mode": "none",
+                                "parser_results": {"check": "passed"},
+                                "total_input_tokens": 39_382,
+                                "total_output_tokens": 1_123,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            records = terminalbench_records_from_run(
+                run_dir=run_dir,
+                run_id="terminalbench_demo",
+                condition="spell",
+                dataset="terminal-bench-core==0.1.1",
+                model_spec="openai-tc:gpt-5.4",
+                name=None,
+                agent_file=None,
+            )
+
+            self.assertEqual(len(records), 1)
+            record = records[0]
+            self.assertEqual(record.visible_output_tokens, 1_123)
+            self.assertEqual(record.reasoning_output_tokens, 17_869)
+            self.assertAlmostEqual(record.cost_usd or 0.0, 0.324007, places=6)
+
     def test_terminalbench_failures_become_unscored_error_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -347,6 +403,8 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             record = records[0]
             self.assertEqual(record.status, "resolved")
             self.assertAlmostEqual(record.cost_usd or 0.0, 0.009775, places=8)
+            self.assertEqual(record.visible_output_tokens, 200)
+            self.assertEqual(record.reasoning_output_tokens, 350)
             self.assertEqual(record.metadata["cost_source"], "estimated_with_reasoning")
             self.assertEqual(record.metadata["reasoning_output_tokens"], 350)
 
