@@ -12,11 +12,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .codex_usage import normalize_codex_model, usage_from_payload
+from .codex_usage import normalize_codex_model
 from .docker_agents import discover_spell_root
 from .provenance import benchmark_git_versions
 from .reasoning_effort import effective_reasoning_effort
-from .usage_accounting import usage_from_totals, usage_record_fields
+from .usage_accounting import UsageBreakdown, estimate_cost, usage_from_totals, usage_record_fields
 from .unified_results import UnifiedRunRecord, now_iso
 
 TERMINALBENCH_DATASET = "terminal-bench-core==0.1.1"
@@ -239,6 +239,66 @@ def _load_agent_result(run_dir: Path, task_id: str, trial_name: str) -> dict[str
         return {}
 
 
+def _usage_int(value: Any) -> int | None:
+    if isinstance(value, (int, float)):
+        return int(value)
+    return None
+
+
+def _terminalbench_usage(
+    *,
+    trial: dict[str, Any],
+    agent_result: dict[str, Any],
+    model: str | None,
+) -> UsageBreakdown | None:
+    total_input_tokens = _usage_int(agent_result.get("total_input_tokens"))
+    if total_input_tokens is None:
+        total_input_tokens = _usage_int(agent_result.get("input_tokens"))
+    if total_input_tokens is None:
+        total_input_tokens = _usage_int(trial.get("total_input_tokens"))
+
+    cached_input_tokens = _usage_int(agent_result.get("cached_input_tokens")) or 0
+    reasoning_output_tokens = _usage_int(agent_result.get("reasoning_output_tokens")) or 0
+
+    total_output_tokens = _usage_int(agent_result.get("total_output_tokens"))
+    if total_output_tokens is None:
+        visible_output_tokens = _usage_int(agent_result.get("visible_output_tokens"))
+        if visible_output_tokens is None:
+            # Older agent logs recorded visible output under `output_tokens`.
+            visible_output_tokens = _usage_int(agent_result.get("output_tokens"))
+        if visible_output_tokens is not None:
+            total_output_tokens = visible_output_tokens + reasoning_output_tokens
+
+    if total_output_tokens is None:
+        total_output_tokens = _usage_int(trial.get("total_output_tokens"))
+
+    cost_usd = agent_result.get("cost_usd")
+    if not isinstance(cost_usd, (int, float)):
+        cost_usd = None
+
+    usage = usage_from_totals(
+        total_input_tokens=total_input_tokens,
+        total_output_tokens=total_output_tokens,
+        cached_input_tokens=cached_input_tokens,
+        reasoning_output_tokens=reasoning_output_tokens,
+        cost_usd=cost_usd,
+        cost_source=agent_result.get("cost_source"),
+    )
+    if usage is None or usage.cost_usd is not None:
+        return usage
+
+    estimated_cost = estimate_cost(model, usage)
+    return UsageBreakdown(
+        uncached_input_tokens=usage.uncached_input_tokens,
+        cached_input_tokens=usage.cached_input_tokens,
+        cache_write_input_tokens=usage.cache_write_input_tokens,
+        visible_output_tokens=usage.visible_output_tokens,
+        reasoning_output_tokens=usage.reasoning_output_tokens,
+        cost_usd=estimated_cost,
+        cost_source="estimated" if estimated_cost is not None else None,
+    )
+
+
 def _copy_spell_trace_dir(
     run_dir: Path,
     *,
@@ -349,30 +409,21 @@ def terminalbench_records_from_run(
         error_type = _error_type_for_trial(trial)
         error_message = _error_message_for_trial(trial)
         agent_result = _load_agent_result(run_dir, task_id, trial_name)
-        usage = usage_from_payload(agent_result if condition == "codex" else None, model=normalized_model)
-        tokens_in = trial.get("total_input_tokens")
-        tokens_out = trial.get("total_output_tokens")
+        usage = _terminalbench_usage(
+            trial=trial,
+            agent_result=agent_result,
+            model=normalized_model,
+        )
         cached_input_tokens = usage.cached_input_tokens if usage else agent_result.get("cached_input_tokens")
         if not isinstance(cached_input_tokens, (int, float)):
             cached_input_tokens = None
         elif cached_input_tokens == 0:
             cached_input_tokens = None
-        agent_cost_usd = agent_result.get("cost_usd")
-        cost_usd = agent_cost_usd if isinstance(agent_cost_usd, (int, float)) else (usage.cost_usd if usage else None)
+        cost_usd = usage.cost_usd if usage else None
         reasoning_output_tokens = agent_result.get("reasoning_output_tokens")
         if not isinstance(reasoning_output_tokens, (int, float)):
             reasoning_output_tokens = usage.reasoning_output_tokens if usage else None
-        record_usage = usage or usage_from_totals(
-            total_input_tokens=int(tokens_in) if isinstance(tokens_in, (int, float)) else None,
-            total_output_tokens=int(tokens_out) if isinstance(tokens_out, (int, float)) else None,
-            cached_input_tokens=int(cached_input_tokens) if isinstance(cached_input_tokens, (int, float)) else 0,
-            reasoning_output_tokens=(
-                int(reasoning_output_tokens) if isinstance(reasoning_output_tokens, (int, float)) else 0
-            ),
-            cost_usd=cost_usd,
-            cost_source=agent_result.get("cost_source"),
-        )
-        usage_fields = usage_record_fields(record_usage)
+        usage_fields = usage_record_fields(usage)
 
         copied_trace_dir = None
         if condition == "spell":
@@ -392,7 +443,7 @@ def terminalbench_records_from_run(
             "tb_agent_result": agent_result or None,
             "trace_dir": copied_trace_dir,
             "resolved_model": normalized_model if condition == "codex" else None,
-            "cost_source": agent_result.get("cost_source") or (usage.cost_source if usage else None),
+            "cost_source": usage.cost_source if usage else None,
             "reasoning_output_tokens": reasoning_output_tokens if condition == "codex" else None,
             "versions": benchmark_git_versions(),
         }

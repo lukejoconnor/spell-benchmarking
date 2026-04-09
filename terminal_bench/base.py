@@ -132,9 +132,10 @@ class DockerExecAgent(BaseAgent):
             "latency_s": round(latency_s, 1),
             "input_tokens": usage.input_tokens if usage else 0,
             "cached_input_tokens": usage.cached_input_tokens if usage else 0,
-            "output_tokens": usage.output_tokens if usage else 0,
+            "visible_output_tokens": usage.visible_output_tokens if usage else 0,
             "reasoning_output_tokens": usage.reasoning_output_tokens if usage else None,
             "total_input_tokens": usage.total_input_tokens if usage else 0,
+            "total_output_tokens": usage.total_output_tokens if usage else 0,
             "cost_usd": usage.cost_usd if usage else None,
             "cost_source": usage.cost_source if usage else None,
         }
@@ -220,8 +221,14 @@ class DockerExecAgent(BaseAgent):
         usage = self._parse_usage(result.stdout, container=container, workdir=workdir)
         if usage:
             cached_str = f" cached={usage.cached_input_tokens:,}" if usage.cached_input_tokens else ""
+            reasoning_str = (
+                f" reasoning={usage.reasoning_output_tokens:,}"
+                if usage.reasoning_output_tokens
+                else ""
+            )
             logger.info(
-                f"Usage: in={usage.input_tokens:,}{cached_str} out={usage.output_tokens:,}"
+                f"Usage: in={usage.input_tokens:,}{cached_str} visible={usage.visible_output_tokens:,}"
+                f"{reasoning_str} total_out={usage.total_output_tokens:,}"
                 + (f" cost=${usage.cost_usd:.4f}" if usage.cost_usd else "")
             )
 
@@ -234,6 +241,6 @@ class DockerExecAgent(BaseAgent):
 
         return AgentResult(
             total_input_tokens=usage.total_input_tokens if usage else 0,
-            total_output_tokens=usage.output_tokens if usage else 0,
+            total_output_tokens=usage.total_output_tokens if usage else 0,
             failure_mode=failure,
         )
