@@ -16,7 +16,7 @@ from .codex_usage import normalize_codex_model, usage_from_payload
 from .docker_agents import discover_spell_root
 from .provenance import benchmark_git_versions
 from .reasoning_effort import effective_reasoning_effort
-from .usage_accounting import usage_from_totals, usage_record_fields
+from .usage_accounting import UsageBreakdown, usage_from_totals, usage_record_fields
 from .unified_results import UnifiedRunRecord, now_iso
 
 TERMINALBENCH_DATASET = "terminal-bench-core==0.1.1"
@@ -239,6 +239,51 @@ def _load_agent_result(run_dir: Path, task_id: str, trial_name: str) -> dict[str
         return {}
 
 
+def _usage_int(value: Any) -> int | None:
+    if isinstance(value, (int, float)):
+        return int(value)
+    return None
+
+
+def _terminalbench_usage(
+    *,
+    trial: dict[str, Any],
+    agent_result: dict[str, Any],
+    usage: UsageBreakdown | None,
+    cost_usd: float | None,
+) -> UsageBreakdown | None:
+    if usage is not None:
+        return usage
+
+    total_input_tokens = _usage_int(agent_result.get("total_input_tokens"))
+    if total_input_tokens is None:
+        total_input_tokens = _usage_int(trial.get("total_input_tokens"))
+
+    cached_input_tokens = _usage_int(agent_result.get("cached_input_tokens")) or 0
+    reasoning_output_tokens = _usage_int(agent_result.get("reasoning_output_tokens")) or 0
+
+    total_output_tokens = _usage_int(agent_result.get("total_output_tokens"))
+    if total_output_tokens is None:
+        visible_output_tokens = _usage_int(agent_result.get("visible_output_tokens"))
+        if visible_output_tokens is None:
+            # Older agent logs recorded visible output under `output_tokens`.
+            visible_output_tokens = _usage_int(agent_result.get("output_tokens"))
+        if visible_output_tokens is not None:
+            total_output_tokens = visible_output_tokens + reasoning_output_tokens
+
+    if total_output_tokens is None:
+        total_output_tokens = _usage_int(trial.get("total_output_tokens"))
+
+    return usage_from_totals(
+        total_input_tokens=total_input_tokens,
+        total_output_tokens=total_output_tokens,
+        cached_input_tokens=cached_input_tokens,
+        reasoning_output_tokens=reasoning_output_tokens,
+        cost_usd=cost_usd,
+        cost_source=agent_result.get("cost_source"),
+    )
+
+
 def _copy_spell_trace_dir(
     run_dir: Path,
     *,
@@ -350,8 +395,6 @@ def terminalbench_records_from_run(
         error_message = _error_message_for_trial(trial)
         agent_result = _load_agent_result(run_dir, task_id, trial_name)
         usage = usage_from_payload(agent_result if condition == "codex" else None, model=normalized_model)
-        tokens_in = trial.get("total_input_tokens")
-        tokens_out = trial.get("total_output_tokens")
         cached_input_tokens = usage.cached_input_tokens if usage else agent_result.get("cached_input_tokens")
         if not isinstance(cached_input_tokens, (int, float)):
             cached_input_tokens = None
@@ -362,15 +405,11 @@ def terminalbench_records_from_run(
         reasoning_output_tokens = agent_result.get("reasoning_output_tokens")
         if not isinstance(reasoning_output_tokens, (int, float)):
             reasoning_output_tokens = usage.reasoning_output_tokens if usage else None
-        record_usage = usage or usage_from_totals(
-            total_input_tokens=int(tokens_in) if isinstance(tokens_in, (int, float)) else None,
-            total_output_tokens=int(tokens_out) if isinstance(tokens_out, (int, float)) else None,
-            cached_input_tokens=int(cached_input_tokens) if isinstance(cached_input_tokens, (int, float)) else 0,
-            reasoning_output_tokens=(
-                int(reasoning_output_tokens) if isinstance(reasoning_output_tokens, (int, float)) else 0
-            ),
+        record_usage = _terminalbench_usage(
+            trial=trial,
+            agent_result=agent_result,
+            usage=usage,
             cost_usd=cost_usd,
-            cost_source=agent_result.get("cost_source"),
         )
         usage_fields = usage_record_fields(record_usage)
 

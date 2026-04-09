@@ -134,7 +134,15 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             trace_source.mkdir(parents=True, exist_ok=True)
             (trace_source / "tree.txt").write_text("trace", encoding="utf-8")
             (agent_log_dir / "result.json").write_text(
-                json.dumps({"cost_usd": 0.42}),
+                json.dumps(
+                    {
+                        "cost_usd": 0.42,
+                        "total_input_tokens": 100,
+                        "visible_output_tokens": 25,
+                        "reasoning_output_tokens": 75,
+                        "total_output_tokens": 100,
+                    }
+                ),
                 encoding="utf-8",
             )
             (run_dir / "results.json").write_text(
@@ -186,6 +194,8 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             self.assertIsNone(record.cached_input_tokens)
             self.assertEqual(record.latency_ms, 2000.0)
             self.assertEqual(record.reasoning_effort, "medium")
+            self.assertEqual(record.visible_output_tokens, 25)
+            self.assertEqual(record.reasoning_output_tokens, 75)
             self.assertEqual(
                 record.metadata["versions"],
                 {
@@ -195,6 +205,118 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             )
             copied_trace = Path(record.metadata["trace_dir"])
             self.assertTrue((copied_trace / "trace-1" / "tree.txt").exists())
+
+    def test_terminalbench_records_recover_spell_visible_and_reasoning_from_agent_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            run_dir = root / "results" / "spell_demo"
+            trial_dir = run_dir / "hello-world" / "hello-world.1-of-1.spell_demo"
+            agent_log_dir = trial_dir / "agent-logs"
+            agent_log_dir.mkdir(parents=True, exist_ok=True)
+            (agent_log_dir / "result.json").write_text(
+                json.dumps(
+                    {
+                        "output_tokens": 1123,
+                        "reasoning_output_tokens": 17869,
+                        "total_output_tokens": 18992,
+                        "cost_usd": 0.324007,
+                        "cost_source": "estimated_with_reasoning",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (run_dir / "results.json").write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "trial_name": "hello-world.1-of-1.spell_demo",
+                                "task_id": "hello-world",
+                                "is_resolved": True,
+                                "failure_mode": "none",
+                                "parser_results": {"check": "passed"},
+                                "total_input_tokens": 39382,
+                                "total_output_tokens": 1123,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            records = terminalbench_records_from_run(
+                run_dir=run_dir,
+                run_id="terminalbench_demo",
+                condition="spell",
+                dataset="terminal-bench-core==0.1.1",
+                model_spec="anthropic-tc:opus46",
+                name=None,
+                agent_file=None,
+            )
+
+            self.assertEqual(len(records), 1)
+            record = records[0]
+            self.assertEqual(record.status, "resolved")
+            self.assertTrue(record.correct)
+            self.assertEqual(record.visible_output_tokens, 1123)
+            self.assertEqual(record.reasoning_output_tokens, 17869)
+            self.assertEqual(record.cost_usd, 0.324007)
+            self.assertEqual(record.metadata["tb_agent_result"]["total_output_tokens"], 18992)
+
+    def test_terminalbench_records_recover_spell_visible_and_reasoning_tokens_from_legacy_agent_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            run_dir = root / "results" / "spell_demo"
+            trial_dir = run_dir / "conda-env-conflict-resolution" / (
+                "conda-env-conflict-resolution.1-of-1.spell_demo"
+            )
+            agent_log_dir = trial_dir / "agent-logs"
+            agent_log_dir.mkdir(parents=True, exist_ok=True)
+            (agent_log_dir / "result.json").write_text(
+                json.dumps(
+                    {
+                        "cost_usd": 0.324007,
+                        "total_input_tokens": 39_382,
+                        "output_tokens": 1_123,
+                        "reasoning_output_tokens": 17_869,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (run_dir / "results.json").write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "trial_name": "conda-env-conflict-resolution.1-of-1.spell_demo",
+                                "task_id": "conda-env-conflict-resolution",
+                                "is_resolved": True,
+                                "failure_mode": "none",
+                                "parser_results": {"check": "passed"},
+                                "total_input_tokens": 39_382,
+                                "total_output_tokens": 1_123,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            records = terminalbench_records_from_run(
+                run_dir=run_dir,
+                run_id="terminalbench_demo",
+                condition="spell",
+                dataset="terminal-bench-core==0.1.1",
+                model_spec="codex-tc:gpt-5.4",
+                name=None,
+                agent_file=None,
+            )
+
+            self.assertEqual(len(records), 1)
+            record = records[0]
+            self.assertEqual(record.visible_output_tokens, 1_123)
+            self.assertEqual(record.reasoning_output_tokens, 17_869)
+            self.assertAlmostEqual(record.cost_usd or 0.0, 0.324007, places=6)
 
     def test_terminalbench_failures_become_unscored_error_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
