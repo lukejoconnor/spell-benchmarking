@@ -373,7 +373,8 @@ class TerminalBenchRunnerTests(unittest.TestCase):
                     {
                         "input_tokens": 1_000_000,
                         "cached_input_tokens": 250_000,
-                        "output_tokens": 100_000,
+                        "visible_output_tokens": 100_000,
+                        "total_output_tokens": 100_000,
                     }
                 ),
                 encoding="utf-8",
@@ -427,9 +428,10 @@ class TerminalBenchRunnerTests(unittest.TestCase):
                     {
                         "input_tokens": 900,
                         "cached_input_tokens": 100,
-                        "output_tokens": 200,
+                        "visible_output_tokens": 200,
                         "reasoning_output_tokens": 350,
                         "total_input_tokens": 1_000,
+                        "total_output_tokens": 550,
                         "cost_usd": 0.009775,
                         "cost_source": "estimated_with_reasoning",
                     }
@@ -469,6 +471,8 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             record = records[0]
             self.assertEqual(record.status, "resolved")
             self.assertAlmostEqual(record.cost_usd or 0.0, 0.009775, places=8)
+            self.assertEqual(record.visible_output_tokens, 200)
+            self.assertEqual(record.reasoning_output_tokens, 350)
             self.assertEqual(record.metadata["cost_source"], "estimated_with_reasoning")
             self.assertEqual(record.metadata["reasoning_output_tokens"], 350)
 
