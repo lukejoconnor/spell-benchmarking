@@ -131,7 +131,7 @@ class DockerExecAgent(BaseAgent):
             "latency_s": round(latency_s, 1),
             "input_tokens": usage.input_tokens if usage else 0,
             "cached_input_tokens": usage.cached_input_tokens if usage else 0,
-            "visible_output_tokens": usage.output_tokens if usage else 0,
+            "visible_output_tokens": usage.visible_output_tokens if usage else 0,
             "reasoning_output_tokens": usage.reasoning_output_tokens if usage else None,
             "total_input_tokens": usage.total_input_tokens if usage else 0,
             "total_output_tokens": usage.total_output_tokens if usage else 0,
@@ -226,8 +226,8 @@ class DockerExecAgent(BaseAgent):
                 else ""
             )
             logger.info(
-                f"Usage: in={usage.input_tokens:,}{cached_str} out={usage.total_output_tokens:,}"
-                f"{reasoning_str}"
+                f"Usage: in={usage.input_tokens:,}{cached_str} visible={usage.visible_output_tokens:,}"
+                f"{reasoning_str} total_out={usage.total_output_tokens:,}"
                 + (f" cost=${usage.cost_usd:.4f}" if usage.cost_usd else "")
             )
 
