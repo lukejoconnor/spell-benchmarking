@@ -416,6 +416,60 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             self.assertEqual(record.metadata["resolved_model"], "gpt-5.3-codex")
             self.assertEqual(record.metadata["cost_source"], "estimated")
 
+    def test_terminalbench_records_skip_cost_estimate_when_shared_pricing_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            run_dir = root / "results" / "codex_demo"
+            trial_dir = run_dir / "hello-world" / "hello-world.1-of-1.codex_demo"
+            agent_log_dir = trial_dir / "agent-logs"
+            agent_log_dir.mkdir(parents=True, exist_ok=True)
+            (agent_log_dir / "result.json").write_text(
+                json.dumps(
+                    {
+                        "input_tokens": 1_000_000,
+                        "cached_input_tokens": 250_000,
+                        "output_tokens": 100_000,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (run_dir / "results.json").write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "trial_name": "hello-world.1-of-1.codex_demo",
+                                "task_id": "hello-world",
+                                "is_resolved": False,
+                                "failure_mode": "unset",
+                                "parser_results": {"check": "failed"},
+                                "total_input_tokens": 1_000_000,
+                                "total_output_tokens": 100_000,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch("src.usage_accounting.load_pricing_table", side_effect=FileNotFoundError):
+                records = terminalbench_records_from_run(
+                    run_dir=run_dir,
+                    run_id="terminalbench_demo",
+                    condition="codex",
+                    dataset="terminal-bench-core==0.1.1",
+                    model_spec="openai/gpt-5.3-codex",
+                    name=None,
+                    agent_file=None,
+                )
+
+            self.assertEqual(len(records), 1)
+            record = records[0]
+            self.assertEqual(record.status, "unresolved")
+            self.assertIsNone(record.cost_usd)
+            self.assertEqual(record.cached_input_tokens, 250_000)
+            self.assertNotIn("cost_source", record.metadata)
+
     def test_terminalbench_records_preserve_codex_agent_reasoning_cost_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

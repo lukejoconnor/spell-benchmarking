@@ -79,9 +79,13 @@ def load_pricing_table() -> dict[str, dict[str, float]]:
 def lookup_pricing(model: str | None) -> dict[str, float] | None:
     if not model:
         return None
+    try:
+        pricing_table = load_pricing_table()
+    except FileNotFoundError:
+        return None
     best_prefix = None
     best_cost = None
-    for prefix, cost in load_pricing_table().items():
+    for prefix, cost in pricing_table.items():
         if model.startswith(prefix) and (best_prefix is None or len(prefix) > len(best_prefix)):
             best_prefix = prefix
             best_cost = cost
