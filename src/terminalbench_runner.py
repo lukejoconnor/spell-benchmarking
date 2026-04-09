@@ -160,7 +160,11 @@ def build_terminalbench_command(
     if condition == "spell":
         agent_kwargs = {
             "budget": budget,
-            "sh_timeout": 120,
+            # 600s per shell command — long enough for ML training jobs
+            # (e.g., fasttext on 650k examples takes ~8 min). The previous
+            # 120s value forced Spell agents to kill training mid-run on
+            # the train-fasttext task, cycling through truncated attempts.
+            "sh_timeout": 600,
             "agent_timeout": 3600,
             "trace": trace,
         }
