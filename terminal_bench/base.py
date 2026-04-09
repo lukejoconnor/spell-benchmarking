@@ -89,7 +89,8 @@ class DockerExecAgent(BaseAgent):
         """Install NVM and Node 22 (idempotent). Returns True on success."""
         logger.info("Installing NVM + Node...")
         ok = install_nvm_node_exec(
-            lambda command, **kwargs: self._container_exec(container, command, **kwargs)
+            lambda command, **kwargs: self._container_exec(container, command, **kwargs),
+            env=self._env_vars(),
         )
         if not ok:
             logger.error("NVM/Node install failed")
