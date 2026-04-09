@@ -8,6 +8,7 @@ import types
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 BASE_MODULE_PATH = BENCHMARK_ROOT / "terminal_bench" / "base.py"
@@ -148,6 +149,52 @@ class TerminalBenchBaseTests(unittest.TestCase):
             self.assertEqual(result["reasoning_output_tokens"], 17869)
             self.assertEqual(result["total_output_tokens"], 18992)
             self.assertNotIn("output_tokens", result)
+        finally:
+            _restore_modules(prior)
+
+    def test_perform_task_returns_total_output_tokens(self) -> None:
+        module, prior = _load_base_module()
+        try:
+            class DummyAgent(module.DockerExecAgent):
+                @staticmethod
+                def name() -> str:
+                    return "dummy"
+
+                def _requires_node(self) -> bool:
+                    return False
+
+                def _install_script(self) -> str:
+                    return "true"
+
+                def _run_command(self, instruction: str, workdir: str) -> str:
+                    del instruction, workdir
+                    return "true"
+
+                def _parse_usage(self, stdout: str, *, container=None, workdir: str | None = None):
+                    del stdout, container, workdir
+                    return module.ParsedUsage(
+                        uncached_input_tokens=90,
+                        cached_input_tokens=10,
+                        visible_output_tokens=7,
+                        reasoning_output_tokens=11,
+                    )
+
+                def _env_vars(self) -> dict[str, str]:
+                    return {}
+
+            agent = DummyAgent()
+            session = types.SimpleNamespace(container=types.SimpleNamespace(id="container123"))
+            with patch.object(agent, "_detect_workdir", return_value="/workspace"), patch.object(
+                agent, "_install_agent_cli", return_value=True
+            ), patch.object(
+                agent,
+                "_container_exec",
+                return_value=module.ExecOutput(exit_code=0, stdout="{}", stderr=""),
+            ):
+                result = agent.perform_task("solve it", session)
+
+            self.assertEqual(result.total_input_tokens, 100)
+            self.assertEqual(result.total_output_tokens, 18)
         finally:
             _restore_modules(prior)
 
