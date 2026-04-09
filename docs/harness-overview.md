@@ -77,7 +77,7 @@ Named intervention variants (`SWEBENCH_VARIANTS` dict) configure `trailing` and 
 
 ### Agent resolution
 
-For Spell conditions, `resolve_spell_agent()` (`src/agent_policy.py`) determines which `.agent.edn` file to use based on the benchmark kind, model spec, and CLI overrides (`--agent`, `--agent-msg`, `--agent-tc`). This maps benchmarks to appropriate Spell agent configurations (e.g., tool-call agents for Codex models, message agents for Anthropic prefill).
+For Spell conditions, `resolve_spell_agent()` (`src/agent_policy.py`) determines which `.agent.edn` file to use based on the benchmark kind, model spec, and CLI overrides (`--agent`, `--agent-msg`, `--agent-tc`). This maps benchmarks to appropriate Spell agent configurations (e.g., tool-call agents for Codex and `openai-tc` models, message agents for Anthropic prefill).
 
 ### Evaluation
 

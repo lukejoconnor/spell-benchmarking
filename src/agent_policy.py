@@ -57,7 +57,7 @@ def detect_spell_mode(model_spec: str | None) -> SpellMode:
     if ":" not in spec:
         return "msg"
     prefix, _ = spec.split(":", 1)
-    return "tc" if prefix in {"codex-tc", "anthropic-tc"} else "msg"
+    return "tc" if prefix in {"codex-tc", "anthropic-tc", "openai-tc"} else "msg"
 
 
 def _provider_prefix(model_spec: str | None) -> str | None:
