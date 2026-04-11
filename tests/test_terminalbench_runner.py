@@ -95,7 +95,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
         self.assertIn("-k reasoning_effort=medium", " ".join(claude_cmd))
         self.assertIn("-k reasoning_effort=medium", " ".join(codex_cmd))
 
-    def test_build_terminalbench_command_omits_unsupported_spell_effort(self) -> None:
+    def test_build_terminalbench_command_keeps_supported_anthropic_spell_effort(self) -> None:
         cmd = build_terminalbench_command(
             condition="spell",
             run_id="spell_demo",
@@ -112,7 +112,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             trace=False,
         )
 
-        self.assertNotIn("-k reasoning_effort=medium", " ".join(cmd))
+        self.assertIn("-k reasoning_effort=medium", " ".join(cmd))
 
     def test_terminalbench_run_id_sanitizes_name(self) -> None:
         self.assertEqual(

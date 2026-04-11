@@ -136,18 +136,20 @@ Direct `tb run` still works for one-off debugging when you need raw harness beha
 ```
 
 `reasoning_effort` defaults to `high` when the benchmark runner/provider supports it. Records should only carry a `reasoning_effort` value when the selected path actually forwards it.
+For Anthropic-backed `spell` and `one_shot` runs, `low`/`medium`/`high` map to extended-thinking `budget_tokens` `4000`/`10000`/`24000`. Passing `--thinking` directly still wins.
 
 **`--trailing` quoting — do not backslash-escape the leading quote.** The trailing expression starts with `'` (Clojure's quote reader macro). In shell, pass it inside double quotes with NO backslash: `--trailing "'(patterns/fix-loop prompt)"`. Using `"\'(...)"` produces a Clojure character literal `\'` instead of `(quote ...)`, silently breaking the trailing expression. The model recovers as a plain sequential agent and results look plausible — the only way to detect the bug is checking trace node 0 for the expected init structure.
 
 Condition semantics:
 - `one_shot`: single LLM call (text-only). Use any provider/model via `--model` (including Codex-backed single-call models).
-  - `reasoning_effort` currently applies only to OpenAI/Codex-family providers (`openai`, `openai-tc`, `codex-msg`, `codex-tc`).
+  - `reasoning_effort` applies to OpenAI/Codex-family providers directly and to Anthropic providers (`anthropic-pf`, `anthropic-tc`) by mapping to extended-thinking `budget_tokens`.
 - `codex`: Codex CLI harness (agent loop). Default model is `codex` via `--codex-model codex`.
   - In the harness adapter, `codex` resolves to `gpt-5-codex` for stable Codex CLI compatibility.
 - `claude_code`: Claude Code CLI harness. `--reasoning-effort` maps to the CLI's `--effort` flag.
 - `swe_agent`: mini-swe-agent comparator. It does not currently expose a benchmark-wired reasoning-effort control, so records should leave this field empty.
 - `spell` (including SWE-bench workspaces): adapter injects local `-Sdeps` so `spell.benchmark-api` resolves even when `cwd` is a cloned repo workspace.
-  - `reasoning_effort` currently applies only to OpenAI/Codex-family providers (`openai`, `openai-tc`, `codex-msg`, `codex-tc`), not Anthropic-backed Spell runs.
+  - `reasoning_effort` applies to OpenAI/Codex-family providers directly and to Anthropic providers via extended thinking (`low`/`medium`/`high` -> `budget_tokens` `4000`/`10000`/`24000`).
+  - On `anthropic-tc`, enabling reasoning effort also flips `tool_choice` from `any` to `auto`, because Anthropic thinking mode forbids forced tool use. That can affect missing-tool-call retry behavior when comparing pre/post change runs.
 
 Spell `--model` specs (provider prefix + model name from `.provider.edn`):
 

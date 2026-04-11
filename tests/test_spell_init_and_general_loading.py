@@ -108,7 +108,7 @@ class GeneralLoadingRegressionTest(unittest.TestCase):
 
         self.assertEqual(record.reasoning_effort, "high")
 
-    def test_mk_record_drops_unsupported_reasoning_effort(self):
+    def test_mk_record_preserves_anthropic_reasoning_effort(self):
         record = bench._mk_record(
             run_id="run-1",
             benchmark="general",
@@ -133,7 +133,7 @@ class GeneralLoadingRegressionTest(unittest.TestCase):
             reasoning_effort="high",
         )
 
-        self.assertIsNone(record.reasoning_effort)
+        self.assertEqual(record.reasoning_effort, "high")
 
     def test_mk_record_includes_git_versions_metadata(self):
         with patch.object(
