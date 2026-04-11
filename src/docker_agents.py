@@ -1138,6 +1138,9 @@ def spell_run_command(
     trace_dir: str | None = None,
     init: str | None = None,
 ) -> str:
+    from .reasoning_effort import anthropic_thinking_budget, is_anthropic_provider
+
+    thinking = anthropic_thinking_budget(reasoning_effort) if is_anthropic_provider(model_name) else None
     payload: dict[str, Any] = {
         "mode": "spell",
         "model": model_name,
@@ -1146,6 +1149,7 @@ def spell_run_command(
         "depth": depth,
         "max_tokens": max_tokens,
         "reasoning_effort": reasoning_effort,
+        "thinking": thinking,
         "trace": trace,
         "trace_dir": trace_dir,
     }
