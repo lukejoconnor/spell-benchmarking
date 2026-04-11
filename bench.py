@@ -1291,7 +1291,7 @@ def run_general(
 @click.option("--depth", type=int, default=50, show_default=True)
 @click.option("--max-tokens", type=int, default=None)
 @click.option("--timeout", type=int, default=None, help="Per-item timeout seconds (default: from _DATASET_TIMEOUTS)")
-@click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
+@click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default=None, help="Reasoning effort (default: provider default, i.e. no --effort flag for CC)")
 @click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
 @click.option("--trace/--no-trace", default=True, show_default=True, help="Record execution traces")
 @click.option("--clean-eval/--no-clean-eval", default=False, show_default=True, help="Re-run patches in a fresh official eval container after generation")
