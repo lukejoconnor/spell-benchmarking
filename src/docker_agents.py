@@ -674,10 +674,10 @@ def codex_install_script(*, version: str | None = None) -> str:
 {_codex_runtime_shell_setup()}
 [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
 npm install -g @openai/codex@{resolved_version}
-if [ -n "${{CODEX_AUTH_JSON_B64:-}}" ]; then
-  printf '%s' "$CODEX_AUTH_JSON_B64" | base64 -d > "$CODEX_HOME/auth.json"
-elif [ -n "${{OPENAI_API_KEY:-}}" ]; then
+if [ -n "${{OPENAI_API_KEY:-}}" ]; then
   echo '{{"OPENAI_API_KEY": "'$OPENAI_API_KEY'"}}' > "$CODEX_HOME/auth.json"
+elif [ -n "${{CODEX_AUTH_JSON_B64:-}}" ]; then
+  printf '%s' "$CODEX_AUTH_JSON_B64" | base64 -d > "$CODEX_HOME/auth.json"
 fi
 echo "codex installed: $(codex --version 2>/dev/null || echo unknown)"
 """
