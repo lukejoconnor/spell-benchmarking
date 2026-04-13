@@ -73,7 +73,7 @@ LITELLM_TO_SPELL_MODEL = {
 NVM_NODE_INSTALL = r"""
 set -e
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
-mkdir -p "$(dirname "$NVM_DIR")"
+mkdir -p "$NVM_DIR"
 if [ -d "$NVM_DIR" ]; then
     source "$NVM_DIR/nvm.sh" 2>/dev/null || true
     if command -v node >/dev/null 2>&1; then
