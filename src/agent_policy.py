@@ -75,7 +75,7 @@ def classify_provider_family(model_spec: str | None, spell_mode: SpellMode) -> P
 
 
 def _is_longcontext_dataset(dataset_name: str) -> bool:
-    return dataset_name.startswith("longbench_") or dataset_name.startswith("babilong_")
+    return dataset_name == "longbench" or dataset_name.startswith("longbench_") or dataset_name.startswith("babilong_")
 
 
 def classify_general_family(item_datasets: set[str]) -> GeneralFamily:

@@ -76,18 +76,18 @@ class BenchmarkItem:
     metadata: dict = None
 
 
-def load_longbench_short(max_chars: int = 100_000) -> list[BenchmarkItem]:
-    """Load LongBench v2 examples with context < max_chars."""
+def load_longbench(max_chars: int | None = None) -> list[BenchmarkItem]:
+    """Load LongBench v2 examples, optionally filtering by max context chars."""
     ds = load_dataset('THUDM/LongBench-v2', split='train')
 
     items = []
     for row in ds:
-        if len(row['context']) >= max_chars:
+        if max_chars is not None and len(row['context']) >= max_chars:
             continue
 
         items.append(BenchmarkItem(
             id=row['_id'],
-            dataset='longbench_short',
+            dataset='longbench',
             context=row['context'],
             question=row['question'],
             answer=row['answer'],
@@ -105,6 +105,14 @@ def load_longbench_short(max_chars: int = 100_000) -> list[BenchmarkItem]:
             }
         ))
 
+    return items
+
+
+def load_longbench_short(max_chars: int = 100_000) -> list[BenchmarkItem]:
+    """Load LongBench v2 examples with context < max_chars."""
+    items = load_longbench(max_chars=max_chars)
+    for item in items:
+        item.dataset = 'longbench_short'
     return items
 
 
@@ -607,7 +615,7 @@ def format_benchmark_prompt(item: BenchmarkItem, context_file: str | None = None
             f'Document size: {doc_len:,} chars',
             '',
         ])
-        if item.dataset in ('longbench_sampled', 'longbench_short'):
+        if item.dataset in ('longbench', 'longbench_sampled', 'longbench_short'):
             parts.extend([LONGBENCH_SEARCH_GUIDANCE, ''])
         parts.extend([
             'Question:',
@@ -822,6 +830,7 @@ EXERCISM_DATASETS = {
 
 # Dataset registry
 DATASETS = {
+    'longbench': load_longbench,
     'longbench_short': load_longbench_short,
     'longbench_sampled': load_longbench_sampled,
     'babilong_32k': lambda: load_babilong('32k'),
