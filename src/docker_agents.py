@@ -565,6 +565,10 @@ def cc_env_vars(
     if api_key:
         env["ANTHROPIC_API_KEY"] = api_key
 
+    cc_oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+    if cc_oauth_token:
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = cc_oauth_token
+
     claude_json_b64 = _load_claude_json_b64()
     if claude_json_b64:
         env["CLAUDE_JSON_B64"] = claude_json_b64
