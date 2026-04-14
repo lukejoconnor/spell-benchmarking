@@ -746,6 +746,7 @@ def format_benchmark_prompt(item: BenchmarkItem, context_file: str | None = None
         parts.append('Solve efficiently. Return just the final integer answer, no explanation.')
     elif item.dataset == 'omni_math':
         parts.append('')
+        parts.append('When possible, use numerical calculation to compute or verify your answer.')
         parts.append('Return the answer with no explanation (e.g., 42 or 3/4 or 2\\sqrt{3}).')
     elif item.dataset == 'aime':
         parts.append('')
