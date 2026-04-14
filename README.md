@@ -240,7 +240,7 @@ Selected via `--split` and `--task-ids`. Tasks are loaded from the FeatureBench 
 `--reasoning-effort` is support-matrix driven rather than purely condition-driven:
 - `codex`: forwarded and recorded.
 - `claude_code`: forwarded via `claude --effort` and recorded.
-- `spell` / `one_shot`: forwarded only for OpenAI/Codex-family providers (`openai`, `openai-tc`, `codex-msg`, `codex-tc`); Anthropic-backed Spell runs leave the field empty.
+- `spell` / `one_shot`: forwarded and recorded for OpenAI/Codex-family providers (`openai`, `openai-tc`, `codex-msg`, `codex-tc`) and Anthropic-backed Spell providers (`anthropic-pf`, `anthropic-tc`).
 - `swe_agent`: not currently benchmark-wired, so records leave the field empty.
 
 ## One-Off Files

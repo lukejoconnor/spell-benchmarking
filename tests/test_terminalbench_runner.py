@@ -43,7 +43,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             budget=7.5,
             cleanup=False,
             reasoning_effort="medium",
-            agent_file="config/agents/io-acm-tc.agent.edn",
+            agent_file="config/agents/io-tc.agent.edn",
             trailing="'(!describe io)",
             trace=False,
         )
@@ -56,7 +56,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
         self.assertIn("--n-tasks 2", rendered)
         self.assertIn("-k budget=7.5", rendered)
         self.assertIn("-k reasoning_effort=medium", rendered)
-        self.assertIn("-k agent_file=config/agents/io-acm-tc.agent.edn", rendered)
+        self.assertIn("-k agent_file=config/agents/io-tc.agent.edn", rendered)
         self.assertIn("-k trailing='(!describe io)", rendered)
         self.assertIn("-k trace=false", rendered)
 
@@ -95,7 +95,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
         self.assertIn("-k reasoning_effort=medium", " ".join(claude_cmd))
         self.assertIn("-k reasoning_effort=medium", " ".join(codex_cmd))
 
-    def test_build_terminalbench_command_omits_unsupported_spell_effort(self) -> None:
+    def test_build_terminalbench_command_includes_supported_anthropic_spell_effort(self) -> None:
         cmd = build_terminalbench_command(
             condition="spell",
             run_id="spell_demo",
@@ -112,16 +112,16 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             trace=False,
         )
 
-        self.assertNotIn("-k reasoning_effort=medium", " ".join(cmd))
+        self.assertIn("-k reasoning_effort=medium", " ".join(cmd))
 
     def test_terminalbench_run_id_sanitizes_name(self) -> None:
         self.assertEqual(
-            terminalbench_condition_run_id("terminalbench_demo", "spell", name="io/acm"),
-            "spell_io_acm_terminalbench_demo",
+            terminalbench_condition_run_id("terminalbench_demo", "spell", name="io/tc"),
+            "spell_io_tc_terminalbench_demo",
         )
         self.assertEqual(
-            terminalbench_run_dir("terminalbench_demo", "spell", name="io/acm"),
-            Path("results") / "terminal-bench" / "spell_io_acm_terminalbench_demo",
+            terminalbench_run_dir("terminalbench_demo", "spell", name="io/tc"),
+            Path("results") / "terminal-bench" / "spell_io_tc_terminalbench_demo",
         )
 
     def test_terminalbench_records_copy_spell_traces_and_cost(self) -> None:
