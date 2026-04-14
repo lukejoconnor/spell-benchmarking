@@ -571,9 +571,14 @@ def load_browsecomp_plus(
     gold and evidence documents are present. Remaining slots are filled with
     uniformly random documents drawn from the 100K-document corpus.
 
-    Truncation: random/negative docs are truncated to `max_doc_chars`. Gold
-    and evidence docs are truncated to `max_preserved_doc_chars` (None = keep
-    intact) so the answer-bearing content is preserved.
+    Truncation: by default `max_preserved_doc_chars=None` keeps gold +
+    evidence docs intact (so the answer-bearing content always survives) and
+    `max_doc_chars=1500` caps the random/negative fill. Removing the
+    negative cap entirely (~32 MB context file) caused the OpenAI Responses
+    API to stall indefinitely on the first call in testing — keeping the
+    snippet-sized cap on negatives both keeps the file tractable and
+    preserves the noise/distractor signal that BrowseComp-Plus is designed
+    to test.
 
     Context lives in `BenchmarkItem.context` as one concatenated string with
     per-doc headers; the bench harness writes it to a per-item file and the
