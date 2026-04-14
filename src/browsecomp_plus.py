@@ -208,8 +208,21 @@ def build_context_string(
     docs: list[Document],
     *,
     max_doc_chars: int | None,
+    preserve_docids: set[str] | None = None,
+    max_preserved_chars: int | None = None,
 ) -> str:
-    blocks = [_format_doc_block(d, max_doc_chars) for d in docs]
+    """Concatenate doc blocks with separators.
+
+    Docs whose docid is in `preserve_docids` are truncated to
+    `max_preserved_chars` (default: full text); all other docs are truncated to
+    `max_doc_chars`. This lets callers keep gold/evidence docs intact while
+    aggressively shrinking the random/negative fill.
+    """
+    preserve = preserve_docids or set()
+    blocks: list[str] = []
+    for doc in docs:
+        cap = max_preserved_chars if doc.docid in preserve else max_doc_chars
+        blocks.append(_format_doc_block(doc, cap))
     return ("\n\n" + ("-" * 60) + "\n\n").join(blocks)
 
 

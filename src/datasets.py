@@ -561,6 +561,7 @@ def load_browsecomp_plus(
     n_samples: int = 150,
     n_docs: int = 1000,
     max_doc_chars: int | None = 1500,
+    max_preserved_doc_chars: int | None = None,
     seed: int = 42,
 ) -> list[BenchmarkItem]:
     """Load BrowseComp-Plus multi-hop QA items (Chen et al. 2025).
@@ -568,9 +569,11 @@ def load_browsecomp_plus(
     Following Sun et al. (2025): sample `n_samples` queries from the 830-query
     test set and assemble `n_docs` documents per query, guaranteeing that all
     gold and evidence documents are present. Remaining slots are filled with
-    uniformly random documents drawn from the 100K-document corpus. Docs are
-    optionally truncated to `max_doc_chars` each so the full 1000-doc pack
-    stays within typical 200K-400K token context windows.
+    uniformly random documents drawn from the 100K-document corpus.
+
+    Truncation: random/negative docs are truncated to `max_doc_chars`. Gold
+    and evidence docs are truncated to `max_preserved_doc_chars` (None = keep
+    intact) so the answer-bearing content is preserved.
 
     Context lives in `BenchmarkItem.context` as one concatenated string with
     per-doc headers; the bench harness writes it to a per-item file and the
@@ -598,7 +601,13 @@ def load_browsecomp_plus(
 
     items: list[BenchmarkItem] = []
     for pack in packs:
-        context = build_context_string(pack.docs, max_doc_chars=max_doc_chars)
+        preserve_ids = set(pack.gold_docids) | set(pack.evidence_docids)
+        context = build_context_string(
+            pack.docs,
+            max_doc_chars=max_doc_chars,
+            preserve_docids=preserve_ids,
+            max_preserved_chars=max_preserved_doc_chars,
+        )
         items.append(BenchmarkItem(
             id=f'browsecomp_plus_{pack.query_id}',
             dataset='browsecomp_plus',
@@ -612,6 +621,7 @@ def load_browsecomp_plus(
                 'gold_docids': pack.gold_docids,
                 'evidence_docids': pack.evidence_docids,
                 'max_doc_chars': max_doc_chars,
+                'max_preserved_doc_chars': max_preserved_doc_chars,
             },
         ))
     return items
