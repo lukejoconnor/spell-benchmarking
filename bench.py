@@ -286,6 +286,8 @@ _DATASET_TIMEOUTS: dict[str, int] = {
     # General benchmarks
     "omni_math":        3600,
     "omni_math_hard":   3600,
+    "browsecomp_plus":  1800,
+    "browsecomp_plus_pilot": 1800,
     "aime_2025":         600,
     "aime_2026":         600,
     "hmmt_feb_2025":     600,
@@ -337,6 +339,13 @@ def _validate_general_configuration(
     *,
     web_search_enabled: bool,
 ) -> None:
+    if "browsecomp_plus" in item_datasets and "one_shot" in conditions:
+        raise click.ClickException(
+            "BrowseComp-Plus does not support `one_shot`: that condition inlines the full "
+            "document pack into the prompt instead of giving the model file access. "
+            "Use `spell`, `claude_code`, or `codex` so the 1000-document context stays in an external file."
+        )
+
     uses_gaia = dataset == GAIA_DATASET_PREFIX or any(
         item_dataset == GAIA_DATASET_PREFIX or item_dataset.startswith(f"{GAIA_DATASET_PREFIX}_")
         for item_dataset in item_datasets
@@ -419,27 +428,27 @@ def _swebench_prompt_workspace(item: SWEBenchItem) -> Path:
     return Path("/testbed")
 
 
-def _evaluate_general(item: BenchmarkItem, response_text: str | None) -> tuple[str | None, bool | None]:
+def _evaluate_general(item: BenchmarkItem, response_text: str | None) -> tuple[str | None, bool | None, str | None]:
     response = (response_text or "").strip()
     if not response:
-        return None, False
+        return None, False, None
 
     if item.choices:
         answer = extract_mcq_answer(response)
-        return answer, (answer == item.answer) if answer else False
+        return answer, (answer == item.answer) if answer else False, None
 
     if item.dataset == "gsm8k":
         answer = extract_numeric_answer(response)
         if answer is None:
-            return None, False
-        return answer, normalize_numeric(answer) == normalize_numeric(item.answer)
+            return None, False, None
+        return answer, normalize_numeric(answer) == normalize_numeric(item.answer), None
 
     if item.dataset == "project_euler":
         expected_raw = (item.answer or "").strip()
         if not expected_raw:
             # Some upstream Project Euler rows currently have missing gold answers.
             # Keep these unscored until the source dataset is fixed.
-            return response, None
+            return response, None, None
 
         def _to_decimal(raw: str) -> Decimal | None:
             cleaned = raw.strip().replace(",", "").replace("$", "")
@@ -457,12 +466,12 @@ def _evaluate_general(item: BenchmarkItem, response_text: str | None) -> tuple[s
             if answer is None:
                 direct_decimal = _to_decimal(response)
                 if direct_decimal is None:
-                    return None, False
-                return response, direct_decimal == expected_decimal
+                    return None, False, None
+                return response, direct_decimal == expected_decimal, None
 
             got_decimal = _to_decimal(answer)
             if got_decimal is None:
-                return answer, False
+                return answer, False, None
 
             if got_decimal == got_decimal.to_integral_value():
                 try:
@@ -471,25 +480,25 @@ def _evaluate_general(item: BenchmarkItem, response_text: str | None) -> tuple[s
                     extracted = answer
             else:
                 extracted = answer
-            return extracted, got_decimal == expected_decimal
+            return extracted, got_decimal == expected_decimal, None
 
         def _normalize_text(raw: str) -> str:
             return "".join(ch.lower() for ch in raw if ch.isalnum())
 
         answer = response.strip()
         if not answer:
-            return None, False
-        return answer, _normalize_text(answer) == _normalize_text(expected_raw)
+            return None, False, None
+        return answer, _normalize_text(answer) == _normalize_text(expected_raw), None
 
     if item.dataset == "mathconstruct":
         answer, is_correct, _details = evaluate_mathconstruct_response(item, response)
-        return answer, bool(is_correct)
+        return answer, bool(is_correct), None
 
     if item.dataset in ("math", "aime", "hmmt", "omni_math"):
         answer = extract_math_answer(response)
         if answer is None:
-            return None, False
-        return answer, math_equivalent(answer, item.answer)
+            return None, False, None
+        return answer, math_equivalent(answer, item.answer), None
 
     if item.dataset == "gaia":
         # GAIA: use official scorer with normalization
@@ -500,10 +509,24 @@ def _evaluate_general(item: BenchmarkItem, response_text: str | None) -> tuple[s
         answer = re.sub(r'\s*\(\[.*?\]\(.*?\)\)', '', answer).strip()
         # Strip trailing markdown links: "[source](url)" at end
         answer = re.sub(r'\s*\[.*?\]\(.*?\)\s*$', '', answer).strip()
-        return answer, gaia_question_scorer(answer, item.answer)
+        return answer, gaia_question_scorer(answer, item.answer), None
+
+    if item.dataset == "browsecomp_plus":
+        from src.browsecomp_plus import extract_exact_answer, judge_response
+        extracted = extract_exact_answer(response)
+        outcome = judge_response(
+            question=item.question,
+            response=response,
+            correct_answer=item.answer,
+            judge_model=os.environ.get("BROWSECOMP_PLUS_JUDGE_MODEL", "gpt-4.1-mini"),
+        )
+        judge_extracted = outcome.extracted or extracted
+        if outcome.correct is None:
+            return judge_extracted, None, outcome.error or "BrowseComp judge returned an unparseable response"
+        return judge_extracted, outcome.correct, None
 
     answer = extract_freeform_answer(response)
-    return answer, answer.strip().lower() == item.answer.strip().lower()
+    return answer, answer.strip().lower() == item.answer.strip().lower(), None
 
 
 def _provider_model_for_condition(condition: str, model_spec: str | None) -> tuple[str | None, str | None]:
@@ -589,6 +612,19 @@ def _rewrap_response(
         error_type=response.error_type,
         metadata=metadata if metadata is not None else response.metadata,
     )
+
+
+def _mark_evaluation_error(
+    response: RunResponse,
+    *,
+    error_type: str,
+    error_message: str,
+    metadata: dict[str, Any] | None = None,
+) -> RunResponse:
+    rewritten = _rewrap_response(response, status="error", metadata=metadata)
+    rewritten.error_type = error_type
+    rewritten.error_message = error_message
+    return rewritten
 
 
 def _require_model(condition: str, model: str | None, flag_name: str = "--model") -> str:
@@ -1235,7 +1271,14 @@ def run_general(
         responses = run_requests_parallel(requests, adapter, max_parallel=parallel, progress_callback=progress)
 
         for item, req, resp in zip(loaded, requests, responses):
-            extracted, correct = _evaluate_general(item, resp.response_text)
+            extracted, correct, eval_error = _evaluate_general(item, resp.response_text)
+            if eval_error:
+                resp = _mark_evaluation_error(
+                    resp,
+                    error_type="judge_error",
+                    error_message=eval_error,
+                    metadata={**resp.metadata, "judge_error": eval_error},
+                )
             record = _mk_record(
                 run_id=run_id,
                 benchmark="general",
