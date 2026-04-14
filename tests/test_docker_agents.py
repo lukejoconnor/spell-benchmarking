@@ -89,6 +89,11 @@ class DockerAgentsTests(unittest.TestCase):
 
         self.assertIn(f'export CODEX_HOME="${{CODEX_HOME:-{CODEX_RUNTIME_CODEX_HOME}}}"', script)
         self.assertIn(f'export NPM_CONFIG_PREFIX="${{NPM_CONFIG_PREFIX:-{CODEX_RUNTIME_NPM_PREFIX}}}"', script)
+        self.assertIn('mkdir -p "$CODEX_HOME" "$NVM_DIR" "$NPM_CONFIG_PREFIX" "$NPM_CONFIG_PREFIX/bin" "$NPM_CONFIG_PREFIX/lib" "$npm_config_cache"', script)
+        self.assertIn('NPM_CONFIG_PREFIX_SAVED="${NPM_CONFIG_PREFIX-}"', script)
+        self.assertIn('unset NPM_CONFIG_PREFIX', script)
+        self.assertIn('source "$NVM_DIR/nvm.sh"', script)
+        self.assertIn('export NPM_CONFIG_PREFIX="$NPM_CONFIG_PREFIX_SAVED"', script)
         self.assertIn("npm install -g @openai/codex@latest", script)
         self.assertNotIn("$HOME/.nvm/nvm.sh", script)
         self.assertIn('> "$CODEX_HOME/auth.json"', script)
@@ -98,7 +103,10 @@ class DockerAgentsTests(unittest.TestCase):
 
         self.assertIn(f'export CODEX_HOME="${{CODEX_HOME:-{CODEX_RUNTIME_CODEX_HOME}}}"', cmd)
         self.assertNotIn('export HOME="${HOME:-', cmd)
+        self.assertIn('NPM_CONFIG_PREFIX_SAVED="${NPM_CONFIG_PREFIX-}"', cmd)
+        self.assertIn('unset NPM_CONFIG_PREFIX', cmd)
         self.assertIn('source "$NVM_DIR/nvm.sh"', cmd)
+        self.assertIn('export NPM_CONFIG_PREFIX="$NPM_CONFIG_PREFIX_SAVED"', cmd)
         self.assertIn("codex -c 'web_search=\"disabled\"' exec", cmd)
 
     def test_read_codex_rollout_prefers_tmp_runtime_sessions(self) -> None:
@@ -133,6 +141,11 @@ class DockerAgentsTests(unittest.TestCase):
         script = NVM_NODE_INSTALL
 
         self.assertIn("export PROFILE=/dev/null", script)
+        self.assertIn('mkdir -p "$NPM_CONFIG_PREFIX" "$NPM_CONFIG_PREFIX/bin" "$NPM_CONFIG_PREFIX/lib"', script)
+        self.assertIn('NPM_CONFIG_PREFIX_SAVED="${NPM_CONFIG_PREFIX-}"', script)
+        self.assertIn('unset NPM_CONFIG_PREFIX', script)
+        self.assertIn('export NPM_CONFIG_PREFIX="$NPM_CONFIG_PREFIX_SAVED"', script)
+        self.assertIn("nvm install 22", script)
         self.assertNotIn("PROFILE=/dev/null curl", script)
 
     def test_spell_env_vars_forwards_fireworks_api_key(self) -> None:

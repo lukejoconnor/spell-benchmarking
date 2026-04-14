@@ -74,8 +74,21 @@ NVM_NODE_INSTALL = r"""
 set -e
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 mkdir -p "$NVM_DIR"
+if [ -n "${NPM_CONFIG_PREFIX:-}" ]; then
+    mkdir -p "$NPM_CONFIG_PREFIX" "$NPM_CONFIG_PREFIX/bin" "$NPM_CONFIG_PREFIX/lib"
+fi
 if [ -d "$NVM_DIR" ]; then
+    NPM_CONFIG_PREFIX_SAVED="${NPM_CONFIG_PREFIX-}"
+    if [ "${NPM_CONFIG_PREFIX+x}" = "x" ]; then
+        unset NPM_CONFIG_PREFIX
+        NPM_CONFIG_PREFIX_WAS_SET=1
+    else
+        NPM_CONFIG_PREFIX_WAS_SET=0
+    fi
     source "$NVM_DIR/nvm.sh" 2>/dev/null || true
+    if [ "$NPM_CONFIG_PREFIX_WAS_SET" = "1" ]; then
+        export NPM_CONFIG_PREFIX="$NPM_CONFIG_PREFIX_SAVED"
+    fi
     if command -v node >/dev/null 2>&1; then
         echo "node already installed: $(node --version)"
         exit 0
@@ -84,8 +97,18 @@ fi
 apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq curl >/dev/null 2>&1
 export PROFILE=/dev/null
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash
+NPM_CONFIG_PREFIX_SAVED="${NPM_CONFIG_PREFIX-}"
+if [ "${NPM_CONFIG_PREFIX+x}" = "x" ]; then
+    unset NPM_CONFIG_PREFIX
+    NPM_CONFIG_PREFIX_WAS_SET=1
+else
+    NPM_CONFIG_PREFIX_WAS_SET=0
+fi
 source "$NVM_DIR/nvm.sh"
 nvm install 22
+if [ "$NPM_CONFIG_PREFIX_WAS_SET" = "1" ]; then
+    export NPM_CONFIG_PREFIX="$NPM_CONFIG_PREFIX_SAVED"
+fi
 echo "node installed: $(node --version)"
 """
 
@@ -663,8 +686,24 @@ export NVM_DIR="${{NVM_DIR:-{CODEX_RUNTIME_NVM_DIR}}}"
 export NPM_CONFIG_PREFIX="${{NPM_CONFIG_PREFIX:-{CODEX_RUNTIME_NPM_PREFIX}}}"
 export NPM_CONFIG_CACHE="${{NPM_CONFIG_CACHE:-{CODEX_RUNTIME_NPM_CACHE}}}"
 export npm_config_cache="${{npm_config_cache:-$NPM_CONFIG_CACHE}}"
-mkdir -p "$CODEX_HOME" "$NVM_DIR" "$NPM_CONFIG_PREFIX" "$npm_config_cache"
+mkdir -p "$CODEX_HOME" "$NVM_DIR" "$NPM_CONFIG_PREFIX" "$NPM_CONFIG_PREFIX/bin" "$NPM_CONFIG_PREFIX/lib" "$npm_config_cache"
 export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
+""".strip()
+
+
+def _codex_nvm_source_shell() -> str:
+    return """
+NPM_CONFIG_PREFIX_SAVED="${NPM_CONFIG_PREFIX-}"
+if [ "${NPM_CONFIG_PREFIX+x}" = "x" ]; then
+  unset NPM_CONFIG_PREFIX
+  NPM_CONFIG_PREFIX_WAS_SET=1
+else
+  NPM_CONFIG_PREFIX_WAS_SET=0
+fi
+source "$NVM_DIR/nvm.sh"
+if [ "$NPM_CONFIG_PREFIX_WAS_SET" = "1" ]; then
+  export NPM_CONFIG_PREFIX="$NPM_CONFIG_PREFIX_SAVED"
+fi
 """.strip()
 
 
@@ -672,7 +711,9 @@ def codex_install_script(*, version: str | None = None) -> str:
     resolved_version = version or "latest"
     return f"""
 {_codex_runtime_shell_setup()}
-[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+if [ -s "$NVM_DIR/nvm.sh" ]; then
+{_codex_nvm_source_shell()}
+fi
 npm install -g @openai/codex@{resolved_version}
 if [ -n "${{CODEX_AUTH_JSON_B64:-}}" ]; then
   printf '%s' "$CODEX_AUTH_JSON_B64" | base64 -d > "$CODEX_HOME/auth.json"
@@ -706,7 +747,12 @@ def codex_run_command(
     web_search: bool = False,
     reasoning_effort: str | None = None,
 ) -> str:
-    parts = [_codex_runtime_shell_setup(), "&&", '[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"', "&&"]
+    parts = [
+        _codex_runtime_shell_setup(),
+        "&&",
+        f'if [ -s "$NVM_DIR/nvm.sh" ]; then\n{_codex_nvm_source_shell()}\nfi',
+        "&&",
+    ]
     if workdir:
         parts.extend(["cd", shlex.quote(workdir), "&&"])
     parts.append("codex")
