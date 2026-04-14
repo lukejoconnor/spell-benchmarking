@@ -39,6 +39,7 @@ def _import_bench_with_stubbed_client():
 
 
 bench = _import_bench_with_stubbed_client()
+from src.browsecomp_plus import JudgeOutcome
 from src.datasets import BenchmarkItem
 from src.provenance import benchmark_git_versions
 from src.unified_adapters import RunResponse, build_spell_init
@@ -81,6 +82,80 @@ class SpellInitRegressionTest(unittest.TestCase):
 
 
 class GeneralLoadingRegressionTest(unittest.TestCase):
+    def test_validate_general_configuration_rejects_browsecomp_one_shot(self):
+        with self.assertRaisesRegex(
+            bench.click.ClickException,
+            "BrowseComp-Plus does not support `one_shot`",
+        ):
+            bench._validate_general_configuration(
+                dataset="browsecomp_plus_pilot",
+                conditions=["one_shot"],
+                item_datasets={"browsecomp_plus"},
+                web_search_enabled=False,
+            )
+
+    def test_evaluate_general_returns_browsecomp_judge_error(self):
+        item = BenchmarkItem(
+            id="browsecomp_plus_1",
+            dataset="browsecomp_plus",
+            context="",
+            question="Where is Peaceful Valley?",
+            answer="Peaceful Valley",
+        )
+
+        with patch(
+            "src.browsecomp_plus.judge_response",
+            return_value=JudgeOutcome(
+                correct=None,
+                extracted="Peaceful Valley",
+                raw="",
+                error="OpenAI 429",
+            ),
+        ):
+            extracted, correct, eval_error = bench._evaluate_general(
+                item,
+                "Exact Answer: Peaceful Valley",
+            )
+
+        self.assertEqual(extracted, "Peaceful Valley")
+        self.assertIsNone(correct)
+        self.assertEqual(eval_error, "OpenAI 429")
+
+    def test_mark_evaluation_error_surfaces_in_record(self):
+        response = bench._mark_evaluation_error(
+            RunResponse(
+                status="ok",
+                response_text="Exact Answer: Peaceful Valley",
+                cost_usd=0.12,
+                latency_ms=50.0,
+                metadata={"trace_dir": "/tmp/trace"},
+            ),
+            error_type="judge_error",
+            error_message="OpenAI 429",
+            metadata={"trace_dir": "/tmp/trace", "judge_error": "OpenAI 429"},
+        )
+
+        record = bench._mk_record(
+            run_id="run-1",
+            benchmark="general",
+            dataset="browsecomp_plus",
+            split=None,
+            item_id="browsecomp_plus_1",
+            condition="spell",
+            model_spec="openai-tc:gpt-5.4",
+            agent_file=None,
+            response=response,
+            response_text=response.response_text,
+            patch=None,
+            answer_extracted="Peaceful Valley",
+            correct=None,
+        )
+
+        self.assertEqual(record.status, "error")
+        self.assertEqual(record.error_type, "judge_error")
+        self.assertEqual(record.error_message, "OpenAI 429")
+        self.assertEqual(record.metadata["judge_error"], "OpenAI 429")
+
     def test_mk_record_preserves_reasoning_effort(self):
         record = bench._mk_record(
             run_id="run-1",
