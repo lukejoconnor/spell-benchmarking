@@ -70,12 +70,33 @@ LITELLM_TO_SPELL_MODEL = {
     "anthropic/claude-opus-4-20250514": "anthropic-tc:opus",
 }
 
+
+def _nvm_source_with_tmp_npm_prefix() -> str:
+    return r"""
+if [ "${NPM_CONFIG_PREFIX+x}" = x ]; then
+    NPM_CONFIG_PREFIX_SAVED="$NPM_CONFIG_PREFIX"
+    NPM_CONFIG_PREFIX_WAS_SET=1
+else
+    NPM_CONFIG_PREFIX_SAVED=
+    NPM_CONFIG_PREFIX_WAS_SET=
+fi
+unset NPM_CONFIG_PREFIX
+if [ -s "$NVM_DIR/nvm.sh" ]; then
+    source "$NVM_DIR/nvm.sh"
+fi
+if [ -n "${NPM_CONFIG_PREFIX_WAS_SET:-}" ]; then
+    export NPM_CONFIG_PREFIX="$NPM_CONFIG_PREFIX_SAVED"
+fi
+unset NPM_CONFIG_PREFIX_SAVED NPM_CONFIG_PREFIX_WAS_SET
+""".strip()
+
+
 NVM_NODE_INSTALL = r"""
 set -e
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 mkdir -p "$NVM_DIR"
 if [ -d "$NVM_DIR" ]; then
-    source "$NVM_DIR/nvm.sh" 2>/dev/null || true
+    %s 2>/dev/null || true
     if command -v node >/dev/null 2>&1; then
         echo "node already installed: $(node --version)"
         exit 0
@@ -84,10 +105,10 @@ fi
 apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq curl >/dev/null 2>&1
 export PROFILE=/dev/null
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash
-source "$NVM_DIR/nvm.sh"
+%s
 nvm install 22
 echo "node installed: $(node --version)"
-"""
+""" % (_nvm_source_with_tmp_npm_prefix(), _nvm_source_with_tmp_npm_prefix())
 
 SPELL_RUNTIME_INSTALL = r"""
 set -euo pipefail
@@ -676,7 +697,7 @@ def codex_install_script(*, version: str | None = None) -> str:
     resolved_version = version or "latest"
     return f"""
 {_codex_runtime_shell_setup()}
-[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+{_nvm_source_with_tmp_npm_prefix()}
 npm install -g @openai/codex@{resolved_version}
 if [ -n "${{CODEX_AUTH_JSON_B64:-}}" ]; then
   printf '%s' "$CODEX_AUTH_JSON_B64" | base64 -d > "$CODEX_HOME/auth.json"
@@ -710,7 +731,7 @@ def codex_run_command(
     web_search: bool = False,
     reasoning_effort: str | None = None,
 ) -> str:
-    parts = [_codex_runtime_shell_setup(), "&&", '[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"', "&&"]
+    parts = [_codex_runtime_shell_setup(), "&&", _nvm_source_with_tmp_npm_prefix(), "&&"]
     if workdir:
         parts.extend(["cd", shlex.quote(workdir), "&&"])
     parts.append("codex")
@@ -951,7 +972,7 @@ def swe_agent_parse_usage(stdout: str, container: DockerWorkspaceContainer) -> U
 def resolve_spell_model(model_name: str | None) -> str:
     if model_name is None:
         return "anthropic-tc:opus46"
-    if any(model_name.startswith(prefix + ":") for prefix in ("anthropic-tc", "anthropic-pf", "fireworks", "openai-tc", "openai", "codex-msg", "codex-tc")):
+    if any(model_name.startswith(prefix + ":") for prefix in ("anthropic-tc", "anthropic-pf", "fireworks", "openai-tc", "codex-tc")):
         return model_name
     if model_name in LITELLM_TO_SPELL_MODEL:
         return LITELLM_TO_SPELL_MODEL[model_name]
@@ -1094,7 +1115,7 @@ def spell_env_vars(
         if value:
             env[key] = value
 
-    if model_name.startswith(("codex-msg:", "codex-tc:")):
+    if model_name.startswith("codex-tc:"):
         auth_b64 = _load_codex_auth_b64()
         if auth_b64:
             env["CODEX_AUTH_JSON_B64"] = auth_b64

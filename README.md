@@ -240,7 +240,7 @@ Selected via `--split` and `--task-ids`. Tasks are loaded from the FeatureBench 
 `--reasoning-effort` is support-matrix driven rather than purely condition-driven:
 - `codex`: forwarded and recorded.
 - `claude_code`: forwarded via `claude --effort` and recorded.
-- `spell` / `one_shot`: forwarded and recorded for OpenAI/Codex-family providers (`openai`, `openai-tc`, `codex-msg`, `codex-tc`) and Anthropic-backed Spell providers (`anthropic-pf`, `anthropic-tc`).
+- `spell` / `one_shot`: forwarded and recorded for `openai-tc`, `codex-tc`, `anthropic-pf`, and `anthropic-tc`.
 - `swe_agent`: not currently benchmark-wired, so records leave the field empty.
 
 ## One-Off Files
@@ -260,10 +260,8 @@ The `--model` flag uses a `provider:model` format that determines both the trans
 |--------|-----------|-------|---------|
 | `anthropic-pf` | Anthropic prefill | `io-pf.agent.edn` | `anthropic-pf:claude-opus-4-5-20251101` |
 | `anthropic-tc` | Anthropic tool-call | `io-tc.agent.edn` | `anthropic-tc:claude-opus-4-5-20251101` |
-| `codex-msg` | Codex messages | `io-msg.agent.edn` | `codex-msg:gpt-5.3-codex` |
 | `codex-tc` | Codex tool-call | `io-tc.agent.edn` | `codex-tc:gpt-5.3-codex` |
 | `openai-tc` | OpenAI tool-call | `io-tc.agent.edn` | `openai-tc:gpt-5.4` |
-| `openai` | OpenAI Chat | `io-msg.agent.edn` | `openai:o3` |
 
 ### Model Aliases
 
@@ -309,7 +307,6 @@ The agent is selected automatically based on the provider prefix:
 | Provider prefix | Provider family | Default agent |
 |----------------|----------------|---------------|
 | `anthropic-pf` | prefill | `config/agents/io-pf.agent.edn` |
-| `codex-msg`, `openai` | message | `config/agents/io-msg.agent.edn` |
 | `anthropic-tc`, `codex-tc`, `openai-tc` | toolcall | `config/agents/io-tc.agent.edn` |
 
 Each agent inherits from a base agent (e.g., `base-tc.agent.edn`) and adds the `io` namespace for file access. The agent determines the system prompt and available namespaces but not the model — the model comes from the `--model` flag.

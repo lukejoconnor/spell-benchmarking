@@ -115,7 +115,7 @@ class WebSearchCliRegressionTest(unittest.TestCase):
              patch.object(self.bench, "_build_adapter", return_value=object()), \
              patch.object(self.bench, "_print_summary"), \
              patch.object(self.bench, "append_jsonl"), \
-             patch.object(self.bench, "_evaluate_general", return_value=("A", True)), \
+             patch.object(self.bench, "_evaluate_general", return_value=("A", True, None)), \
              patch.object(self.bench, "run_requests_parallel", side_effect=fake_run_requests_parallel):
             result = self.runner.invoke(
                 self.bench.cli,
@@ -160,7 +160,7 @@ class WebSearchCliRegressionTest(unittest.TestCase):
              patch.object(self.bench, "_build_adapter", return_value=object()), \
              patch.object(self.bench, "_print_summary"), \
              patch.object(self.bench, "append_jsonl"), \
-             patch.object(self.bench, "_evaluate_general", return_value=("A", True)), \
+             patch.object(self.bench, "_evaluate_general", return_value=("A", True, None)), \
              patch.object(self.bench, "run_requests_parallel", side_effect=fake_run_requests_parallel):
             result = self.runner.invoke(
                 self.bench.cli,
@@ -213,7 +213,7 @@ class WebSearchCliRegressionTest(unittest.TestCase):
              patch.object(self.bench, "_build_adapter", return_value=object()), \
              patch.object(self.bench, "_print_summary"), \
              patch.object(self.bench, "append_jsonl"), \
-             patch.object(self.bench, "_evaluate_general", return_value=("A", True)), \
+             patch.object(self.bench, "_evaluate_general", return_value=("A", True, None)), \
              patch.object(self.bench, "run_requests_parallel", side_effect=fake_run_requests_parallel):
             result = self.runner.invoke(
                 self.bench.cli,
@@ -608,7 +608,7 @@ class WebSearchCliRegressionTest(unittest.TestCase):
                     "--condition",
                     "one_shot",
                     "--model",
-                    "openai:gpt-5.4",
+                    "openai-tc:gpt-5.4",
                     "--difficulty",
                     "1",
                     "--output",

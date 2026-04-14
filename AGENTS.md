@@ -145,13 +145,13 @@ Direct `tb run` still works for one-off debugging when you need raw harness beha
 
 Condition semantics:
 - `one_shot`: single LLM call (text-only). Use any provider/model via `--model` (including Codex-backed single-call models).
-  - `reasoning_effort` currently applies to OpenAI/Codex-family providers (`openai`, `openai-tc`, `codex-msg`, `codex-tc`) and Anthropic-backed Spell providers (`anthropic-pf`, `anthropic-tc`).
+  - `reasoning_effort` currently applies to `openai-tc`, `codex-tc`, `anthropic-pf`, and `anthropic-tc`.
 - `codex`: Codex CLI harness (agent loop). Default model is `codex` via `--codex-model codex`.
   - In the harness adapter, `codex` resolves to `gpt-5-codex` for stable Codex CLI compatibility.
 - `claude_code`: Claude Code CLI harness. `--reasoning-effort` maps to the CLI's `--effort` flag.
 - `swe_agent`: mini-swe-agent comparator. It does not currently expose a benchmark-wired reasoning-effort control, so records should leave this field empty.
 - `spell` (including SWE-bench workspaces): adapter injects local `-Sdeps` so `spell.benchmark-api` resolves even when `cwd` is a cloned repo workspace.
-  - `reasoning_effort` currently applies to OpenAI/Codex-family providers (`openai`, `openai-tc`, `codex-msg`, `codex-tc`) and Anthropic-backed Spell providers (`anthropic-pf`, `anthropic-tc`).
+  - `reasoning_effort` currently applies to `openai-tc`, `codex-tc`, `anthropic-pf`, and `anthropic-tc`.
 
 Spell `--model` specs (provider prefix + model name from `.provider.edn`):
 
@@ -160,7 +160,6 @@ Spell `--model` specs (provider prefix + model name from `.provider.edn`):
 | Anthropic (toolcall) | `anthropic-tc:claude-opus-4-6` | `claude-opus-4-6` |
 | Anthropic (prefill) | `anthropic-pf:claude-opus-4-6` | `claude-opus-4-6` |
 | Codex (toolcall) | `codex-tc:gpt-5.3-codex` | `gpt-5.3-codex` |
-| Codex (message) | `codex-msg:gpt-5.3-codex` | `gpt-5.3-codex` |
 
 Model names must match the provider's API exactly. The provider `.edn` files in `config/providers/` define defaults.
 
