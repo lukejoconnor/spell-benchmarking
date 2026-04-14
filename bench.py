@@ -286,6 +286,8 @@ _DATASET_TIMEOUTS: dict[str, int] = {
     # General benchmarks
     "omni_math":        3600,
     "omni_math_hard":   3600,
+    "browsecomp_plus":  1800,
+    "browsecomp_plus_pilot": 1800,
     "aime_2025":         600,
     "aime_2026":         600,
     "hmmt_feb_2025":     600,
@@ -501,6 +503,20 @@ def _evaluate_general(item: BenchmarkItem, response_text: str | None) -> tuple[s
         # Strip trailing markdown links: "[source](url)" at end
         answer = re.sub(r'\s*\[.*?\]\(.*?\)\s*$', '', answer).strip()
         return answer, gaia_question_scorer(answer, item.answer)
+
+    if item.dataset == "browsecomp_plus":
+        from src.browsecomp_plus import extract_exact_answer, judge_response
+        extracted = extract_exact_answer(response)
+        outcome = judge_response(
+            question=item.question,
+            response=response,
+            correct_answer=item.answer,
+            judge_model=os.environ.get("BROWSECOMP_PLUS_JUDGE_MODEL", "gpt-4.1-mini"),
+        )
+        judge_extracted = outcome.extracted or extracted
+        if outcome.correct is None:
+            return judge_extracted, None
+        return judge_extracted, outcome.correct
 
     answer = extract_freeform_answer(response)
     return answer, answer.strip().lower() == item.answer.strip().lower()

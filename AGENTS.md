@@ -45,6 +45,10 @@ Maintain a neutral, skeptical stance. Present unfavorable and inconclusive resul
 |-----------|-------|---------------|-------------|
 | LongBench v2 | 48-91 | Long-context MCQ (8k-128k tokens) | `uv run python benchmarking/bench.py general --dataset longbench_short --condition spell` |
 | BABILong QA2 | 100 | Multi-hop QA over 32k context | `uv run python benchmarking/bench.py general --dataset babilong_32k_qa2 --condition spell` |
+| BrowseComp-Plus | 150 | Multi-hop deep-research QA over 1000-doc pack (gold + evidence + random); RLMs protocol (Sun et al. 2025) | `uv run python benchmarking/bench.py general --dataset browsecomp_plus --condition spell` |
+| BrowseComp-Plus pilot | 5 | Smoke-test variant of BrowseComp-Plus | `uv run python benchmarking/bench.py general --dataset browsecomp_plus_pilot --condition spell` |
+
+**BrowseComp-Plus notes:** docs are XOR/canary-decrypted on first load and cached to `data/browsecomp_plus/queries_decrypted.jsonl` (~2.1 GB; first run ~5 min, subsequent ~15 s). Each query gets 1000 docs (all gold + evidence + random fill from the 100K corpus) written to a single `data/contexts/<id>.txt` file; per-doc text is truncated to 1500 chars by default. Scoring uses LLM-as-judge with `gpt-4.1-mini` and the upstream GRADER_TEMPLATE; override the judge model with `BROWSECOMP_PLUS_JUDGE_MODEL`. The original benchmark uses Qwen3-32B (~1pp delta vs GPT-4.1 per upstream docs).
 
 ### Coding (Python harness)
 
