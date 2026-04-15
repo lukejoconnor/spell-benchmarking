@@ -669,8 +669,11 @@ def load_babilong(context_size: str = '32k', tasks: list[str] = None) -> list[Be
 
 
 LONGBENCH_SEARCH_GUIDANCE = (
-    "The document may be very large. Do not read the entire file at once. "
-    "Search for relevant keywords first, then inspect only the specific sections you need."
+    "The document may be very large — some documents exceed 1M tokens, "
+    "which will overflow your context window if read in full. "
+    "Do NOT read the entire file at once (no `cat`, no unbounded Read). "
+    "Use grep to locate relevant lines first, then read narrow line ranges only. "
+    "Plan searches from the question's distinctive keywords and iterate."
 )
 
 
