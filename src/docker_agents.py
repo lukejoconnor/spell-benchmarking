@@ -104,7 +104,7 @@ def _install_curl_shell() -> str:
     return r"""
 if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
-    apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq curl >/dev/null 2>&1
+    apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq curl >/dev/null
 elif command -v apk >/dev/null 2>&1; then
     apk add --no-cache curl >/dev/null 2>&1
 elif command -v dnf >/dev/null 2>&1; then
@@ -122,7 +122,7 @@ def _install_nodejs_shell(*, log_version: bool = False) -> str:
     script = r"""
 if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
-    apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq nodejs npm >/dev/null 2>&1
+    apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq nodejs npm >/dev/null
 elif command -v apk >/dev/null 2>&1; then
     apk add --no-cache nodejs npm >/dev/null 2>&1
 elif command -v dnf >/dev/null 2>&1; then

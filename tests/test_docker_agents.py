@@ -182,6 +182,14 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertIn("command -v dnf", script)
         self.assertIn("command -v yum", script)
         self.assertIn("node installed via package manager", script)
+        self.assertNotIn(
+            "apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq nodejs npm >/dev/null 2>&1",
+            script,
+        )
+        self.assertIn(
+            "apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq nodejs npm >/dev/null",
+            script,
+        )
 
     def test_retryable_apt_fetch_failure_matches_transient_mirror_errors(self) -> None:
         self.assertTrue(
@@ -270,6 +278,16 @@ class DockerAgentsTests(unittest.TestCase):
         for _cmd, kwargs in exec_fn.calls:
             self.assertEqual(kwargs, {"timeout": 300, "env": env, "workdir": None})
         self.assertEqual(sleep.call_count, 2)
+
+    def test_nvm_install_preserves_apt_stderr_for_retry_detection(self) -> None:
+        self.assertNotIn(
+            "apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq curl >/dev/null 2>&1",
+            NVM_NODE_INSTALL,
+        )
+        self.assertIn(
+            "apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq curl >/dev/null",
+            NVM_NODE_INSTALL,
+        )
 
     def test_install_nvm_node_exec_falls_back_after_non_retryable_failure(self) -> None:
         env = {"NVM_DIR": "/tmp/nvm"}
