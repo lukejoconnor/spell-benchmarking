@@ -51,6 +51,15 @@ CODEX_RUNTIME_CODEX_HOME = f"{CODEX_RUNTIME_ROOT}/home"
 CODEX_RUNTIME_NVM_DIR = f"{CODEX_RUNTIME_ROOT}/nvm"
 CODEX_RUNTIME_NPM_PREFIX = f"{CODEX_RUNTIME_ROOT}/npm-global"
 CODEX_RUNTIME_NPM_CACHE = f"{CODEX_RUNTIME_ROOT}/npm-cache"
+APT_FETCH_RETRY_MAX_ATTEMPTS = 3
+APT_FETCH_RETRY_SLEEP_SECONDS = 5
+RETRYABLE_APT_FETCH_MARKERS = (
+    "connection timed out",
+    "temporary failure resolving",
+    "could not connect",
+    "connection failed",
+    "network is unreachable",
+)
 
 CC_ALLOWED_TOOLS = [
     "Bash", "Edit", "Write", "Read", "Glob", "Grep",
@@ -91,6 +100,45 @@ unset NPM_CONFIG_PREFIX_SAVED NPM_CONFIG_PREFIX_WAS_SET
 """.strip()
 
 
+def _install_curl_shell() -> str:
+    return r"""
+if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq curl >/dev/null 2>&1
+elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache curl >/dev/null 2>&1
+elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q curl >/dev/null 2>&1
+elif command -v yum >/dev/null 2>&1; then
+    yum install -y -q curl >/dev/null 2>&1
+else
+    echo "Unable to install curl: unsupported package manager" >&2
+    exit 1
+fi
+""".strip()
+
+
+def _install_nodejs_shell(*, log_version: bool = False) -> str:
+    script = r"""
+if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq nodejs npm >/dev/null 2>&1
+elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache nodejs npm >/dev/null 2>&1
+elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q nodejs npm >/dev/null 2>&1
+elif command -v yum >/dev/null 2>&1; then
+    yum install -y -q nodejs npm >/dev/null 2>&1
+else
+    echo "Unable to install Node.js runtime: unsupported package manager" >&2
+    exit 1
+fi
+""".strip()
+    if log_version:
+        script += '\necho "node installed via package manager: $(node --version 2>/dev/null || echo missing)"'
+    return script
+
+
 NVM_NODE_INSTALL = r"""
 set -e
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
@@ -102,13 +150,17 @@ if [ -d "$NVM_DIR" ]; then
         exit 0
     fi
 fi
-apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq curl >/dev/null 2>&1
+%s
 export PROFILE=/dev/null
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash
 %s
 nvm install 22
 echo "node installed: $(node --version)"
-""" % (_nvm_source_with_tmp_npm_prefix(), _nvm_source_with_tmp_npm_prefix())
+""" % (
+    _nvm_source_with_tmp_npm_prefix(),
+    _install_curl_shell(),
+    _nvm_source_with_tmp_npm_prefix(),
+)
 
 SPELL_RUNTIME_INSTALL = r"""
 set -euo pipefail
@@ -447,23 +499,7 @@ def install_nvm_node(
     *,
     env: dict[str, str] | None = None,
 ) -> bool:
-    max_attempts = 2
-    for attempt in range(1, max_attempts + 1):
-        result = container.exec_run(NVM_NODE_INSTALL, timeout=300, env=env)
-        if result.exit_code == 0:
-            return True
-        logger.error("NVM/Node install failed (attempt %s): %s", attempt, result.stderr[:500])
-        if attempt < max_attempts:
-            time.sleep(2)
-
-    fallback = container.exec_run(
-        "apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq nodejs npm >/dev/null 2>&1 && "
-        'echo "node installed via apt: $(node --version 2>/dev/null || echo missing)"',
-        timeout=300,
-        env=env,
-        workdir="/",
-    )
-    return fallback.exit_code == 0
+    return install_nvm_node_exec(container.exec_run, env=env)
 
 
 def container_exec(
@@ -500,21 +536,75 @@ def container_exec(
     )
 
 
+def _exec_output_excerpt(result: ExecOutput, *, limit: int = 500) -> str:
+    message = result.stderr.strip() or result.stdout.strip()
+    if not message:
+        message = f"exit_code={result.exit_code}"
+    return message[:limit]
+
+
+def _is_retryable_apt_fetch_failure(stdout: str, stderr: str) -> bool:
+    output = "\n".join(part for part in (stdout, stderr) if part).lower()
+    return "failed to fetch" in output and any(marker in output for marker in RETRYABLE_APT_FETCH_MARKERS)
+
+
+def _run_install_with_apt_retry(
+    exec_fn: Callable[..., ExecOutput],
+    script: str,
+    *,
+    timeout: int,
+    env: dict[str, str] | None = None,
+    workdir: str | None = None,
+    label: str,
+) -> ExecOutput:
+    last_result = ExecOutput(exit_code=1, stdout="", stderr="install did not run")
+    for attempt in range(1, APT_FETCH_RETRY_MAX_ATTEMPTS + 1):
+        last_result = exec_fn(script, timeout=timeout, env=env, workdir=workdir)
+        if last_result.exit_code == 0:
+            return last_result
+        if (
+            attempt >= APT_FETCH_RETRY_MAX_ATTEMPTS
+            or not _is_retryable_apt_fetch_failure(last_result.stdout, last_result.stderr)
+        ):
+            return last_result
+        logger.warning(
+            "%s hit transient apt fetch failure (attempt %s/%s): %s",
+            label,
+            attempt,
+            APT_FETCH_RETRY_MAX_ATTEMPTS,
+            _exec_output_excerpt(last_result),
+        )
+        time.sleep(APT_FETCH_RETRY_SLEEP_SECONDS)
+    return last_result
+
+
 def install_nvm_node_exec(
     exec_fn: Callable[..., ExecOutput],
     *,
     env: dict[str, str] | None = None,
 ) -> bool:
-    result = exec_fn(NVM_NODE_INSTALL, timeout=300, env=env)
+    result = _run_install_with_apt_retry(
+        exec_fn,
+        NVM_NODE_INSTALL,
+        timeout=300,
+        env=env,
+        label="NVM/Node install",
+    )
     if result.exit_code == 0:
         return True
-    fallback = exec_fn(
-        "apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq nodejs npm >/dev/null 2>&1",
+    logger.warning("NVM/Node install failed, falling back to package manager: %s", _exec_output_excerpt(result))
+    fallback = _run_install_with_apt_retry(
+        exec_fn,
+        _install_nodejs_shell(log_version=True),
         timeout=300,
         env=env,
         workdir="/",
+        label="Node fallback install",
     )
-    return fallback.exit_code == 0
+    if fallback.exit_code != 0:
+        logger.error("Node fallback install failed: %s", _exec_output_excerpt(fallback))
+        return False
+    return True
 
 
 def ensure_uv(container: DockerWorkspaceContainer) -> bool:
@@ -544,9 +634,16 @@ def run_install_script(
     timeout: int = 300,
     workdir: str | None = None,
 ) -> bool:
-    result = container.exec_run(script, timeout=timeout, env=env, workdir=workdir)
+    result = _run_install_with_apt_retry(
+        container.exec_run,
+        script,
+        timeout=timeout,
+        env=env,
+        workdir=workdir,
+        label="Install script",
+    )
     if result.exit_code != 0:
-        logger.error("Install script failed: %s", result.stderr[:500])
+        logger.error("Install script failed: %s", _exec_output_excerpt(result))
         return False
     return True
 

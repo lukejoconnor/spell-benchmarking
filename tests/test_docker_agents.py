@@ -18,6 +18,8 @@ from src.docker_agents import (
     CODEX_RUNTIME_NPM_PREFIX,
     ExecOutput,
     NVM_NODE_INSTALL,
+    _install_nodejs_shell,
+    _is_retryable_apt_fetch_failure,
     _read_codex_rollout_from_exec,
     _load_swe_agent_trajectory,
     _normalize_spell_trailing,
@@ -26,10 +28,36 @@ from src.docker_agents import (
     codex_install_script,
     codex_parse_usage,
     codex_run_command,
+    install_nvm_node_exec,
     run_agent_in_container,
+    run_install_script,
     resolve_spell_model,
     spell_env_vars,
 )
+
+
+class FakeInstallContainer:
+    def __init__(self, outputs: list[ExecOutput]) -> None:
+        self._outputs = list(outputs)
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def exec_run(self, cmd: str, **kwargs) -> ExecOutput:
+        self.calls.append((cmd, dict(kwargs)))
+        if not self._outputs:
+            raise AssertionError(f"Unexpected exec call: {cmd}")
+        return self._outputs.pop(0)
+
+
+class SequentialExec:
+    def __init__(self, outputs: list[ExecOutput]) -> None:
+        self._outputs = list(outputs)
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def __call__(self, cmd: str, **kwargs) -> ExecOutput:
+        self.calls.append((cmd, dict(kwargs)))
+        if not self._outputs:
+            raise AssertionError(f"Unexpected exec call: {cmd}")
+        return self._outputs.pop(0)
 
 
 class DockerAgentsTests(unittest.TestCase):
@@ -142,6 +170,144 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertIn('unset NPM_CONFIG_PREFIX', script)
         self.assertIn('export NPM_CONFIG_PREFIX="$NPM_CONFIG_PREFIX_SAVED"', script)
         self.assertNotIn("PROFILE=/dev/null curl", script)
+        self.assertIn("command -v apk", script)
+        self.assertIn("command -v dnf", script)
+        self.assertIn("command -v yum", script)
+
+    def test_install_nodejs_shell_supports_multiple_package_managers(self) -> None:
+        script = _install_nodejs_shell(log_version=True)
+
+        self.assertIn("command -v apt-get", script)
+        self.assertIn("command -v apk", script)
+        self.assertIn("command -v dnf", script)
+        self.assertIn("command -v yum", script)
+        self.assertIn("node installed via package manager", script)
+
+    def test_retryable_apt_fetch_failure_matches_transient_mirror_errors(self) -> None:
+        self.assertTrue(
+            _is_retryable_apt_fetch_failure(
+                "",
+                "Failed to fetch http://archive.ubuntu.com/ubuntu/pool/main/c/curl.deb: Connection timed out",
+            )
+        )
+
+    def test_retryable_apt_fetch_failure_rejects_missing_apt(self) -> None:
+        self.assertFalse(_is_retryable_apt_fetch_failure("", "apt-get: command not found"))
+
+    def test_retryable_apt_fetch_failure_rejects_generic_install_error(self) -> None:
+        self.assertFalse(
+            _is_retryable_apt_fetch_failure(
+                "",
+                "Unable to install Java runtime: unsupported package manager",
+            )
+        )
+
+    def test_run_install_script_retries_retryable_apt_failures(self) -> None:
+        env = {"TOKEN": "abc"}
+        container = FakeInstallContainer(
+            [
+                ExecOutput(exit_code=1, stdout="", stderr="Failed to fetch pkg: Connection timed out"),
+                ExecOutput(exit_code=1, stdout="", stderr="Failed to fetch pkg: Temporary failure resolving"),
+                ExecOutput(exit_code=0, stdout="ready", stderr=""),
+            ]
+        )
+
+        with patch("src.docker_agents.time.sleep") as sleep:
+            ok = run_install_script(container, "echo install", env=env, timeout=123, workdir="/workspace")
+
+        self.assertTrue(ok)
+        self.assertEqual(len(container.calls), 3)
+        self.assertEqual([cmd for cmd, _kwargs in container.calls], ["echo install"] * 3)
+        for _cmd, kwargs in container.calls:
+            self.assertEqual(kwargs, {"timeout": 123, "env": env, "workdir": "/workspace"})
+        self.assertEqual(sleep.call_count, 2)
+        sleep.assert_called_with(5)
+
+    def test_run_install_script_fails_fast_on_non_retryable_error(self) -> None:
+        container = FakeInstallContainer(
+            [ExecOutput(exit_code=1, stdout="", stderr="apt-get: command not found")]
+        )
+
+        with patch("src.docker_agents.time.sleep") as sleep:
+            ok = run_install_script(container, "echo install", timeout=321)
+
+        self.assertFalse(ok)
+        self.assertEqual(len(container.calls), 1)
+        self.assertEqual(container.calls[0][1], {"timeout": 321, "env": None, "workdir": None})
+        sleep.assert_not_called()
+
+    def test_run_install_script_stops_after_three_retryable_failures(self) -> None:
+        container = FakeInstallContainer(
+            [
+                ExecOutput(exit_code=1, stdout="", stderr="Failed to fetch pkg: Connection timed out"),
+                ExecOutput(exit_code=1, stdout="", stderr="Failed to fetch pkg: Could not connect"),
+                ExecOutput(exit_code=1, stdout="", stderr="Failed to fetch pkg: Network is unreachable"),
+            ]
+        )
+
+        with patch("src.docker_agents.time.sleep") as sleep:
+            ok = run_install_script(container, "echo install")
+
+        self.assertFalse(ok)
+        self.assertEqual(len(container.calls), 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_install_nvm_node_exec_retries_nvm_script_before_succeeding(self) -> None:
+        env = {"NVM_DIR": "/tmp/nvm"}
+        exec_fn = SequentialExec(
+            [
+                ExecOutput(exit_code=1, stdout="", stderr="Failed to fetch curl: Connection timed out"),
+                ExecOutput(exit_code=1, stdout="", stderr="Failed to fetch curl: Temporary failure resolving"),
+                ExecOutput(exit_code=0, stdout="node installed: v22.0.0", stderr=""),
+            ]
+        )
+
+        with patch("src.docker_agents.time.sleep") as sleep:
+            ok = install_nvm_node_exec(exec_fn, env=env)
+
+        self.assertTrue(ok)
+        self.assertEqual([cmd for cmd, _kwargs in exec_fn.calls], [NVM_NODE_INSTALL] * 3)
+        for _cmd, kwargs in exec_fn.calls:
+            self.assertEqual(kwargs, {"timeout": 300, "env": env, "workdir": None})
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_install_nvm_node_exec_falls_back_after_non_retryable_failure(self) -> None:
+        env = {"NVM_DIR": "/tmp/nvm"}
+        fallback_script = _install_nodejs_shell(log_version=True)
+        exec_fn = SequentialExec(
+            [
+                ExecOutput(exit_code=1, stdout="", stderr="apt-get: command not found"),
+                ExecOutput(exit_code=0, stdout="node installed via package manager: v22.0.0", stderr=""),
+            ]
+        )
+
+        ok = install_nvm_node_exec(exec_fn, env=env)
+
+        self.assertTrue(ok)
+        self.assertEqual(exec_fn.calls[0], (NVM_NODE_INSTALL, {"timeout": 300, "env": env, "workdir": None}))
+        self.assertEqual(exec_fn.calls[1], (fallback_script, {"timeout": 300, "env": env, "workdir": "/"}))
+
+    def test_install_nvm_node_exec_retries_fallback_on_retryable_apt_failures(self) -> None:
+        env = {"NVM_DIR": "/tmp/nvm"}
+        fallback_script = _install_nodejs_shell(log_version=True)
+        exec_fn = SequentialExec(
+            [
+                ExecOutput(exit_code=1, stdout="", stderr="apt-get: command not found"),
+                ExecOutput(exit_code=1, stdout="", stderr="Failed to fetch nodejs: Connection timed out"),
+                ExecOutput(exit_code=1, stdout="", stderr="Failed to fetch npm: Could not connect"),
+                ExecOutput(exit_code=0, stdout="node installed via package manager: v22.0.0", stderr=""),
+            ]
+        )
+
+        with patch("src.docker_agents.time.sleep") as sleep:
+            ok = install_nvm_node_exec(exec_fn, env=env)
+
+        self.assertTrue(ok)
+        self.assertEqual(exec_fn.calls[0], (NVM_NODE_INSTALL, {"timeout": 300, "env": env, "workdir": None}))
+        self.assertEqual([cmd for cmd, _kwargs in exec_fn.calls[1:]], [fallback_script] * 3)
+        for _cmd, kwargs in exec_fn.calls[1:]:
+            self.assertEqual(kwargs, {"timeout": 300, "env": env, "workdir": "/"})
+        self.assertEqual(sleep.call_count, 2)
 
     def test_spell_env_vars_forwards_fireworks_api_key(self) -> None:
         with patch.dict(os.environ, {"FIREWORKS_API_KEY": "fw-test"}, clear=False):
