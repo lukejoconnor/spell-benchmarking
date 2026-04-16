@@ -107,6 +107,9 @@ Execution details:
 - `mini`, `lite`, and `verified` run inside official SWE-bench instance images with the repo mounted at `/testbed`.
 - `pro` runs inside the official Docker Hub instance image with the repo at `/app`.
 - Same-container eval always runs after generation and is recorded in run metadata.
+- Unified output is appended incrementally after each completed item, so a crash loses at most the in-flight item rather than the whole run.
+- To resume a partial run, rerun with the same `--run-id` and `--output`; completed items are detected from the existing unified JSONL and skipped automatically.
+- The per-condition SWE-bench predictions JSONL is regenerated from the unified output after each condition completes.
 
 Clean-eval cleanup sequence for multi-condition runs:
 - Non-final conditions: `cache_level=env`, `clean=false` (reuse env images)

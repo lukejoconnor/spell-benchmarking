@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 import tempfile
 import types
@@ -321,7 +322,7 @@ class WebSearchCliRegressionTest(unittest.TestCase):
                 [{"name": "pytest", "passed": True}],
             )
 
-        def fake_append_jsonl(_path, record):
+        def fake_append_jsonl(_path, record, **_kwargs):
             written_records.append(record)
 
         with tempfile.TemporaryDirectory() as tmp_dir, \
@@ -432,7 +433,7 @@ class WebSearchCliRegressionTest(unittest.TestCase):
                     cached_input_tokens=13,
                 )
 
-        def fake_append_jsonl(_path, record):
+        def fake_append_jsonl(_path, record, **_kwargs):
             written_records.append(record)
 
         self_outer = self
@@ -513,7 +514,7 @@ class WebSearchCliRegressionTest(unittest.TestCase):
             attempts=1,
         )
 
-        def fake_append_jsonl(_path, record):
+        def fake_append_jsonl(_path, record, **_kwargs):
             written_records.append(record)
 
         with tempfile.TemporaryDirectory() as tmp_dir, \
@@ -588,7 +589,7 @@ class WebSearchCliRegressionTest(unittest.TestCase):
             def run(self, req):
                 return next(responses)
 
-        def fake_append_jsonl(_path, record):
+        def fake_append_jsonl(_path, record, **_kwargs):
             written_records.append(record)
 
         with tempfile.TemporaryDirectory() as tmp_dir, \
@@ -753,7 +754,7 @@ class WebSearchCliRegressionTest(unittest.TestCase):
                 },
             )
 
-        def fake_append_jsonl(_path, record):
+        def fake_append_jsonl(_path, record, **_kwargs):
             written_records.append(record)
 
         with tempfile.TemporaryDirectory() as tmp_dir, \
@@ -970,7 +971,7 @@ class WebSearchCliRegressionTest(unittest.TestCase):
             log_tail="pip install failed",
         )
 
-        def fake_append_jsonl(_path, record):
+        def fake_append_jsonl(_path, record, **_kwargs):
             written_records.append(record)
 
         with tempfile.TemporaryDirectory() as tmp_dir, \
@@ -1161,6 +1162,269 @@ class WebSearchCliRegressionTest(unittest.TestCase):
                 ("cleanup", ["sweb.eval.x86_64.django__django-1:latest"]),
             ],
         )
+
+    def test_swebench_resume_skips_completed_items_and_rebuilds_predictions(self):
+        lite_items = [
+            SimpleNamespace(
+                instance_id="django__django-1",
+                repo="django/django",
+                base_commit="abc123",
+                problem_statement="Fix it",
+                hints_text="",
+                metadata={},
+                raw_instance={},
+            ),
+            SimpleNamespace(
+                instance_id="django__django-2",
+                repo="django/django",
+                base_commit="def456",
+                problem_statement="Fix it again",
+                hints_text="",
+                metadata={},
+                raw_instance={},
+            ),
+        ]
+        run_calls = []
+        prediction_batches = []
+
+        def fake_run_unified_swebench(**kwargs):
+            run_calls.append(kwargs["item"].instance_id)
+            return self._ok_response(
+                response_text="done",
+                metadata={
+                    "docker": True,
+                    "patch": f"patch-for-{kwargs['item'].instance_id}",
+                    "changed_files": ["demo.py"],
+                },
+            )
+
+        def fake_write_predictions(results, _path, model_name=None):
+            prediction_batches.append((results, model_name))
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.object(self.bench, "load_swebench_lite", return_value=lite_items), \
+             patch.object(self.bench, "run_unified_swebench", side_effect=fake_run_unified_swebench), \
+             patch.object(self.bench, "write_predictions_jsonl", side_effect=fake_write_predictions), \
+             patch.object(self.bench, "_resolve_trace_dir", return_value=None):
+            output_path = Path(tmp_dir) / "out.jsonl"
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "run_id": "resume-run",
+                        "item_id": "django__django-1",
+                        "dataset": "lite",
+                        "condition": "codex",
+                        "name": None,
+                        "patch": "existing-patch",
+                    }
+                ) + "\n",
+                encoding="utf-8",
+            )
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "swebench",
+                    "--dataset",
+                    "lite",
+                    "--condition",
+                    "codex",
+                    "--codex-model",
+                    "codex",
+                    "--run-id",
+                    "resume-run",
+                    "--output",
+                    str(output_path),
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(run_calls, ["django__django-2"])
+        self.assertIn("Resume: 1/2 items already recorded; running 1 pending", result.output)
+        self.assertEqual(len(prediction_batches), 1)
+        predictions, model_name = prediction_batches[0]
+        self.assertEqual(model_name, "codex")
+        self.assertEqual([prediction.instance_id for prediction in predictions], ["django__django-1", "django__django-2"])
+        self.assertEqual([prediction.patch for prediction in predictions], ["existing-patch", "patch-for-django__django-2"])
+
+    def test_swebench_resume_is_scoped_by_condition(self):
+        lite_item = SimpleNamespace(
+            instance_id="django__django-1",
+            repo="django/django",
+            base_commit="abc123",
+            problem_statement="Fix it",
+            hints_text="",
+            metadata={},
+            raw_instance={},
+        )
+        run_calls = []
+
+        def fake_run_unified_swebench(**kwargs):
+            run_calls.append(kwargs["condition"])
+            return self._ok_response(
+                response_text="done",
+                metadata={
+                    "docker": True,
+                    "patch": "spell-patch",
+                    "changed_files": ["demo.py"],
+                },
+            )
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.object(self.bench, "load_swebench_lite", return_value=[lite_item]), \
+             patch.object(
+                 self.bench,
+                 "_resolve_spell_agent_or_die",
+                 return_value=SimpleNamespace(
+                     agent_file="config/agents/cli.agent.edn",
+                     spell_mode="tc",
+                     source="test",
+                     policy_key="swebench",
+                 ),
+             ), \
+             patch.object(self.bench, "run_unified_swebench", side_effect=fake_run_unified_swebench), \
+             patch.object(self.bench, "write_predictions_jsonl"), \
+             patch.object(self.bench, "_resolve_trace_dir", return_value=None):
+            output_path = Path(tmp_dir) / "out.jsonl"
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "run_id": "resume-run",
+                        "item_id": "django__django-1",
+                        "dataset": "lite",
+                        "condition": "codex",
+                        "name": None,
+                        "patch": "codex-patch",
+                    }
+                ) + "\n",
+                encoding="utf-8",
+            )
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "swebench",
+                    "--dataset",
+                    "lite",
+                    "--condition",
+                    "spell",
+                    "--model",
+                    "openai-tc:gpt-5.4",
+                    "--run-id",
+                    "resume-run",
+                    "--output",
+                    str(output_path),
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(run_calls, ["spell"])
+        self.assertNotIn("Resume:", result.output)
+
+    def test_swebench_resume_is_scoped_by_dataset(self):
+        lite_items = [
+            SimpleNamespace(
+                instance_id="django__django-1",
+                repo="django/django",
+                base_commit="abc123",
+                problem_statement="Fix it",
+                hints_text="",
+                metadata={},
+                raw_instance={},
+            ),
+            SimpleNamespace(
+                instance_id="django__django-2",
+                repo="django/django",
+                base_commit="def456",
+                problem_statement="Fix it again",
+                hints_text="",
+                metadata={},
+                raw_instance={},
+            ),
+        ]
+        run_calls = []
+        prediction_batches = []
+
+        def fake_run_unified_swebench(**kwargs):
+            run_calls.append(kwargs["item"].instance_id)
+            return self._ok_response(
+                response_text="done",
+                metadata={
+                    "docker": True,
+                    "patch": f"patch-for-{kwargs['item'].instance_id}",
+                    "changed_files": ["demo.py"],
+                },
+            )
+
+        def fake_write_predictions(results, _path, model_name=None):
+            prediction_batches.append((results, model_name))
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.object(self.bench, "load_swebench_lite", return_value=lite_items), \
+             patch.object(self.bench, "run_unified_swebench", side_effect=fake_run_unified_swebench), \
+             patch.object(self.bench, "write_predictions_jsonl", side_effect=fake_write_predictions), \
+             patch.object(self.bench, "_resolve_trace_dir", return_value=None):
+            output_path = Path(tmp_dir) / "out.jsonl"
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "run_id": "resume-run",
+                        "item_id": "django__django-1",
+                        "dataset": "mini",
+                        "condition": "codex",
+                        "name": None,
+                        "patch": "mini-patch",
+                    }
+                ) + "\n",
+                encoding="utf-8",
+            )
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "swebench",
+                    "--dataset",
+                    "lite",
+                    "--condition",
+                    "codex",
+                    "--codex-model",
+                    "codex",
+                    "--run-id",
+                    "resume-run",
+                    "--output",
+                    str(output_path),
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(run_calls, ["django__django-1", "django__django-2"])
+        self.assertNotIn("Resume:", result.output)
+        self.assertEqual(len(prediction_batches), 1)
+        predictions, model_name = prediction_batches[0]
+        self.assertEqual(model_name, "codex")
+        self.assertEqual([prediction.instance_id for prediction in predictions], ["django__django-1", "django__django-2"])
+        self.assertEqual([prediction.patch for prediction in predictions], ["patch-for-django__django-1", "patch-for-django__django-2"])
+
+    def test_print_summary_tolerates_truncated_jsonl_tail(self):
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.object(self.bench.click, "echo") as echo_mock:
+            output_path = Path(tmp_dir) / "out.jsonl"
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "run_id": "resume-run",
+                        "item_id": "django__django-1",
+                        "condition": "codex",
+                        "name": None,
+                        "correct": True,
+                        "error_message": None,
+                    }
+                ) + "\n" + '{"run_id": "resume-run"',
+                encoding="utf-8",
+            )
+
+            self.bench._print_summary(output_path, "resume-run", "codex")
+
+        echoed = "\n".join(call.args[0] for call in echo_mock.call_args_list)
+        self.assertIn("Summary (codex): total=1 errors=0", echoed)
+        self.assertIn("accuracy=100.0%", echoed)
 
     def test_software_benchmark_help_omits_legacy_container_flags(self):
         swebench_help = self.runner.invoke(self.bench.cli, ["swebench", "--help"])
