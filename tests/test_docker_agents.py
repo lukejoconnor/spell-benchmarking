@@ -20,6 +20,8 @@ from src.docker_agents import (
     NVM_NODE_INSTALL,
     _install_nodejs_shell,
     _is_retryable_apt_fetch_failure,
+    _is_retryable_install_timeout,
+    _is_retryable_pip_hash_mismatch,
     _read_codex_rollout_from_exec,
     _load_swe_agent_trajectory,
     _normalize_spell_trailing,
@@ -28,6 +30,7 @@ from src.docker_agents import (
     codex_install_script,
     codex_parse_usage,
     codex_run_command,
+    ensure_python_packages,
     install_nvm_node_exec,
     run_agent_in_container,
     run_install_script,
@@ -96,12 +99,12 @@ class DockerAgentsTests(unittest.TestCase):
 
         self.assertIsNotNone(usage)
         assert usage is not None
-        self.assertEqual(usage.input_tokens, 916)
+        self.assertEqual(usage.input_tokens, 6804)
         self.assertEqual(usage.cached_input_tokens, 5888)
         self.assertEqual(usage.total_input_tokens, 6804)
         self.assertAlmostEqual(usage.cost_usd or 0.0, 0.065351, places=6)
         self.assertEqual(usage.cost_source, "estimated")
-        self.assertIsNone(usage.reasoning_output_tokens)
+        self.assertEqual(usage.reasoning_output_tokens, 0)
 
     def test_codex_env_vars_redirect_runtime_to_tmp(self) -> None:
         env = codex_env_vars()
@@ -199,6 +202,21 @@ class DockerAgentsTests(unittest.TestCase):
             )
         )
 
+    def test_retryable_apt_fetch_failure_matches_hash_mismatch_messages(self) -> None:
+        self.assertTrue(
+            _is_retryable_apt_fetch_failure(
+                "",
+                "Err:1 http://archive.ubuntu.com/ubuntu focal/main amd64 curl amd64 7.68.0-1ubuntu2.18\n"
+                "  File has unexpected size (1234 != 5678). Mirror sync in progress?",
+            )
+        )
+        self.assertTrue(
+            _is_retryable_apt_fetch_failure(
+                "",
+                "Failed to fetch http://archive.ubuntu.com/ubuntu/dists/focal/InRelease  Hash Sum mismatch",
+            )
+        )
+
     def test_retryable_apt_fetch_failure_rejects_missing_apt(self) -> None:
         self.assertFalse(_is_retryable_apt_fetch_failure("", "apt-get: command not found"))
 
@@ -209,6 +227,20 @@ class DockerAgentsTests(unittest.TestCase):
                 "Unable to install Java runtime: unsupported package manager",
             )
         )
+
+    def test_retryable_pip_hash_mismatch_matches_hash_error_text(self) -> None:
+        self.assertTrue(
+            _is_retryable_pip_hash_mismatch(
+                "",
+                "ERROR: THESE PACKAGES DO NOT MATCH THE HASHES from the requirements file.",
+            )
+        )
+        self.assertFalse(_is_retryable_pip_hash_mismatch("", "pip install failed for another reason"))
+
+    def test_install_timeout_is_retryable(self) -> None:
+        self.assertTrue(_is_retryable_install_timeout(ExecOutput(exit_code=124, stdout="", stderr="", timed_out=True)))
+        self.assertTrue(_is_retryable_install_timeout(ExecOutput(exit_code=124, stdout="", stderr="", timed_out=False)))
+        self.assertFalse(_is_retryable_install_timeout(ExecOutput(exit_code=1, stdout="", stderr="", timed_out=False)))
 
     def test_run_install_script_retries_retryable_apt_failures(self) -> None:
         env = {"TOKEN": "abc"}
@@ -230,6 +262,23 @@ class DockerAgentsTests(unittest.TestCase):
             self.assertEqual(kwargs, {"timeout": 123, "env": env, "workdir": "/workspace"})
         self.assertEqual(sleep.call_count, 2)
         sleep.assert_called_with(5)
+
+    def test_run_install_script_retries_whole_script_on_timeout(self) -> None:
+        container = FakeInstallContainer(
+            [
+                ExecOutput(exit_code=124, stdout="", stderr="Timeout after 300s", timed_out=True),
+                ExecOutput(exit_code=0, stdout="ready", stderr=""),
+            ]
+        )
+
+        with patch("src.docker_agents.time.sleep") as sleep:
+            ok = run_install_script(container, "echo install", timeout=300)
+
+        self.assertTrue(ok)
+        self.assertEqual(len(container.calls), 2)
+        self.assertEqual([cmd for cmd, _kwargs in container.calls], ["echo install"] * 2)
+        self.assertEqual(container.calls[0][1], {"timeout": 300, "env": None, "workdir": None})
+        self.assertEqual(sleep.call_count, 1)
 
     def test_run_install_script_fails_fast_on_non_retryable_error(self) -> None:
         container = FakeInstallContainer(
@@ -259,6 +308,43 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(len(container.calls), 3)
         self.assertEqual(sleep.call_count, 2)
+
+    def test_ensure_python_packages_retries_on_hash_mismatch_without_cache(self) -> None:
+        container = FakeInstallContainer(
+            [
+                ExecOutput(exit_code=1, stdout="", stderr="ERROR: THESE PACKAGES DO NOT MATCH THE HASHES from the requirements file."),
+                ExecOutput(exit_code=0, stdout="installed", stderr=""),
+            ]
+        )
+
+        ok = ensure_python_packages(container, ["numpy==1.16.0", "pandas"])
+
+        self.assertTrue(ok)
+        self.assertEqual(len(container.calls), 2)
+        self.assertEqual(
+            container.calls[0][0],
+            "python -m pip install -q --disable-pip-version-check numpy==1.16.0 pandas",
+        )
+        self.assertEqual(
+            container.calls[1][0],
+            "python -m pip install -q --disable-pip-version-check --no-cache-dir numpy==1.16.0 pandas",
+        )
+        self.assertEqual(container.calls[0][1], {"timeout": 300})
+        self.assertEqual(container.calls[1][1], {"timeout": 300})
+
+    def test_ensure_python_packages_does_not_retry_non_hash_error(self) -> None:
+        container = FakeInstallContainer(
+            [ExecOutput(exit_code=1, stdout="", stderr="python: command not found")]
+        )
+
+        ok = ensure_python_packages(container, ["numpy"])
+
+        self.assertFalse(ok)
+        self.assertEqual(len(container.calls), 1)
+        self.assertEqual(
+            container.calls[0][0],
+            "python -m pip install -q --disable-pip-version-check numpy",
+        )
 
     def test_install_nvm_node_exec_retries_nvm_script_before_succeeding(self) -> None:
         env = {"NVM_DIR": "/tmp/nvm"}
@@ -439,7 +525,7 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertIsInstance(result, AgentRunResult)
         self.assertIsNotNone(result.usage)
         assert result.usage is not None
-        self.assertEqual(result.usage.reasoning_output_tokens, 350)
+        self.assertEqual(result.usage.reasoning_output_tokens, 200)
         self.assertEqual(result.metadata["thread_id"], "thread-1")
         self.assertEqual(result.metadata["rollout_status"], "ok")
         self.assertEqual(result.metadata["rollout_token_count"]["total_token_usage"]["reasoning_output_tokens"], 350)

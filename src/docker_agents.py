@@ -59,7 +59,10 @@ RETRYABLE_APT_FETCH_MARKERS = (
     "could not connect",
     "connection failed",
     "network is unreachable",
+    "file has unexpected size",
+    "hash sum mismatch",
 )
+RETRYABLE_PIP_HASH_MISMATCH_MARKER = "these packages do not match the hashes"
 
 CC_ALLOWED_TOOLS = [
     "Bash", "Edit", "Write", "Read", "Glob", "Grep",
@@ -543,9 +546,24 @@ def _exec_output_excerpt(result: ExecOutput, *, limit: int = 500) -> str:
     return message[:limit]
 
 
+def _is_retryable_install_timeout(result: ExecOutput) -> bool:
+    return result.timed_out or result.exit_code == 124
+
+
 def _is_retryable_apt_fetch_failure(stdout: str, stderr: str) -> bool:
     output = "\n".join(part for part in (stdout, stderr) if part).lower()
-    return "failed to fetch" in output and any(marker in output for marker in RETRYABLE_APT_FETCH_MARKERS)
+    return any(marker in output for marker in RETRYABLE_APT_FETCH_MARKERS)
+
+
+def _is_retryable_pip_hash_mismatch(stdout: str, stderr: str) -> bool:
+    output = "\n".join(part for part in (stdout, stderr) if part).lower()
+    return RETRYABLE_PIP_HASH_MISMATCH_MARKER in output
+
+
+def _pip_install_command(packages: list[str], *, no_cache_dir: bool = False) -> str:
+    quoted = " ".join(shlex.quote(package) for package in packages)
+    cache_flag = " --no-cache-dir" if no_cache_dir else ""
+    return f"python -m pip install -q --disable-pip-version-check{cache_flag} {quoted}"
 
 
 def _run_install_with_apt_retry(
@@ -562,18 +580,26 @@ def _run_install_with_apt_retry(
         last_result = exec_fn(script, timeout=timeout, env=env, workdir=workdir)
         if last_result.exit_code == 0:
             return last_result
-        if (
-            attempt >= APT_FETCH_RETRY_MAX_ATTEMPTS
-            or not _is_retryable_apt_fetch_failure(last_result.stdout, last_result.stderr)
-        ):
+        retryable_timeout = _is_retryable_install_timeout(last_result)
+        retryable_apt = _is_retryable_apt_fetch_failure(last_result.stdout, last_result.stderr)
+        if attempt >= APT_FETCH_RETRY_MAX_ATTEMPTS or not (retryable_timeout or retryable_apt):
             return last_result
-        logger.warning(
-            "%s hit transient apt fetch failure (attempt %s/%s): %s",
-            label,
-            attempt,
-            APT_FETCH_RETRY_MAX_ATTEMPTS,
-            _exec_output_excerpt(last_result),
-        )
+        if retryable_timeout:
+            logger.warning(
+                "%s timed out (attempt %s/%s), retrying whole script: %s",
+                label,
+                attempt,
+                APT_FETCH_RETRY_MAX_ATTEMPTS,
+                _exec_output_excerpt(last_result),
+            )
+        else:
+            logger.warning(
+                "%s hit transient apt fetch failure (attempt %s/%s): %s",
+                label,
+                attempt,
+                APT_FETCH_RETRY_MAX_ATTEMPTS,
+                _exec_output_excerpt(last_result),
+            )
         time.sleep(APT_FETCH_RETRY_SLEEP_SECONDS)
     return last_result
 
@@ -609,7 +635,7 @@ def install_nvm_node_exec(
 
 def ensure_uv(container: DockerWorkspaceContainer) -> bool:
     result = container.exec_run(
-        "python -m pip install -q --disable-pip-version-check uv",
+        _pip_install_command(["uv"]),
         timeout=180,
     )
     return result.exit_code == 0
@@ -618,12 +644,25 @@ def ensure_uv(container: DockerWorkspaceContainer) -> bool:
 def ensure_python_packages(container: DockerWorkspaceContainer, packages: list[str]) -> bool:
     if not packages:
         return True
-    quoted = " ".join(shlex.quote(package) for package in packages)
     result = container.exec_run(
-        f"python -m pip install -q --disable-pip-version-check {quoted}",
+        _pip_install_command(packages),
         timeout=300,
     )
-    return result.exit_code == 0
+    if result.exit_code == 0:
+        return True
+    if not _is_retryable_pip_hash_mismatch(result.stdout, result.stderr):
+        return False
+    logger.warning(
+        "Python package install hit pip hash mismatch, retrying without cache: %s",
+        _exec_output_excerpt(result),
+    )
+    retry_result = container.exec_run(
+        _pip_install_command(packages, no_cache_dir=True),
+        timeout=300,
+    )
+    if retry_result.exit_code != 0:
+        logger.error("Python package install failed after cache-busting retry: %s", _exec_output_excerpt(retry_result))
+    return retry_result.exit_code == 0
 
 
 def run_install_script(
