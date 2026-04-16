@@ -91,6 +91,47 @@ unset NPM_CONFIG_PREFIX_SAVED NPM_CONFIG_PREFIX_WAS_SET
 """.strip()
 
 
+def _install_curl_shell() -> str:
+    return r"""
+if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -o Acquire::AllowInsecureRepositories=true update -qq
+    apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq curl >/dev/null 2>&1
+elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache curl >/dev/null
+elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q curl >/dev/null
+elif command -v yum >/dev/null 2>&1; then
+    yum install -y -q curl >/dev/null
+else
+    echo "Unable to install curl: unsupported package manager" >&2
+    exit 1
+fi
+""".strip()
+
+
+def _install_nodejs_shell(*, log_version: bool = False) -> str:
+    body = r"""
+if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -o Acquire::AllowInsecureRepositories=true update -qq
+    apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq nodejs npm >/dev/null 2>&1
+elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache nodejs npm >/dev/null
+elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q nodejs npm >/dev/null
+elif command -v yum >/dev/null 2>&1; then
+    yum install -y -q nodejs npm >/dev/null
+else
+    echo "Unable to install Node.js runtime: unsupported package manager" >&2
+    exit 1
+fi
+""".strip()
+    if log_version:
+        body += '\necho "node installed via package manager: $(node --version 2>/dev/null || echo missing)"'
+    return body
+
+
 NVM_NODE_INSTALL = r"""
 set -e
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
@@ -102,13 +143,13 @@ if [ -d "$NVM_DIR" ]; then
         exit 0
     fi
 fi
-apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq curl >/dev/null 2>&1
+%s
 export PROFILE=/dev/null
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash
 %s
 nvm install 22
 echo "node installed: $(node --version)"
-""" % (_nvm_source_with_tmp_npm_prefix(), _nvm_source_with_tmp_npm_prefix())
+""" % (_nvm_source_with_tmp_npm_prefix(), _install_curl_shell(), _nvm_source_with_tmp_npm_prefix())
 
 SPELL_RUNTIME_INSTALL = r"""
 set -euo pipefail
@@ -457,8 +498,7 @@ def install_nvm_node(
             time.sleep(2)
 
     fallback = container.exec_run(
-        "apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq nodejs npm >/dev/null 2>&1 && "
-        'echo "node installed via apt: $(node --version 2>/dev/null || echo missing)"',
+        _install_nodejs_shell(log_version=True),
         timeout=300,
         env=env,
         workdir="/",
@@ -509,7 +549,7 @@ def install_nvm_node_exec(
     if result.exit_code == 0:
         return True
     fallback = exec_fn(
-        "apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq nodejs npm >/dev/null 2>&1",
+        _install_nodejs_shell(),
         timeout=300,
         env=env,
         workdir="/",

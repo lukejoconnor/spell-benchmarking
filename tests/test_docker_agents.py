@@ -26,6 +26,7 @@ from src.docker_agents import (
     codex_install_script,
     codex_parse_usage,
     codex_run_command,
+    install_nvm_node_exec,
     run_agent_in_container,
     resolve_spell_model,
     spell_env_vars,
@@ -142,6 +143,37 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertIn('unset NPM_CONFIG_PREFIX', script)
         self.assertIn('export NPM_CONFIG_PREFIX="$NPM_CONFIG_PREFIX_SAVED"', script)
         self.assertNotIn("PROFILE=/dev/null curl", script)
+
+    def test_nvm_install_supports_non_debian_package_managers(self) -> None:
+        script = NVM_NODE_INSTALL
+
+        self.assertIn("command -v apt-get", script)
+        self.assertIn("command -v apk", script)
+        self.assertIn("command -v dnf", script)
+        self.assertIn("command -v yum", script)
+        self.assertIn("Unable to install curl: unsupported package manager", script)
+
+    def test_install_nvm_node_exec_falls_back_with_portable_package_manager_logic(self) -> None:
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        def fake_exec(cmd: str, **kwargs) -> ExecOutput:
+            calls.append((cmd, kwargs))
+            if len(calls) == 1:
+                return ExecOutput(exit_code=1, stdout="", stderr="nvm failed")
+            return ExecOutput(exit_code=0, stdout="", stderr="")
+
+        ok = install_nvm_node_exec(fake_exec, env={"CODEX_HOME": "/tmp/codex"})
+
+        self.assertTrue(ok)
+        self.assertEqual(len(calls), 2)
+        fallback_cmd, fallback_kwargs = calls[1]
+        self.assertIn("command -v apt-get", fallback_cmd)
+        self.assertIn("command -v apk", fallback_cmd)
+        self.assertIn("command -v dnf", fallback_cmd)
+        self.assertIn("command -v yum", fallback_cmd)
+        self.assertIn("nodejs npm", fallback_cmd)
+        self.assertEqual(fallback_kwargs["workdir"], "/")
+        self.assertEqual(fallback_kwargs["env"], {"CODEX_HOME": "/tmp/codex"})
 
     def test_spell_env_vars_forwards_fireworks_api_key(self) -> None:
         with patch.dict(os.environ, {"FIREWORKS_API_KEY": "fw-test"}, clear=False):
