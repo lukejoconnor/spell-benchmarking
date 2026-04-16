@@ -673,12 +673,20 @@ def _build_adapter(
     raise ValueError(f"Unknown condition: {condition}")
 
 
-def _print_summary(output_file: Path, run_id: str, condition: str, *, name: str | None = None) -> None:
+def _print_summary(
+    output_file: Path,
+    run_id: str,
+    condition: str,
+    *,
+    name: str | None = None,
+    dataset: str | None = None,
+) -> None:
     rows = _matching_unified_rows(
         output_file,
         run_id=run_id,
         condition=condition,
         name=name,
+        dataset=dataset,
         tolerate_invalid=True,
     )
     summary = summarize_records(rows)
@@ -695,6 +703,7 @@ def _matching_unified_rows(
     run_id: str,
     condition: str | None = None,
     name: str | None = None,
+    dataset: str | None = None,
     tolerate_invalid: bool = False,
 ) -> list[dict[str, Any]]:
     rows = load_jsonl(output_file, tolerate_invalid=tolerate_invalid)
@@ -703,6 +712,7 @@ def _matching_unified_rows(
         if row.get("run_id") == run_id
         and (condition is None or row.get("condition") == condition)
         and row.get("name") == name
+        and (dataset is None or row.get("dataset") == dataset)
     ]
 
 
@@ -721,6 +731,7 @@ def _swebench_predictions_from_output(
     run_id: str,
     condition: str,
     name: str | None = None,
+    dataset: str | None = None,
 ) -> list[_SwePrediction]:
     rows = _latest_rows_by_item(
         _matching_unified_rows(
@@ -728,6 +739,7 @@ def _swebench_predictions_from_output(
             run_id=run_id,
             condition=condition,
             name=name,
+            dataset=dataset,
             tolerate_invalid=True,
         )
     )
@@ -1859,6 +1871,7 @@ def run_swebench(
                 run_id=run_id,
                 condition=cond,
                 name=name,
+                dataset=dataset,
                 tolerate_invalid=True,
             )
             completed_item_ids = {
@@ -1899,7 +1912,7 @@ def run_swebench(
             if not pending_items:
                 click.echo("  No pending items; rebuilding predictions from existing unified output")
 
-            _print_summary(output_file, run_id, cond, name=name)
+            _print_summary(output_file, run_id, cond, name=name, dataset=dataset)
 
             pred_path = Path("results") / "swebench" / _swebench_predictions_filename(cond, dataset, run_id, name=name)
             swe_results = _swebench_predictions_from_output(
@@ -1907,6 +1920,7 @@ def run_swebench(
                 run_id=run_id,
                 condition=cond,
                 name=name,
+                dataset=dataset,
             )
             pred_model_name = {
                 "spell": model or "unknown",

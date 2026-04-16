@@ -1212,6 +1212,7 @@ class WebSearchCliRegressionTest(unittest.TestCase):
                     {
                         "run_id": "resume-run",
                         "item_id": "django__django-1",
+                        "dataset": "lite",
                         "condition": "codex",
                         "name": None,
                         "patch": "existing-patch",
@@ -1289,6 +1290,7 @@ class WebSearchCliRegressionTest(unittest.TestCase):
                     {
                         "run_id": "resume-run",
                         "item_id": "django__django-1",
+                        "dataset": "lite",
                         "condition": "codex",
                         "name": None,
                         "patch": "codex-patch",
@@ -1316,6 +1318,89 @@ class WebSearchCliRegressionTest(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(run_calls, ["spell"])
         self.assertNotIn("Resume:", result.output)
+
+    def test_swebench_resume_is_scoped_by_dataset(self):
+        lite_items = [
+            SimpleNamespace(
+                instance_id="django__django-1",
+                repo="django/django",
+                base_commit="abc123",
+                problem_statement="Fix it",
+                hints_text="",
+                metadata={},
+                raw_instance={},
+            ),
+            SimpleNamespace(
+                instance_id="django__django-2",
+                repo="django/django",
+                base_commit="def456",
+                problem_statement="Fix it again",
+                hints_text="",
+                metadata={},
+                raw_instance={},
+            ),
+        ]
+        run_calls = []
+        prediction_batches = []
+
+        def fake_run_unified_swebench(**kwargs):
+            run_calls.append(kwargs["item"].instance_id)
+            return self._ok_response(
+                response_text="done",
+                metadata={
+                    "docker": True,
+                    "patch": f"patch-for-{kwargs['item'].instance_id}",
+                    "changed_files": ["demo.py"],
+                },
+            )
+
+        def fake_write_predictions(results, _path, model_name=None):
+            prediction_batches.append((results, model_name))
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.object(self.bench, "load_swebench_lite", return_value=lite_items), \
+             patch.object(self.bench, "run_unified_swebench", side_effect=fake_run_unified_swebench), \
+             patch.object(self.bench, "write_predictions_jsonl", side_effect=fake_write_predictions), \
+             patch.object(self.bench, "_resolve_trace_dir", return_value=None):
+            output_path = Path(tmp_dir) / "out.jsonl"
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "run_id": "resume-run",
+                        "item_id": "django__django-1",
+                        "dataset": "mini",
+                        "condition": "codex",
+                        "name": None,
+                        "patch": "mini-patch",
+                    }
+                ) + "\n",
+                encoding="utf-8",
+            )
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "swebench",
+                    "--dataset",
+                    "lite",
+                    "--condition",
+                    "codex",
+                    "--codex-model",
+                    "codex",
+                    "--run-id",
+                    "resume-run",
+                    "--output",
+                    str(output_path),
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(run_calls, ["django__django-1", "django__django-2"])
+        self.assertNotIn("Resume:", result.output)
+        self.assertEqual(len(prediction_batches), 1)
+        predictions, model_name = prediction_batches[0]
+        self.assertEqual(model_name, "codex")
+        self.assertEqual([prediction.instance_id for prediction in predictions], ["django__django-1", "django__django-2"])
+        self.assertEqual([prediction.patch for prediction in predictions], ["patch-for-django__django-1", "patch-for-django__django-2"])
 
     def test_print_summary_tolerates_truncated_jsonl_tail(self):
         with tempfile.TemporaryDirectory() as tmp_dir, \
