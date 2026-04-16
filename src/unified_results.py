@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, asdict
 from datetime import datetime, UTC
 from pathlib import Path
@@ -62,21 +63,59 @@ def append_jsonl(path: Path | str, record: UnifiedRunRecord | dict[str, Any]) ->
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload = asdict(record) if isinstance(record, UnifiedRunRecord) else record
+    needs_separator = output_path.exists() and output_path.stat().st_size > 0
+    if needs_separator:
+        with output_path.open("rb") as f:
+            f.seek(-1, os.SEEK_END)
+            needs_separator = f.read(1) != b"\n"
     with output_path.open("a", encoding="utf-8") as f:
+        if needs_separator:
+            f.write("\n")
         f.write(json.dumps(payload, default=str) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
 
 
-def load_jsonl(path: Path | str) -> list[dict[str, Any]]:
+def load_jsonl(path: Path | str, *, repair_truncated_tail: bool = False) -> list[dict[str, Any]]:
     input_path = Path(path)
     if not input_path.exists():
         return []
+    text = input_path.read_text(encoding="utf-8")
     rows: list[dict[str, Any]] = []
-    with input_path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
+    lines = text.splitlines(keepends=True)
+    prefix_end = 0
+    for idx, line in enumerate(lines):
+        line_start = prefix_end
+        prefix_end += len(line)
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            rows.append(json.loads(stripped))
+        except json.JSONDecodeError:
+            remainder = "".join(lines[idx + 1 :]).strip()
+            if remainder:
+                raise
+            if repair_truncated_tail:
+                input_path.write_text(text[:line_start], encoding="utf-8")
+            break
     return rows
+
+
+def filter_jsonl_rows(
+    rows: list[dict[str, Any]],
+    *,
+    run_id: str | None = None,
+    condition: str | None = None,
+    name: str | None = None,
+) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in rows
+        if (run_id is None or row.get("run_id") == run_id)
+        and (condition is None or row.get("condition") == condition)
+        and (name is None or row.get("name") == name)
+    ]
 
 
 def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:

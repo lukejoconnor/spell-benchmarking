@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 import tempfile
 import types
@@ -1161,6 +1162,160 @@ class WebSearchCliRegressionTest(unittest.TestCase):
                 ("cleanup", ["sweb.eval.x86_64.django__django-1:latest"]),
             ],
         )
+
+    def test_swebench_resume_repairs_truncated_tail_and_skips_completed_items(self):
+        lite_items = [
+            SimpleNamespace(
+                instance_id="django__django-1",
+                repo="django/django",
+                base_commit="abc123",
+                problem_statement="Fix it",
+                hints_text="",
+                metadata={},
+                raw_instance={},
+            ),
+            SimpleNamespace(
+                instance_id="django__django-2",
+                repo="django/django",
+                base_commit="def456",
+                problem_statement="Fix it again",
+                hints_text="",
+                metadata={},
+                raw_instance={},
+            ),
+        ]
+        run_id = "swebench_resume_test"
+        seen = []
+        predictions = []
+
+        def fake_run_unified_swebench(**kwargs):
+            seen.append(kwargs["item"].instance_id)
+            return self.bench.RunResponse(
+                status="ok",
+                response_text="done",
+                tokens_in=None,
+                tokens_out=None,
+                cost_usd=None,
+                latency_ms=None,
+                error_message=None,
+                error_type=None,
+                metadata={"docker": True, "patch": f"patch-{kwargs['item'].instance_id}", "changed_files": []},
+            )
+
+        def fake_write_predictions_jsonl(results, output_path, model_name=None):
+            predictions.append(
+                {
+                    "output_path": str(output_path),
+                    "model_name": model_name,
+                    "instance_ids": [result.instance_id for result in results],
+                }
+            )
+            return output_path
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.object(self.bench, "load_swebench_lite", return_value=lite_items), \
+             patch.object(self.bench, "run_unified_swebench", side_effect=fake_run_unified_swebench), \
+             patch.object(self.bench, "write_predictions_jsonl", side_effect=fake_write_predictions_jsonl), \
+             patch.object(self.bench, "_resolve_trace_dir", return_value=None):
+            output_path = Path(tmp_dir) / "out.jsonl"
+            output_path.write_text(
+                (
+                    '{"run_id":"swebench_resume_test","timestamp":"2026-04-16T00:00:00+00:00",'
+                    '"benchmark":"swebench","dataset":"lite","split":"lite","item_id":"django__django-1",'
+                    '"condition":"codex","provider":null,"model":"codex","agent_file":null,"status":"ok",'
+                    '"response_text":"done","patch":"patch-django__django-1","answer_extracted":null,'
+                    '"correct":null,"uncached_input_tokens":null,"cached_input_tokens":null,'
+                    '"cache_write_input_tokens":null,"visible_output_tokens":null,"reasoning_output_tokens":null,'
+                    '"cost_usd":null,"latency_ms":null,"error_type":null,"error_message":null,"metadata":{},'
+                    '"name":null,"reasoning_effort":null}\n'
+                    '{"run_id":"swebench_resume_test","timestamp":"2026-04-16T00:00:01+00:00"'
+                ),
+                encoding="utf-8",
+            )
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "swebench",
+                    "--dataset",
+                    "lite",
+                    "--condition",
+                    "codex",
+                    "--codex-model",
+                    "codex",
+                    "--run-id",
+                    run_id,
+                    "--output",
+                    str(output_path),
+                ],
+            )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertEqual(seen, ["django__django-2"])
+            self.assertIn("Resuming codex: skipping 1/2 already-completed item(s)", result.output)
+            lines = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([row["item_id"] for row in lines], ["django__django-1", "django__django-2"])
+            self.assertEqual(predictions[0]["instance_ids"], ["django__django-1", "django__django-2"])
+
+    def test_swebench_resume_rejects_mixed_run_ids(self):
+        lite_item = SimpleNamespace(
+            instance_id="django__django-1",
+            repo="django/django",
+            base_commit="abc123",
+            problem_statement="Fix it",
+            hints_text="",
+            metadata={},
+            raw_instance={},
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.object(self.bench, "load_swebench_lite", return_value=[lite_item]), \
+             patch.object(self.bench, "run_unified_swebench") as run_mock, \
+             patch.object(self.bench, "_resolve_trace_dir", return_value=None):
+            output_path = Path(tmp_dir) / "out.jsonl"
+            output_path.write_text(
+                '{"run_id":"other-run","condition":"codex","name":null,"item_id":"django__django-9"}\n',
+                encoding="utf-8",
+            )
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "swebench",
+                    "--dataset",
+                    "lite",
+                    "--condition",
+                    "codex",
+                    "--codex-model",
+                    "codex",
+                    "--run-id",
+                    "swebench_resume_test",
+                    "--output",
+                    str(output_path),
+                ],
+            )
+
+        self.assertNotEqual(result.exit_code, 0, result.output)
+        self.assertIn("refusing to merge", result.output)
+        run_mock.assert_not_called()
+
+    def test_summarize_ignores_truncated_tail(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "out.jsonl"
+            path.write_text(
+                (
+                    '{"run_id":"run-1","condition":"codex","name":null,"item_id":"item-1",'
+                    '"error_message":null,"correct":true,"cost_usd":1.25,"latency_ms":10}\n'
+                    '{"run_id":"run-1","condition":"codex","name":null,"item_id":"item-2"'
+                ),
+                encoding="utf-8",
+            )
+            result = self.runner.invoke(
+                self.bench.cli,
+                ["summarize", "--input", str(path), "--run-id", "run-1", "--condition", "codex"],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn('"total": 1', result.output)
+        self.assertIn('"accuracy": 1.0', result.output)
 
     def test_software_benchmark_help_omits_legacy_container_flags(self):
         swebench_help = self.runner.invoke(self.bench.cli, ["swebench", "--help"])

@@ -85,6 +85,8 @@ from src.usage_accounting import sum_usages, usage_record_fields
 from src.unified_results import (
     UnifiedRunRecord,
     append_jsonl,
+    filter_jsonl_rows,
+    load_jsonl,
     now_iso,
     parse_model_spec,
     summarize_records,
@@ -673,22 +675,17 @@ def _build_adapter(
 
 
 def _print_summary(output_file: Path, run_id: str, condition: str, *, name: str | None = None) -> None:
-    rows = []
-    with output_file.open("r", encoding="utf-8") as f:
-        for line in f:
-            row = json.loads(line)
-            if (
-                row.get("run_id") == run_id
-                and row.get("condition") == condition
-                and row.get("name") == name
-            ):
-                rows.append(row)
+    rows = filter_jsonl_rows(load_jsonl(output_file), run_id=run_id, condition=condition, name=name)
     summary = summarize_records(rows)
     click.echo(f"Summary ({_condition_label(condition, name)}): total={summary['total']} errors={summary['errors']} ")
     if summary["accuracy"] is not None:
         click.echo(f"  accuracy={summary['accuracy']:.1%}")
     if summary["total_cost_usd"] is not None:
         click.echo(f"  cost=${summary['total_cost_usd']:.4f}")
+
+
+def _swebench_matching_rows(output_file: Path, run_id: str, condition: str, *, name: str | None = None) -> list[dict[str, Any]]:
+    return filter_jsonl_rows(load_jsonl(output_file), run_id=run_id, condition=condition, name=name)
 
 
 def _resolve_spell_agent_or_die(
@@ -1661,6 +1658,24 @@ def run_swebench(
                     f"agent={spell_resolution.agent_file} source={spell_resolution.source}"
                 )
 
+            existing_rows = load_jsonl(output_file, repair_truncated_tail=True)
+            run_ids = {row.get("run_id") for row in existing_rows if row.get("run_id") is not None}
+            if run_ids and run_ids != {run_id}:
+                raise click.ClickException(
+                    f"Output file {output_file} already contains rows for run ID(s) {sorted(run_ids)}; "
+                    f"refusing to merge with {run_id}"
+                )
+            completed_rows = filter_jsonl_rows(existing_rows, run_id=run_id, condition=cond, name=name)
+            completed_item_ids = {row.get("item_id") for row in completed_rows if row.get("item_id")}
+            pending_items = [item for item in items if item.instance_id not in completed_item_ids]
+            if completed_item_ids:
+                skipped = len(items) - len(pending_items)
+                if skipped:
+                    click.echo(
+                        f"  Resuming {_condition_label(cond, name)}: "
+                        f"skipping {skipped}/{len(items)} already-completed item(s)"
+                    )
+
             def process(item) -> UnifiedRunRecord:
                 try:
                     prompt = _format_swebench_prompt(item, workspace=_swebench_prompt_workspace(item))
@@ -1811,33 +1826,40 @@ def run_swebench(
                         reasoning_effort=reasoning_effort,
                     )
 
-            if parallel <= 1:
-                records = []
-                for i, item in enumerate(items):
-                    click.echo(f"  [{i+1}/{len(items)}] {item.instance_id}")
-                    records.append(process(item))
-            else:
-                records = [None] * len(items)
-                with ThreadPoolExecutor(max_workers=parallel) as pool:
-                    futures = {pool.submit(process, item): idx for idx, item in enumerate(items)}
-                    done = 0
-                    for fut in as_completed(futures):
-                        idx = futures[fut]
-                        done += 1
-                        records[idx] = fut.result()
-                        click.echo(f"  [{done}/{len(items)}] {items[idx].instance_id}")
-                records = [r for r in records if r is not None]
-
-            for record in records:
-                image_name = record.metadata.get("instance_image_name")
-                if isinstance(image_name, str) and image_name:
-                    images_to_cleanup.add(image_name)
-                append_jsonl(output_file, record)
+            if pending_items:
+                if parallel <= 1:
+                    for i, item in enumerate(pending_items):
+                        click.echo(f"  [{i+1}/{len(pending_items)}] {item.instance_id}")
+                        record = process(item)
+                        image_name = record.metadata.get("instance_image_name")
+                        if isinstance(image_name, str) and image_name:
+                            images_to_cleanup.add(image_name)
+                        append_jsonl(output_file, record)
+                else:
+                    with ThreadPoolExecutor(max_workers=parallel) as pool:
+                        futures = {pool.submit(process, item): idx for idx, item in enumerate(pending_items)}
+                        done = 0
+                        for fut in as_completed(futures):
+                            idx = futures[fut]
+                            done += 1
+                            record = fut.result()
+                            click.echo(f"  [{done}/{len(pending_items)}] {pending_items[idx].instance_id}")
+                            image_name = record.metadata.get("instance_image_name")
+                            if isinstance(image_name, str) and image_name:
+                                images_to_cleanup.add(image_name)
+                            append_jsonl(output_file, record)
 
             _print_summary(output_file, run_id, cond, name=name)
 
             pred_path = Path("results") / "swebench" / _swebench_predictions_filename(cond, dataset, run_id, name=name)
-            swe_results = [_SwePrediction(instance_id=record.item_id, patch=record.patch or "") for record in records]
+            swe_results: list[_SwePrediction] = []
+            seen_item_ids: set[str] = set()
+            for row in _swebench_matching_rows(output_file, run_id, cond, name=name):
+                item_id = row.get("item_id")
+                if not isinstance(item_id, str) or item_id in seen_item_ids:
+                    continue
+                seen_item_ids.add(item_id)
+                swe_results.append(_SwePrediction(instance_id=item_id, patch=row.get("patch") or ""))
             pred_model_name = {
                 "spell": model or "unknown",
                 "claude_code": f"claude_code:{claude_model or 'unknown'}",
@@ -3301,19 +3323,7 @@ def summarize(input_path: str, run_id: str | None, condition: str | None, name: 
     if not path.exists():
         raise click.ClickException(f"File not found: {path}")
 
-    rows = []
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            if run_id and row.get("run_id") != run_id:
-                continue
-            if condition and row.get("condition") != condition:
-                continue
-            if name is not None and row.get("name") != name:
-                continue
-            rows.append(row)
+    rows = filter_jsonl_rows(load_jsonl(path), run_id=run_id, condition=condition, name=name)
 
     summary = summarize_records(rows)
     click.echo(json.dumps(summary, indent=2))

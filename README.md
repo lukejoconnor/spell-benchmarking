@@ -107,6 +107,7 @@ Execution details:
 - `mini`, `lite`, and `verified` run inside official SWE-bench instance images with the repo mounted at `/testbed`.
 - `pro` runs inside the official Docker Hub instance image with the repo at `/app`.
 - Same-container eval always runs after generation and is recorded in run metadata.
+- To resume a crashed run, rerun `swebench` with the same `--run-id` and `--output`; completed `(run_id, condition, name, item_id)` rows are skipped from the unified JSONL, truncated tail lines are repaired automatically, and the SWE-bench predictions file is regenerated from the unified output after each condition.
 
 Clean-eval cleanup sequence for multi-condition runs:
 - Non-final conditions: `cache_level=env`, `clean=false` (reuse env images)
