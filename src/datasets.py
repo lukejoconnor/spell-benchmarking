@@ -671,11 +671,22 @@ def load_babilong(context_size: str = '32k', tasks: list[str] = None) -> list[Be
 LONGBENCH_SEARCH_GUIDANCE = (
     "The document may be very large — some documents exceed 1M tokens, "
     "which will overflow your context window if read in full.\n\n"
-    "Strategy: Work through the document incrementally in small chunks or "
-    "sections. After each chunk, briefly summarize what you found and keep "
-    "notes on any lines or facts that seem relevant to the question. Once "
-    "you have enough evidence, synthesize your answer from those notes "
-    "rather than rereading the whole document."
+    "Strategy (favor minimal turns + targeted operations):\n"
+    "1. First inspect the document's format with io/sh \"head -c 500 PATH\" "
+    "or read the first ~10 lines. Note: prose with newlines, single-line "
+    "JSON blob, structured data, etc.\n"
+    "2. For prose with newlines: use io/grep with distinctive keywords from "
+    "the question and each option (multi-pattern with |, :context 8 or "
+    "more, max-count generous).\n"
+    "3. For single-line JSON or structured data: use io/sh with python3 to "
+    "parse the structure (e.g., json.load) and search by character offset "
+    "or extract specific fields.\n"
+    "4. Use io/read-lines for targeted line-range inspection after grep "
+    "locates a section.\n"
+    "5. Use (persist k v) to retain key excerpts across turns; (think "
+    "\"...\") to summarize.\n\n"
+    "Be decisive: 1-2 well-targeted searches usually suffice. Commit once "
+    "evidence supports an answer; avoid open-ended exploration."
 )
 
 
