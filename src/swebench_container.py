@@ -41,6 +41,8 @@ logger = logging.getLogger(__name__)
 
 PRO_WORKDIR = "/app"
 _SETUP_LOG_TAIL_CHARS = 4000
+_DOCKER_STOP_TIMEOUT_SECONDS = 120
+_DOCKER_CLEANUP_TIMEOUT_SECONDS = 30
 _ENV_BUILD_LOCKS: dict[str, threading.Lock] = {}
 _ENV_BUILD_LOCKS_GUARD = threading.Lock()
 
@@ -185,7 +187,7 @@ def remove_swebench_instance_image(image_name: str) -> bool:
             ["docker", "rmi", image_name],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=_DOCKER_CLEANUP_TIMEOUT_SECONDS,
         )
     except Exception:
         logger.warning("Error removing SWE-bench instance image %s", image_name, exc_info=True)
@@ -795,18 +797,48 @@ class SWEBenchContainer:
     def stop(self) -> None:
         container_id = self.container_id
         if container_id:
-            subprocess.run(
-                ["docker", "stop", container_id],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
+            try:
+                stop_result = subprocess.run(
+                    ["docker", "stop", container_id],
+                    capture_output=True,
+                    text=True,
+                    timeout=_DOCKER_STOP_TIMEOUT_SECONDS,
+                )
+                if stop_result.returncode != 0:
+                    logger.debug(
+                        "docker stop failed for %s: %s",
+                        container_id,
+                        stop_result.stderr.strip(),
+                    )
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "docker stop timed out for %s after %ss; falling back to docker kill",
+                    container_id,
+                    _DOCKER_STOP_TIMEOUT_SECONDS,
+                )
+                try:
+                    kill_result = subprocess.run(
+                        ["docker", "kill", container_id],
+                        capture_output=True,
+                        text=True,
+                        timeout=_DOCKER_CLEANUP_TIMEOUT_SECONDS,
+                    )
+                    if kill_result.returncode != 0:
+                        logger.debug(
+                            "docker kill failed for %s: %s",
+                            container_id,
+                            kill_result.stderr.strip(),
+                        )
+                except Exception:
+                    logger.debug("docker kill failed for %s", container_id, exc_info=True)
+            except Exception:
+                logger.debug("docker stop failed for %s", container_id, exc_info=True)
             try:
                 remove = subprocess.run(
                     ["docker", "rm", container_id],
                     capture_output=True,
                     text=True,
-                    timeout=30,
+                    timeout=_DOCKER_CLEANUP_TIMEOUT_SECONDS,
                 )
                 if remove.returncode != 0:
                     logger.debug(

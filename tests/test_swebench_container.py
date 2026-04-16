@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -118,6 +119,48 @@ def test_stop_removes_stopped_container() -> None:
     with patch(
         "src.swebench_container.subprocess.run",
         return_value=SimpleNamespace(returncode=0, stderr=""),
+    ) as run_mock:
+        container.stop()
+
+    assert [call.args[0] for call in run_mock.call_args_list] == [
+        ["docker", "stop", "container-123"],
+        ["docker", "rm", "container-123"],
+    ]
+    assert container.container_id is None
+
+
+def test_stop_falls_back_to_kill_after_timeout() -> None:
+    container = SWEBenchContainer(_make_item())
+    container.container_id = "container-123"
+
+    with patch(
+        "src.swebench_container.subprocess.run",
+        side_effect=[
+            subprocess.TimeoutExpired(["docker", "stop", "container-123"], timeout=120),
+            SimpleNamespace(returncode=0, stderr=""),
+            SimpleNamespace(returncode=0, stderr=""),
+        ],
+    ) as run_mock:
+        container.stop()
+
+    assert [call.args[0] for call in run_mock.call_args_list] == [
+        ["docker", "stop", "container-123"],
+        ["docker", "kill", "container-123"],
+        ["docker", "rm", "container-123"],
+    ]
+    assert container.container_id is None
+
+
+def test_stop_still_attempts_rm_when_stop_errors() -> None:
+    container = SWEBenchContainer(_make_item())
+    container.container_id = "container-123"
+
+    with patch(
+        "src.swebench_container.subprocess.run",
+        side_effect=[
+            RuntimeError("docker stop failed"),
+            SimpleNamespace(returncode=0, stderr=""),
+        ],
     ) as run_mock:
         container.stop()
 
