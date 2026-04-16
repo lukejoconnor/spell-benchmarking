@@ -151,6 +151,31 @@ def test_stop_falls_back_to_kill_after_timeout() -> None:
     assert container.container_id is None
 
 
+def test_stop_timeout_surfaces_failed_cleanup_and_preserves_container_id() -> None:
+    container = SWEBenchContainer(_make_item())
+    container.container_id = "container-123"
+
+    with patch(
+        "src.swebench_container.subprocess.run",
+        side_effect=[
+            subprocess.TimeoutExpired(["docker", "stop", "container-123"], timeout=120),
+            SimpleNamespace(returncode=1, stderr="docker daemon unhealthy"),
+            SimpleNamespace(returncode=1, stderr="docker daemon unhealthy"),
+        ],
+    ) as run_mock, pytest.raises(
+        RuntimeError,
+        match="Failed to clean up timed-out SWE-bench container",
+    ):
+        container.stop()
+
+    assert [call.args[0] for call in run_mock.call_args_list] == [
+        ["docker", "stop", "container-123"],
+        ["docker", "kill", "container-123"],
+        ["docker", "rm", "container-123"],
+    ]
+    assert container.container_id == "container-123"
+
+
 def test_stop_still_attempts_rm_when_stop_errors() -> None:
     container = SWEBenchContainer(_make_item())
     container.container_id = "container-123"

@@ -796,7 +796,11 @@ class SWEBenchContainer:
 
     def stop(self) -> None:
         container_id = self.container_id
+        cleanup_error: RuntimeError | None = None
         if container_id:
+            stop_timed_out = False
+            cleanup_failures: list[str] = []
+            remove_failed = False
             try:
                 stop_result = subprocess.run(
                     ["docker", "stop", container_id],
@@ -811,6 +815,7 @@ class SWEBenchContainer:
                         stop_result.stderr.strip(),
                     )
             except subprocess.TimeoutExpired:
+                stop_timed_out = True
                 logger.warning(
                     "docker stop timed out for %s after %ss; falling back to docker kill",
                     container_id,
@@ -824,12 +829,18 @@ class SWEBenchContainer:
                         timeout=_DOCKER_CLEANUP_TIMEOUT_SECONDS,
                     )
                     if kill_result.returncode != 0:
+                        kill_error = (
+                            kill_result.stderr.strip()
+                            or "docker kill returned non-zero exit status"
+                        )
+                        cleanup_failures.append(f"docker kill: {kill_error}")
                         logger.debug(
                             "docker kill failed for %s: %s",
                             container_id,
-                            kill_result.stderr.strip(),
+                            kill_error,
                         )
-                except Exception:
+                except Exception as exc:
+                    cleanup_failures.append(f"docker kill raised {exc!r}")
                     logger.debug("docker kill failed for %s", container_id, exc_info=True)
             except Exception:
                 logger.debug("docker stop failed for %s", container_id, exc_info=True)
@@ -841,19 +852,45 @@ class SWEBenchContainer:
                     timeout=_DOCKER_CLEANUP_TIMEOUT_SECONDS,
                 )
                 if remove.returncode != 0:
+                    remove_error = (
+                        remove.stderr.strip() or "docker rm returned non-zero exit status"
+                    )
+                    if stop_timed_out:
+                        remove_failed = True
+                        cleanup_failures.append(f"docker rm: {remove_error}")
                     logger.debug(
                         "docker rm skipped for %s: %s",
                         container_id,
-                        remove.stderr.strip(),
+                        remove_error,
                     )
-            except Exception:
+            except Exception as exc:
+                if stop_timed_out:
+                    remove_failed = True
+                    cleanup_failures.append(f"docker rm raised {exc!r}")
                 logger.debug("docker rm failed for %s", container_id, exc_info=True)
-        self.container_id = None
-        self.initial_commit = None
-        self._container_obj = None
+            if stop_timed_out and remove_failed:
+                detail = "; ".join(cleanup_failures)
+                logger.error(
+                    "Failed to clean up timed-out SWE-bench container %s; container may still be running: %s",
+                    container_id,
+                    detail,
+                )
+                cleanup_error = RuntimeError(
+                    f"Failed to clean up timed-out SWE-bench container {container_id}: {detail}"
+                )
+            else:
+                self.container_id = None
+                self.initial_commit = None
+                self._container_obj = None
+        else:
+            self.container_id = None
+            self.initial_commit = None
+            self._container_obj = None
         if self._logger is not None:
             close_logger(self._logger)
             self._logger = None
+        if cleanup_error is not None:
+            raise cleanup_error
 
     def cleanup_image(self) -> None:
         image_name = self.image_name
