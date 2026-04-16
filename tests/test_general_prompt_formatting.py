@@ -99,6 +99,10 @@ class GeneralPromptFormattingTest(unittest.TestCase):
 
         self.assertIn("Document path: /tmp/context.txt", prompt)
         self.assertIn(LONGBENCH_SEARCH_GUIDANCE, prompt)
+        self.assertNotIn("!peek", prompt)
+        self.assertNotIn("io/read-lines", prompt)
+        self.assertNotIn("(think", prompt)
+        self.assertNotIn("persist", prompt)
 
     def test_general_spell_trailing_applies_to_all_math_datasets(self) -> None:
         for ds in ("gsm8k", "math", "aime", "hmmt", "omni_math", "project_euler", "mathconstruct"):

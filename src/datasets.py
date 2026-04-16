@@ -671,11 +671,11 @@ def load_babilong(context_size: str = '32k', tasks: list[str] = None) -> list[Be
 LONGBENCH_SEARCH_GUIDANCE = (
     "The document may be very large — some documents exceed 1M tokens, "
     "which will overflow your context window if read in full.\n\n"
-    "Strategy: Read the document in chunks of 200 lines using !peek with "
-    "io/read-lines. For each chunk, use (think \"...\") to summarize what "
-    "you found. Use (persist key value) to retain any lines that seem "
-    "relevant to the question. After scanning enough of the document, "
-    "synthesize your answer from your persisted evidence and summaries."
+    "Strategy: Work through the document incrementally in small chunks or "
+    "sections. After each chunk, briefly summarize what you found and keep "
+    "notes on any lines or facts that seem relevant to the question. Once "
+    "you have enough evidence, synthesize your answer from those notes "
+    "rather than rereading the whole document."
 )
 
 
