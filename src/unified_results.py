@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, asdict
 from datetime import datetime, UTC
 from pathlib import Path
@@ -58,15 +59,35 @@ def now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def append_jsonl(path: Path | str, record: UnifiedRunRecord | dict[str, Any]) -> None:
+def _needs_record_separator(output_path: Path) -> bool:
+    if not output_path.exists() or output_path.stat().st_size == 0:
+        return False
+
+    with output_path.open("rb") as f:
+        f.seek(-1, os.SEEK_END)
+        return f.read(1) != b"\n"
+
+
+def append_jsonl(
+    path: Path | str,
+    record: UnifiedRunRecord | dict[str, Any],
+    *,
+    flush: bool = False,
+    fsync: bool = False,
+) -> None:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload = asdict(record) if isinstance(record, UnifiedRunRecord) else record
+    prefix = "\n" if _needs_record_separator(output_path) else ""
     with output_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(payload, default=str) + "\n")
+        f.write(prefix + json.dumps(payload, default=str) + "\n")
+        if flush or fsync:
+            f.flush()
+        if fsync:
+            os.fsync(f.fileno())
 
 
-def load_jsonl(path: Path | str) -> list[dict[str, Any]]:
+def load_jsonl(path: Path | str, *, tolerate_invalid: bool = False) -> list[dict[str, Any]]:
     input_path = Path(path)
     if not input_path.exists():
         return []
@@ -75,7 +96,11 @@ def load_jsonl(path: Path | str) -> list[dict[str, Any]]:
         for line in f:
             line = line.strip()
             if line:
-                rows.append(json.loads(line))
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    if not tolerate_invalid:
+                        raise
     return rows
 
 

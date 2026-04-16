@@ -85,6 +85,7 @@ from src.usage_accounting import sum_usages, usage_record_fields
 from src.unified_results import (
     UnifiedRunRecord,
     append_jsonl,
+    load_jsonl,
     now_iso,
     parse_model_spec,
     summarize_records,
@@ -673,22 +674,64 @@ def _build_adapter(
 
 
 def _print_summary(output_file: Path, run_id: str, condition: str, *, name: str | None = None) -> None:
-    rows = []
-    with output_file.open("r", encoding="utf-8") as f:
-        for line in f:
-            row = json.loads(line)
-            if (
-                row.get("run_id") == run_id
-                and row.get("condition") == condition
-                and row.get("name") == name
-            ):
-                rows.append(row)
+    rows = _matching_unified_rows(
+        output_file,
+        run_id=run_id,
+        condition=condition,
+        name=name,
+        tolerate_invalid=True,
+    )
     summary = summarize_records(rows)
     click.echo(f"Summary ({_condition_label(condition, name)}): total={summary['total']} errors={summary['errors']} ")
     if summary["accuracy"] is not None:
         click.echo(f"  accuracy={summary['accuracy']:.1%}")
     if summary["total_cost_usd"] is not None:
         click.echo(f"  cost=${summary['total_cost_usd']:.4f}")
+
+
+def _matching_unified_rows(
+    output_file: Path,
+    *,
+    run_id: str,
+    condition: str | None = None,
+    name: str | None = None,
+    tolerate_invalid: bool = False,
+) -> list[dict[str, Any]]:
+    rows = load_jsonl(output_file, tolerate_invalid=tolerate_invalid)
+    return [
+        row for row in rows
+        if row.get("run_id") == run_id
+        and (condition is None or row.get("condition") == condition)
+        and row.get("name") == name
+    ]
+
+
+def _latest_rows_by_item(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        item_id = row.get("item_id")
+        if isinstance(item_id, str) and item_id:
+            latest[item_id] = row
+    return list(latest.values())
+
+
+def _swebench_predictions_from_output(
+    output_file: Path,
+    *,
+    run_id: str,
+    condition: str,
+    name: str | None = None,
+) -> list[_SwePrediction]:
+    rows = _latest_rows_by_item(
+        _matching_unified_rows(
+            output_file,
+            run_id=run_id,
+            condition=condition,
+            name=name,
+            tolerate_invalid=True,
+        )
+    )
+    return [_SwePrediction(instance_id=row["item_id"], patch=row.get("patch") or "") for row in rows]
 
 
 def _resolve_spell_agent_or_die(
@@ -1811,33 +1854,60 @@ def run_swebench(
                         reasoning_effort=reasoning_effort,
                     )
 
-            if parallel <= 1:
-                records = []
-                for i, item in enumerate(items):
-                    click.echo(f"  [{i+1}/{len(items)}] {item.instance_id}")
-                    records.append(process(item))
-            else:
-                records = [None] * len(items)
-                with ThreadPoolExecutor(max_workers=parallel) as pool:
-                    futures = {pool.submit(process, item): idx for idx, item in enumerate(items)}
-                    done = 0
-                    for fut in as_completed(futures):
-                        idx = futures[fut]
-                        done += 1
-                        records[idx] = fut.result()
-                        click.echo(f"  [{done}/{len(items)}] {items[idx].instance_id}")
-                records = [r for r in records if r is not None]
+            existing_rows = _matching_unified_rows(
+                output_file,
+                run_id=run_id,
+                condition=cond,
+                name=name,
+                tolerate_invalid=True,
+            )
+            completed_item_ids = {
+                item_id
+                for row in existing_rows
+                if isinstance((item_id := row.get("item_id")), str) and item_id
+            }
+            pending_items = [item for item in items if item.instance_id not in completed_item_ids]
+            if completed_item_ids:
+                click.echo(
+                    f"  Resume: {len(completed_item_ids)}/{len(items)} items already recorded; "
+                    f"running {len(pending_items)} pending"
+                )
 
-            for record in records:
+            def persist_record(record: UnifiedRunRecord) -> None:
                 image_name = record.metadata.get("instance_image_name")
                 if isinstance(image_name, str) and image_name:
                     images_to_cleanup.add(image_name)
-                append_jsonl(output_file, record)
+                append_jsonl(output_file, record, flush=True, fsync=True)
+
+            completed_so_far = len(completed_item_ids)
+            if parallel <= 1:
+                for item in pending_items:
+                    record = process(item)
+                    persist_record(record)
+                    completed_so_far += 1
+                    click.echo(f"  [{completed_so_far}/{len(items)}] {item.instance_id}")
+            else:
+                with ThreadPoolExecutor(max_workers=parallel) as pool:
+                    futures = {pool.submit(process, item): item for item in pending_items}
+                    for fut in as_completed(futures):
+                        item = futures[fut]
+                        record = fut.result()
+                        persist_record(record)
+                        completed_so_far += 1
+                        click.echo(f"  [{completed_so_far}/{len(items)}] {item.instance_id}")
+
+            if not pending_items:
+                click.echo("  No pending items; rebuilding predictions from existing unified output")
 
             _print_summary(output_file, run_id, cond, name=name)
 
             pred_path = Path("results") / "swebench" / _swebench_predictions_filename(cond, dataset, run_id, name=name)
-            swe_results = [_SwePrediction(instance_id=record.item_id, patch=record.patch or "") for record in records]
+            swe_results = _swebench_predictions_from_output(
+                output_file,
+                run_id=run_id,
+                condition=cond,
+                name=name,
+            )
             pred_model_name = {
                 "spell": model or "unknown",
                 "claude_code": f"claude_code:{claude_model or 'unknown'}",
