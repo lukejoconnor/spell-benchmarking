@@ -21,6 +21,7 @@ from src.swebench_container import (
     _env_exports_from_dockerfiles,
     _normalize_build_image_error,
     _parse_string_list,
+    _sanitize_pro_before_repo_set_cmd,
     prewarm_swebench_env_images,
 )
 from src.datasets import SWEBenchItem
@@ -60,20 +61,97 @@ def test_env_exports_from_dockerfiles_collects_env_lines(tmp_path: Path) -> None
     assert 'export MESSAGE="hello world"' in exports
 
 
-def test_build_pro_eval_entryscript_keeps_full_before_repo_set_cmd() -> None:
+def test_build_pro_eval_entryscript_excludes_destructive_pro_repo_reset_commands() -> None:
     entryscript = _build_pro_eval_entryscript(
         container_workdir="/app",
         env_exports="export FOO=bar",
-        before_repo_set_cmd="git reset --hard\ngit clean -fd\ngit checkout -- tests",
+        before_repo_set_cmd=_sanitize_pro_before_repo_set_cmd(
+            "\n".join(
+                [
+                    "git reset --hard abc123",
+                    "git clean -fd",
+                    "git checkout abc123",
+                    "git checkout def456 -- tests/a.py tests/b.py",
+                ]
+            )
+        ),
         selected_tests=["tests/a.py", "tests/b.py"],
     )
 
     assert "export FOO=bar\nset -e\ncd /app\n" in entryscript
-    assert "git reset --hard\ngit clean -fd\ngit checkout -- tests\n" in entryscript
+    assert "git reset --hard abc123" not in entryscript
+    assert "git clean -fd" not in entryscript
+    assert "git checkout abc123" not in entryscript
+    assert "git checkout def456 -- tests/a.py tests/b.py\n" in entryscript
     assert "bash /tmp/run_script.sh tests/a.py,tests/b.py > /tmp/stdout.log 2> /tmp/stderr.log" in entryscript
     assert entryscript.endswith(
         "python /tmp/parser.py /tmp/stdout.log /tmp/stderr.log /tmp/output.json\n"
     )
+
+
+def test_sanitize_pro_before_repo_set_cmd_keeps_harmless_setup_and_test_checkout() -> None:
+    sanitized = _sanitize_pro_before_repo_set_cmd(
+        "\n".join(
+            [
+                "",
+                "echo setup",
+                "git checkout def456 -- tests/pro/test_case.py",
+                "",
+            ]
+        )
+    )
+
+    assert sanitized == "echo setup\ngit checkout def456 -- tests/pro/test_case.py"
+
+
+def test_run_pro_eval_passes_sanitized_before_repo_set_cmd_to_entryscript_builder(
+    tmp_path: Path,
+) -> None:
+    instance_id = "pro-instance"
+    eval_repo = tmp_path / "scale-pro-eval"
+    scripts_dir = eval_repo / "run_scripts" / instance_id
+    base_dir = eval_repo / "dockerfiles" / "base_dockerfile" / instance_id
+    instance_dir = eval_repo / "dockerfiles" / "instance_dockerfile" / instance_id
+    scripts_dir.mkdir(parents=True)
+    base_dir.mkdir(parents=True)
+    instance_dir.mkdir(parents=True)
+    (scripts_dir / "run_script.sh").write_text("echo run\n", encoding="utf-8")
+    (scripts_dir / "parser.py").write_text("print('ok')\n", encoding="utf-8")
+    (base_dir / "Dockerfile").write_text("FROM python:3.11\n", encoding="utf-8")
+    (instance_dir / "Dockerfile").write_text("ENV FOO=bar\n", encoding="utf-8")
+
+    item = _make_item(
+        instance_id=instance_id,
+        raw_instance={
+            "dockerhub_tag": "repo.tag",
+            "before_repo_set_cmd": "\n".join(
+                [
+                    "git reset --hard abc123",
+                    "git clean -fd",
+                    "git checkout abc123",
+                    "git checkout def456 -- tests/a.py",
+                ]
+            ),
+            "selected_test_files_to_run": '["tests/a.py"]',
+        },
+    )
+    container = SWEBenchContainer(item, pro_eval_repo=str(eval_repo))
+
+    with (
+        patch("src.swebench_container.ensure_scale_pro_eval_repo", return_value=eval_repo),
+        patch.object(container, "put_tar_archive", return_value=False),
+        patch(
+            "src.swebench_container._build_pro_eval_entryscript",
+            wraps=_build_pro_eval_entryscript,
+        ) as build_mock,
+    ):
+        with pytest.raises(
+            RuntimeError, match="Failed to copy SWE-bench Pro eval assets into container"
+        ):
+            container._run_pro_eval(timeout=30)
+
+    assert build_mock.call_count == 1
+    assert build_mock.call_args.kwargs["before_repo_set_cmd"] == "git checkout def456 -- tests/a.py"
 
 
 def test_swebench_container_detects_pro_rows() -> None:

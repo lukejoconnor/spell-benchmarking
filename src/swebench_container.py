@@ -148,6 +148,27 @@ def _env_exports_from_dockerfiles(*dockerfiles: Path) -> str:
     return "\n".join(exports)
 
 
+def _sanitize_pro_before_repo_set_cmd(script: str) -> str:
+    kept_lines: list[str] = []
+    for raw_line in script.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("git reset "):
+            continue
+        if stripped.startswith("git clean "):
+            continue
+        if stripped.startswith("git checkout "):
+            try:
+                checkout_parts = shlex.split(stripped)
+            except ValueError:
+                checkout_parts = stripped.split()
+            if "--" not in checkout_parts:
+                continue
+        kept_lines.append(raw_line)
+    return "\n".join(kept_lines)
+
+
 def _build_pro_eval_entryscript(
     *,
     container_workdir: str,
@@ -721,9 +742,9 @@ class SWEBenchContainer:
         )
 
         env_exports = _env_exports_from_dockerfiles(base_dockerfile, instance_dockerfile)
-        before_repo_set_cmd = str(
-            (self.item.raw_instance or {}).get("before_repo_set_cmd", "")
-        ).strip()
+        before_repo_set_cmd = _sanitize_pro_before_repo_set_cmd(
+            str((self.item.raw_instance or {}).get("before_repo_set_cmd", ""))
+        )
         selected_tests = _parse_string_list(
             (self.item.raw_instance or {}).get("selected_test_files_to_run", "[]")
         )
