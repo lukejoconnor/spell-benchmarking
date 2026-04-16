@@ -61,6 +61,7 @@ from src.featurebench_lib import (
 from src.swebench_output import write_predictions_jsonl
 from src.swebench_container import (
     SWEBenchContainerSetupError,
+    SWEBenchEnvImageCacheConfig,
     prewarm_swebench_env_images,
     remove_swebench_instance_image,
 )
@@ -138,6 +139,16 @@ MATH_TRAILING = "'(!describe math)"
 class _SwePrediction:
     instance_id: str
     patch: str
+
+
+def _make_swebench_env_cache_config(
+    repository: str | None,
+    *,
+    read_only: bool,
+) -> SWEBenchEnvImageCacheConfig | None:
+    if not repository:
+        return None
+    return SWEBenchEnvImageCacheConfig(repository=repository, write_enabled=not read_only)
 
 def _run_id(prefix: str) -> str:
     ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
@@ -1407,6 +1418,19 @@ def run_general(
 @click.option("--eval-instance-image-tag", default="latest", show_default=True)
 @click.option("--eval-env-image-tag", default="latest", show_default=True)
 @click.option(
+    "--env-image-cache-repository",
+    default=None,
+    envvar="SPELL_SWEBENCH_ENV_IMAGE_CACHE_REPOSITORY",
+    help="Artifact Registry repository for SWE-bench env-image caching",
+)
+@click.option(
+    "--env-image-cache-read-only/--no-env-image-cache-read-only",
+    default=False,
+    show_default=True,
+    envvar="SPELL_SWEBENCH_ENV_IMAGE_CACHE_READ_ONLY",
+    help="Pull from the SWE-bench env cache but do not publish new env images",
+)
+@click.option(
     "--prewarm-envs/--no-prewarm-envs",
     default=False,
     show_default=True,
@@ -1527,6 +1551,8 @@ def run_swebench(
     eval_namespace: str,
     eval_instance_image_tag: str,
     eval_env_image_tag: str,
+    env_image_cache_repository: str | None,
+    env_image_cache_read_only: bool,
     prewarm_envs: bool,
     env_build_workers: int,
     prewarm_only: bool,
@@ -1605,6 +1631,10 @@ def run_swebench(
     click.echo(f"Loaded {len(items)} items")
     if env_build_workers < 1:
         raise click.ClickException("--env-build-workers must be at least 1")
+    env_image_cache = _make_swebench_env_cache_config(
+        env_image_cache_repository,
+        read_only=env_image_cache_read_only,
+    )
     if dry_run:
         spell_resolution = None
         if "spell" in conditions:
@@ -1644,6 +1674,8 @@ def run_swebench(
                     "eval_namespace": eval_namespace,
                     "eval_instance_image_tag": eval_instance_image_tag,
                     "eval_env_image_tag": eval_env_image_tag,
+                    "env_image_cache_repository": env_image_cache_repository,
+                    "env_image_cache_read_only": env_image_cache_read_only,
                     "prewarm_envs": prewarm_envs,
                     "env_build_workers": env_build_workers,
                     "prewarm_only": prewarm_only,
@@ -1679,12 +1711,14 @@ def run_swebench(
             f"Prewarming SWE-bench env images with {env_build_workers} worker"
             f"{'' if env_build_workers == 1 else 's'}"
         )
-        prewarm_result = prewarm_swebench_env_images(
-            items,
-            instance_image_tag=eval_instance_image_tag,
-            env_image_tag=eval_env_image_tag,
-            max_workers=env_build_workers,
-        )
+        prewarm_kwargs: dict[str, Any] = {
+            "instance_image_tag": eval_instance_image_tag,
+            "env_image_tag": eval_env_image_tag,
+            "max_workers": env_build_workers,
+        }
+        if env_image_cache is not None:
+            prewarm_kwargs["env_image_cache"] = env_image_cache
+        prewarm_result = prewarm_swebench_env_images(items, **prewarm_kwargs)
         click.echo(
             "Prewarm summary: "
             f"{prewarm_result.unique_env_count} unique env image"
@@ -1761,12 +1795,17 @@ def run_swebench(
                         trace_dir=req.trace_dir,
                         eval_timeout=eval_timeout,
                         item=item,
-                    pro_eval_repo=pro_eval_repo if dataset == "pro" else None,
-                    pro_dockerhub_username=pro_dockerhub_username,
-                    instance_image_tag=eval_instance_image_tag,
-                    env_image_tag=eval_env_image_tag,
-                    backend=backend,
-                )
+                        pro_eval_repo=pro_eval_repo if dataset == "pro" else None,
+                        pro_dockerhub_username=pro_dockerhub_username,
+                        instance_image_tag=eval_instance_image_tag,
+                        env_image_tag=eval_env_image_tag,
+                        backend=backend,
+                        **(
+                            {"env_image_cache": env_image_cache}
+                            if env_image_cache is not None
+                            else {}
+                        ),
+                    )
                     patch = resp.metadata.get("patch", "")
                     changed_files = resp.metadata.get("changed_files", [])
 
