@@ -962,6 +962,43 @@ class WebSearchCliRegressionTest(unittest.TestCase):
         )
         self.assertFalse(events[1][1]["env_image_cache"].write_enabled)
 
+    def test_swebench_env_image_cache_rejects_non_docker_backend(self):
+        lite_item = SimpleNamespace(
+            instance_id="django__django-1",
+            repo="django/django",
+            base_commit="abc123",
+            problem_statement="Fix it",
+            hints_text="",
+            metadata={},
+            raw_instance={},
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.object(self.bench, "load_swebench_lite", return_value=[lite_item]):
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "swebench",
+                    "--dataset",
+                    "lite",
+                    "--condition",
+                    "codex",
+                    "--codex-model",
+                    "codex",
+                    "--n",
+                    "1",
+                    "--backend",
+                    "singularity",
+                    "--env-image-cache-repository",
+                    "us-central1-docker.pkg.dev/project/cache/sweb-env",
+                    "--output",
+                    str(Path(tmp_dir) / "out.jsonl"),
+                ],
+            )
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("only supported with the docker backend", result.output)
+
     def test_swebench_keep_images_skips_final_image_cleanup(self):
         lite_item = SimpleNamespace(
             instance_id="django__django-1",

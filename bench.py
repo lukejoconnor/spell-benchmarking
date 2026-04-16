@@ -1635,6 +1635,8 @@ def run_swebench(
         env_image_cache_repository,
         read_only=env_image_cache_read_only,
     )
+    if backend != "docker" and env_image_cache is not None:
+        raise click.ClickException("SWE-bench env-image cache is only supported with the docker backend")
     if dry_run:
         spell_resolution = None
         if "spell" in conditions:

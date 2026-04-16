@@ -612,7 +612,12 @@ class SWEBenchContainer:
                         self._test_spec, self._docker_client, run_id, self._logger, False, False
                     )
                 except BuildImageError as exc:
-                    raise _normalize_build_image_error(exc, stage="build_container") from exc
+                    logger.warning(
+                        "Cached SWE-bench env image %s for %s did not produce a usable container; rebuilding locally",
+                        env_lock_key,
+                        self.item.instance_id,
+                        exc_info=True,
+                    )
             logger.info(
                 "Env image %s missing for %s; building from scratch",
                 env_lock_key,
