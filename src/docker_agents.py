@@ -59,6 +59,8 @@ RETRYABLE_APT_FETCH_MARKERS = (
     "could not connect",
     "connection failed",
     "network is unreachable",
+)
+RETRYABLE_APT_MIRROR_MARKERS = (
     "file has unexpected size",
     "hash sum mismatch",
 )
@@ -552,7 +554,9 @@ def _is_retryable_install_timeout(result: ExecOutput) -> bool:
 
 def _is_retryable_apt_fetch_failure(stdout: str, stderr: str) -> bool:
     output = "\n".join(part for part in (stdout, stderr) if part).lower()
-    return any(marker in output for marker in RETRYABLE_APT_FETCH_MARKERS)
+    if any(marker in output for marker in RETRYABLE_APT_MIRROR_MARKERS):
+        return True
+    return "failed to fetch" in output and any(marker in output for marker in RETRYABLE_APT_FETCH_MARKERS)
 
 
 def _is_retryable_pip_hash_mismatch(stdout: str, stderr: str) -> bool:
@@ -576,13 +580,16 @@ def _run_install_with_apt_retry(
     label: str,
 ) -> ExecOutput:
     last_result = ExecOutput(exit_code=1, stdout="", stderr="install did not run")
+    current_env = dict(env or {})
     for attempt in range(1, APT_FETCH_RETRY_MAX_ATTEMPTS + 1):
-        last_result = exec_fn(script, timeout=timeout, env=env, workdir=workdir)
+        exec_env = dict(current_env) if current_env else None
+        last_result = exec_fn(script, timeout=timeout, env=exec_env, workdir=workdir)
         if last_result.exit_code == 0:
             return last_result
         retryable_timeout = _is_retryable_install_timeout(last_result)
         retryable_apt = _is_retryable_apt_fetch_failure(last_result.stdout, last_result.stderr)
-        if attempt >= APT_FETCH_RETRY_MAX_ATTEMPTS or not (retryable_timeout or retryable_apt):
+        retryable_pip_hash = _is_retryable_pip_hash_mismatch(last_result.stdout, last_result.stderr)
+        if attempt >= APT_FETCH_RETRY_MAX_ATTEMPTS or not (retryable_timeout or retryable_apt or retryable_pip_hash):
             return last_result
         if retryable_timeout:
             logger.warning(
@@ -592,6 +599,16 @@ def _run_install_with_apt_retry(
                 APT_FETCH_RETRY_MAX_ATTEMPTS,
                 _exec_output_excerpt(last_result),
             )
+        elif retryable_pip_hash:
+            logger.warning(
+                "%s hit pip hash mismatch (attempt %s/%s), retrying with cache disabled: %s",
+                label,
+                attempt,
+                APT_FETCH_RETRY_MAX_ATTEMPTS,
+                _exec_output_excerpt(last_result),
+            )
+            current_env["PIP_NO_CACHE_DIR"] = "1"
+            current_env["UV_NO_CACHE"] = "1"
         else:
             logger.warning(
                 "%s hit transient apt fetch failure (attempt %s/%s): %s",
@@ -634,11 +651,7 @@ def install_nvm_node_exec(
 
 
 def ensure_uv(container: DockerWorkspaceContainer) -> bool:
-    result = container.exec_run(
-        _pip_install_command(["uv"]),
-        timeout=180,
-    )
-    return result.exit_code == 0
+    return ensure_python_packages(container, ["uv"])
 
 
 def ensure_python_packages(container: DockerWorkspaceContainer, packages: list[str]) -> bool:
@@ -936,12 +949,16 @@ def _read_codex_rollout_from_container(
 def swe_agent_install_script() -> str:
     return r"""
 set -euo pipefail
-if command -v uv >/dev/null 2>&1; then
+pip_cache_flag=
+if [ "${PIP_NO_CACHE_DIR:-}" = "1" ]; then
+  pip_cache_flag="--no-cache-dir"
+fi
+if command -v uv >/dev/null 2>&1 && [ -z "$pip_cache_flag" ]; then
   uv pip install --system -q mini-swe-agent
 elif command -v python3 >/dev/null 2>&1; then
-  python3 -m pip install -q mini-swe-agent
+  python3 -m pip install -q --disable-pip-version-check $pip_cache_flag mini-swe-agent
 else
-  python -m pip install -q mini-swe-agent
+  python -m pip install -q --disable-pip-version-check $pip_cache_flag mini-swe-agent
 fi
 echo "mini installed: $(mini --help >/dev/null 2>&1 && echo ok || echo missing)"
 """

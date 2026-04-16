@@ -36,6 +36,7 @@ from src.docker_agents import (
     run_install_script,
     resolve_spell_model,
     spell_env_vars,
+    swe_agent_install_script,
 )
 
 
@@ -217,6 +218,14 @@ class DockerAgentsTests(unittest.TestCase):
             )
         )
 
+    def test_retryable_apt_fetch_failure_requires_fetch_context_for_connection_markers(self) -> None:
+        self.assertFalse(
+            _is_retryable_apt_fetch_failure(
+                "",
+                "curl: (7) Could not connect to proxy host",
+            )
+        )
+
     def test_retryable_apt_fetch_failure_rejects_missing_apt(self) -> None:
         self.assertFalse(_is_retryable_apt_fetch_failure("", "apt-get: command not found"))
 
@@ -278,6 +287,35 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertEqual(len(container.calls), 2)
         self.assertEqual([cmd for cmd, _kwargs in container.calls], ["echo install"] * 2)
         self.assertEqual(container.calls[0][1], {"timeout": 300, "env": None, "workdir": None})
+        self.assertEqual(sleep.call_count, 1)
+
+    def test_run_install_script_retries_hash_mismatch_with_no_cache_env(self) -> None:
+        env = {"TOKEN": "abc"}
+        container = FakeInstallContainer(
+            [
+                ExecOutput(
+                    exit_code=1,
+                    stdout="",
+                    stderr="ERROR: THESE PACKAGES DO NOT MATCH THE HASHES from the requirements file.",
+                ),
+                ExecOutput(exit_code=0, stdout="ready", stderr=""),
+            ]
+        )
+
+        with patch("src.docker_agents.time.sleep") as sleep:
+            ok = run_install_script(container, "echo install", env=env, timeout=300)
+
+        self.assertTrue(ok)
+        self.assertEqual(len(container.calls), 2)
+        self.assertEqual(container.calls[0][1], {"timeout": 300, "env": env, "workdir": None})
+        self.assertEqual(
+            container.calls[1][1],
+            {
+                "timeout": 300,
+                "env": {"TOKEN": "abc", "PIP_NO_CACHE_DIR": "1", "UV_NO_CACHE": "1"},
+                "workdir": None,
+            },
+        )
         self.assertEqual(sleep.call_count, 1)
 
     def test_run_install_script_fails_fast_on_non_retryable_error(self) -> None:
@@ -345,6 +383,13 @@ class DockerAgentsTests(unittest.TestCase):
             container.calls[0][0],
             "python -m pip install -q --disable-pip-version-check numpy",
         )
+
+    def test_swe_agent_install_script_uses_pip_when_cache_disabled(self) -> None:
+        script = swe_agent_install_script()
+
+        self.assertIn('if [ "${PIP_NO_CACHE_DIR:-}" = "1" ]; then', script)
+        self.assertIn('python3 -m pip install -q --disable-pip-version-check $pip_cache_flag mini-swe-agent', script)
+        self.assertIn('command -v uv >/dev/null 2>&1 && [ -z "$pip_cache_flag" ]', script)
 
     def test_install_nvm_node_exec_retries_nvm_script_before_succeeding(self) -> None:
         env = {"NVM_DIR": "/tmp/nvm"}
