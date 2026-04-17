@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import platform
 import runpy
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -121,6 +122,50 @@ def _maybe_patch_swebench_builder() -> None:
 _PIP_PIN_APPLIED = False
 
 
+def _branch_clone_with_fallback(repo: str, repo_directory: str, branch: str) -> str:
+    repo_url = f"https://github.com/{repo}"
+    quoted_repo = shlex.quote(repo_url)
+    quoted_dir = shlex.quote(repo_directory)
+    quoted_branch = shlex.quote(branch)
+    return "\n".join(
+        [
+            f"if git ls-remote --exit-code --heads {quoted_repo} {quoted_branch} >/dev/null 2>&1; then",
+            f"  git clone -o origin --branch {quoted_branch} --single-branch {quoted_repo} {quoted_dir}",
+            "else",
+            (
+                f'  echo "SWE-bench setup fallback: missing remote branch {branch} for {repo}; '
+                'cloning full repo before checkout" >&2'
+            ),
+            f"  git clone -o origin {quoted_repo} {quoted_dir}",
+            "fi",
+        ]
+    )
+
+
+def _patch_repo_setup_commands(
+    commands: list[str],
+    *,
+    repo: str,
+    repo_directory: str,
+    branch: str,
+) -> list[str]:
+    patched = list(commands)
+
+    for i, cmd in enumerate(patched):
+        if cmd.startswith("conda activate "):
+            patched.insert(i + 1, "python -m pip install 'pip<24' -qq")
+            break
+
+    if not branch:
+        return patched
+
+    for i, cmd in enumerate(patched):
+        if cmd.startswith("git clone -o origin ") and "--single-branch" in cmd:
+            patched[i] = _branch_clone_with_fallback(repo, repo_directory, branch)
+            break
+    return patched
+
+
 def _patch_pip_version_pin() -> None:
     """Pin pip<24 in instance setup scripts to avoid PEP 660 and removed-flag errors.
 
@@ -141,12 +186,13 @@ def _patch_pip_version_pin() -> None:
 
     def _patched_make_repo_script_list_py(specs, repo, repo_directory, base_commit, env_name):
         commands = _original_make_repo_script(specs, repo, repo_directory, base_commit, env_name)
-        # Insert pip downgrade right after 'conda activate ...'
-        for i, cmd in enumerate(commands):
-            if cmd.startswith("conda activate "):
-                commands.insert(i + 1, "python -m pip install 'pip<24' -qq")
-                break
-        return commands
+        branch = py_module.REPO_BASE_COMMIT_BRANCH.get(repo, {}).get(base_commit, "")
+        return _patch_repo_setup_commands(
+            commands,
+            repo=repo,
+            repo_directory=repo_directory,
+            branch=branch,
+        )
 
     py_module.make_repo_script_list_py = _patched_make_repo_script_list_py
     # Also patch the re-exported reference in create_scripts (imported by name)

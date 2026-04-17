@@ -1421,14 +1421,14 @@ def run_general(
     "--env-image-cache-repository",
     default=None,
     envvar="SPELL_SWEBENCH_ENV_IMAGE_CACHE_REPOSITORY",
-    help="Artifact Registry repository for SWE-bench env-image caching",
+    help="Artifact Registry repository for SWE-bench env/instance image caching",
 )
 @click.option(
     "--env-image-cache-read-only/--no-env-image-cache-read-only",
     default=False,
     show_default=True,
     envvar="SPELL_SWEBENCH_ENV_IMAGE_CACHE_READ_ONLY",
-    help="Pull from the SWE-bench env cache but do not publish new env images",
+    help="Pull from the SWE-bench image cache but do not publish new env or instance images",
 )
 @click.option(
     "--prewarm-envs/--no-prewarm-envs",

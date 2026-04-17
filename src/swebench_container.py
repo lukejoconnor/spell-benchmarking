@@ -44,6 +44,7 @@ PRO_WORKDIR = "/app"
 _SETUP_LOG_TAIL_CHARS = 4000
 _DOCKER_STOP_TIMEOUT_SECONDS = 120
 _DOCKER_CLEANUP_TIMEOUT_SECONDS = 30
+_INSTANCE_IMAGE_CACHE_SCHEMA_VERSION = 1
 _ENV_BUILD_LOCKS: dict[str, threading.Lock] = {}
 _ENV_BUILD_LOCKS_GUARD = threading.Lock()
 
@@ -66,8 +67,8 @@ class SWEBenchEnvImageCacheConfig:
     repository: str
     write_enabled: bool = True
 
-    def remote_ref_for(self, env_image_key: str) -> str:
-        return f"{self.repository}:{_env_image_cache_tag(env_image_key)}"
+    def remote_ref_for(self, image_key: str, *, kind: str = "env") -> str:
+        return f"{self.repository}:{_image_cache_tag(image_key, kind=kind)}"
 
 
 @dataclass(slots=True)
@@ -191,33 +192,53 @@ def _build_pro_eval_entryscript(
     return "\n".join(entry_lines) + "\n"
 
 
-def remove_swebench_instance_image(image_name: str) -> bool:
+def _remove_local_image_ref(image_ref: str, *, description: str) -> bool:
     try:
         result = subprocess.run(
-            ["docker", "rmi", image_name],
+            ["docker", "rmi", image_ref],
             capture_output=True,
             text=True,
             timeout=_DOCKER_CLEANUP_TIMEOUT_SECONDS,
         )
     except Exception:
-        logger.warning("Error removing SWE-bench instance image %s", image_name, exc_info=True)
+        logger.warning("Error removing %s %s", description, image_ref, exc_info=True)
         return False
 
     if result.returncode == 0:
-        logger.info("Removed SWE-bench instance image %s", image_name)
+        logger.info("Removed %s %s", description, image_ref)
+        return True
+
+    if "No such image" in result.stderr:
         return True
 
     logger.warning(
-        "Failed to remove SWE-bench instance image %s: %s",
-        image_name,
+        "Failed to remove %s %s: %s",
+        description,
+        image_ref,
         result.stderr.strip(),
     )
     return False
 
 
-def _env_image_cache_tag(env_image_key: str) -> str:
-    digest = hashlib.sha256(env_image_key.encode("utf-8")).hexdigest()
-    return f"env-{digest}"
+def remove_swebench_instance_image(image_name: str) -> bool:
+    return _remove_local_image_ref(image_name, description="SWE-bench instance image")
+
+
+def _image_cache_tag(image_key: str, *, kind: str) -> str:
+    digest = hashlib.sha256(image_key.encode("utf-8")).hexdigest()
+    return f"{kind}-{digest}"
+
+
+def _instance_cache_key(test_spec: Any) -> str:
+    payload = {
+        "schema_version": _INSTANCE_IMAGE_CACHE_SCHEMA_VERSION,
+        "instance_image_key": str(getattr(test_spec, "instance_image_key", "")),
+        "env_image_key": str(getattr(test_spec, "env_image_key", "")),
+        "repo_script_list": list(getattr(test_spec, "repo_script_list", []) or []),
+        "env_script_list": list(getattr(test_spec, "env_script_list", []) or []),
+        "docker_specs": getattr(test_spec, "docker_specs", {}) or {},
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def _docker_run_command(args: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
@@ -259,25 +280,31 @@ def _read_log_tail(log_path: str | Path | None, limit: int = _SETUP_LOG_TAIL_CHA
 
 
 def _cache_remote_ref(
-    env_image_key: str,
+    image_key: str,
     cache_config: SWEBenchEnvImageCacheConfig,
+    *,
+    kind: str,
 ) -> str:
-    return cache_config.remote_ref_for(env_image_key)
+    return cache_config.remote_ref_for(image_key, kind=kind)
 
 
-def _pull_cached_env_image(
-    env_image_key: str,
+def _pull_cached_image(
+    image_key: str,
     cache_config: SWEBenchEnvImageCacheConfig,
+    *,
+    kind: str,
+    cache_key: str | None = None,
 ) -> bool:
-    remote_ref = _cache_remote_ref(env_image_key, cache_config)
-    logger.info("Trying SWE-bench env cache pull for %s from %s", env_image_key, remote_ref)
+    remote_ref = _cache_remote_ref(cache_key or image_key, cache_config, kind=kind)
+    logger.info("Trying SWE-bench %s cache pull for %s from %s", kind, image_key, remote_ref)
     try:
         pull = _docker_run_command(["pull", "--platform", "linux/amd64", remote_ref], timeout=600)
     except Exception:
         logger.warning(
-            "Error pulling SWE-bench env cache image %s for %s",
+            "Error pulling SWE-bench %s cache image %s for %s",
+            kind,
             remote_ref,
-            env_image_key,
+            image_key,
             exc_info=True,
         )
         return False
@@ -286,54 +313,62 @@ def _pull_cached_env_image(
         stderr = pull.stderr.strip()
         if stderr:
             logger.info(
-                "SWE-bench env cache miss for %s from %s: %s",
-                env_image_key,
+                "SWE-bench %s cache miss for %s from %s: %s",
+                kind,
+                image_key,
                 remote_ref,
                 stderr,
             )
         else:
-            logger.info("SWE-bench env cache miss for %s from %s", env_image_key, remote_ref)
+            logger.info("SWE-bench %s cache miss for %s from %s", kind, image_key, remote_ref)
         return False
 
     try:
-        tag = _docker_run_command(["tag", remote_ref, env_image_key], timeout=60)
+        tag = _docker_run_command(["tag", remote_ref, image_key], timeout=60)
     except Exception:
         logger.warning(
-            "Error retagging SWE-bench env cache image %s to %s",
+            "Error retagging SWE-bench %s cache image %s to %s",
+            kind,
             remote_ref,
-            env_image_key,
+            image_key,
             exc_info=True,
         )
         return False
 
     if tag.returncode != 0:
         logger.warning(
-            "Failed to retag SWE-bench env cache image %s to %s: %s",
+            "Failed to retag SWE-bench %s cache image %s to %s: %s",
+            kind,
             remote_ref,
-            env_image_key,
+            image_key,
             tag.stderr.strip(),
         )
         return False
 
-    logger.info("Pulled SWE-bench env cache image %s into %s", remote_ref, env_image_key)
+    _remove_local_image_ref(remote_ref, description=f"SWE-bench {kind} cache tag")
+    logger.info("Pulled SWE-bench %s cache image %s into %s", kind, remote_ref, image_key)
     return True
 
 
-def _push_cached_env_image(
-    env_image_key: str,
+def _push_cached_image(
+    image_key: str,
     cache_config: SWEBenchEnvImageCacheConfig,
+    *,
+    kind: str,
+    cache_key: str | None = None,
 ) -> bool:
     if not cache_config.write_enabled:
         return False
 
-    remote_ref = _cache_remote_ref(env_image_key, cache_config)
-    logger.info("Publishing SWE-bench env image %s to %s", env_image_key, remote_ref)
+    remote_ref = _cache_remote_ref(cache_key or image_key, cache_config, kind=kind)
+    logger.info("Publishing SWE-bench %s image %s to %s", kind, image_key, remote_ref)
     try:
-        tag = _docker_run_command(["tag", env_image_key, remote_ref], timeout=60)
+        tag = _docker_run_command(["tag", image_key, remote_ref], timeout=60)
     except Exception:
         logger.warning(
-            "Error tagging SWE-bench env image %s for cache push to %s",
-            env_image_key,
+            "Error tagging SWE-bench %s image %s for cache push to %s",
+            kind,
+            image_key,
             remote_ref,
             exc_info=True,
         )
@@ -341,8 +376,9 @@ def _push_cached_env_image(
 
     if tag.returncode != 0:
         logger.warning(
-            "Failed to tag SWE-bench env image %s for cache push to %s: %s",
-            env_image_key,
+            "Failed to tag SWE-bench %s image %s for cache push to %s: %s",
+            kind,
+            image_key,
             remote_ref,
             tag.stderr.strip(),
         )
@@ -352,23 +388,27 @@ def _push_cached_env_image(
         push = _docker_run_command(["push", remote_ref], timeout=1200)
     except Exception:
         logger.warning(
-            "Error pushing SWE-bench env image %s to %s",
-            env_image_key,
+            "Error pushing SWE-bench %s image %s to %s",
+            kind,
+            image_key,
             remote_ref,
             exc_info=True,
         )
         return False
+    finally:
+        _remove_local_image_ref(remote_ref, description=f"SWE-bench {kind} cache tag")
 
     if push.returncode != 0:
         logger.warning(
-            "Failed to push SWE-bench env image %s to %s: %s",
-            env_image_key,
+            "Failed to push SWE-bench %s image %s to %s: %s",
+            kind,
+            image_key,
             remote_ref,
             push.stderr.strip(),
         )
         return False
 
-    logger.info("Published SWE-bench env image %s to %s", env_image_key, remote_ref)
+    logger.info("Published SWE-bench %s image %s to %s", kind, image_key, remote_ref)
     return True
 
 
@@ -467,7 +507,7 @@ def prewarm_swebench_env_images(
     if env_image_cache is not None:
         for spec in specs:
             env_image_key = _env_build_lock_key(spec)
-            if _pull_cached_env_image(env_image_key, env_image_cache):
+            if _pull_cached_image(env_image_key, env_image_cache, kind="env"):
                 cached_env_keys.add(env_image_key)
 
     docker_client = docker.from_env()
@@ -498,7 +538,7 @@ def prewarm_swebench_env_images(
             env_image_key = payload[0]
             if env_image_key in cached_env_keys:
                 continue
-            _push_cached_env_image(str(env_image_key), env_image_cache)
+            _push_cached_image(str(env_image_key), env_image_cache, kind="env")
 
     return SWEBenchEnvPrewarmResult(
         unique_env_count=len(specs),
@@ -583,9 +623,46 @@ class SWEBenchContainer:
     def _build_with_auto_env(self, log_dir: Path):
         """Build the instance container, auto-building env images if missing."""
         run_id = uuid.uuid4().hex[:8]
+        instance_image_key = str(self._test_spec.instance_image_key)
+        instance_cache_key = _instance_cache_key(self._test_spec)
+
+        def _build_container_once(*, logger_override, push_instance_cache: bool):
+            container = build_container(
+                self._test_spec, self._docker_client, run_id, logger_override, False, False
+            )
+            if push_instance_cache and self.env_image_cache is not None:
+                _push_cached_image(
+                    instance_image_key,
+                    self.env_image_cache,
+                    kind="instance",
+                    cache_key=instance_cache_key,
+                )
+            return container
+
+        if self.env_image_cache is not None and _pull_cached_image(
+            instance_image_key,
+            self.env_image_cache,
+            kind="instance",
+            cache_key=instance_cache_key,
+        ):
+            try:
+                return _build_container_once(
+                    logger_override=self._logger,
+                    push_instance_cache=False,
+                )
+            except BuildImageError:
+                logger.warning(
+                    "Cached SWE-bench instance image %s for %s did not produce a usable container; rebuilding locally",
+                    instance_image_key,
+                    self.item.instance_id,
+                    exc_info=True,
+                )
+                remove_swebench_instance_image(instance_image_key)
+
         try:
-            return build_container(
-                self._test_spec, self._docker_client, run_id, self._logger, False, False
+            return _build_container_once(
+                logger_override=self._logger,
+                push_instance_cache=True,
             )
         except BuildImageError as exc:
             if "not found" not in str(exc).lower():
@@ -598,18 +675,20 @@ class SWEBenchContainer:
         )
         with _env_build_lock_for(self._test_spec):
             try:
-                return build_container(
-                    self._test_spec, self._docker_client, run_id, self._logger, False, False
+                return _build_container_once(
+                    logger_override=self._logger,
+                    push_instance_cache=True,
                 )
             except BuildImageError as exc:
                 if "not found" not in str(exc).lower():
                     raise _normalize_build_image_error(exc, stage="build_container") from exc
-            if self.env_image_cache is not None and _pull_cached_env_image(
-                env_lock_key, self.env_image_cache
+            if self.env_image_cache is not None and _pull_cached_image(
+                env_lock_key, self.env_image_cache, kind="env"
             ):
                 try:
-                    return build_container(
-                        self._test_spec, self._docker_client, run_id, self._logger, False, False
+                    return _build_container_once(
+                        logger_override=self._logger,
+                        push_instance_cache=True,
                     )
                 except BuildImageError as exc:
                     logger.warning(
@@ -642,13 +721,14 @@ class SWEBenchContainer:
                     detail=str(exc) or "Unknown env image build failure",
                 ) from exc
         if self.env_image_cache is not None:
-            _push_cached_env_image(env_lock_key, self.env_image_cache)
+            _push_cached_image(env_lock_key, self.env_image_cache, kind="env")
         env_logger = setup_logger(
             self.item.instance_id, log_dir / "rebuild_after_env.log"
         )
         try:
-            return build_container(
-                self._test_spec, self._docker_client, run_id, env_logger, False, False
+            return _build_container_once(
+                logger_override=env_logger,
+                push_instance_cache=True,
             )
         except BuildImageError as exc:
             raise _normalize_build_image_error(exc, stage="build_container") from exc

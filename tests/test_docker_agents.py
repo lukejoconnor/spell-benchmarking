@@ -17,6 +17,7 @@ from src.docker_agents import (
     CODEX_RUNTIME_NPM_CACHE,
     CODEX_RUNTIME_NPM_PREFIX,
     ExecOutput,
+    INSTALL_TIMEOUT_RETRY_CLEANUP_SCRIPT,
     NVM_NODE_INSTALL,
     _install_nodejs_shell,
     _is_retryable_apt_fetch_failure,
@@ -276,6 +277,7 @@ class DockerAgentsTests(unittest.TestCase):
         container = FakeInstallContainer(
             [
                 ExecOutput(exit_code=124, stdout="", stderr="Timeout after 300s", timed_out=True),
+                ExecOutput(exit_code=0, stdout="", stderr=""),
                 ExecOutput(exit_code=0, stdout="ready", stderr=""),
             ]
         )
@@ -284,8 +286,17 @@ class DockerAgentsTests(unittest.TestCase):
             ok = run_install_script(container, "echo install", timeout=300)
 
         self.assertTrue(ok)
-        self.assertEqual(len(container.calls), 2)
-        self.assertEqual([cmd for cmd, _kwargs in container.calls], ["echo install"] * 2)
+        self.assertEqual(len(container.calls), 3)
+        self.assertEqual(container.calls[0], ("echo install", {"timeout": 300, "env": None, "workdir": None}))
+        self.assertEqual(
+            container.calls[1],
+            (
+                INSTALL_TIMEOUT_RETRY_CLEANUP_SCRIPT,
+                {"timeout": 30, "env": None, "workdir": "/"},
+            ),
+        )
+        self.assertEqual(container.calls[2], ("echo install", {"timeout": 300, "env": None, "workdir": None}))
+        self.assertIn("dpkg --configure -a", container.calls[1][0])
         self.assertEqual(container.calls[0][1], {"timeout": 300, "env": None, "workdir": None})
         self.assertEqual(sleep.call_count, 1)
 
