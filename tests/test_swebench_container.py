@@ -21,6 +21,7 @@ from src.swebench_container import (
     SWEBenchEnvImageCacheConfig,
     _build_pro_eval_entryscript,
     _env_exports_from_dockerfiles,
+    _instance_cache_key,
     _normalize_build_image_error,
     _parse_string_list,
     prewarm_swebench_env_images,
@@ -391,11 +392,15 @@ def test_prewarm_swebench_env_images_uses_remote_cache_for_hits_and_pushes_misse
             return _docker_completed()
         if cmd[:2] == ["docker", "tag"] and cmd[-2:] == [shared_remote_ref, "sweb.env.shared:latest"]:
             return _docker_completed()
+        if cmd[:2] == ["docker", "rmi"] and cmd[-1] == shared_remote_ref:
+            return _docker_completed()
         if cmd[:2] == ["docker", "pull"] and cmd[-1] == unique_remote_ref:
             return _docker_completed(returncode=1, stderr="manifest unknown")
         if cmd[:2] == ["docker", "tag"] and cmd[-2:] == ["sweb.env.unique:latest", unique_remote_ref]:
             return _docker_completed()
         if cmd[:2] == ["docker", "push"] and cmd[-1] == unique_remote_ref:
+            return _docker_completed()
+        if cmd[:2] == ["docker", "rmi"] and cmd[-1] == unique_remote_ref:
             return _docker_completed()
         raise AssertionError(f"unexpected docker command: {cmd}")
 
@@ -422,9 +427,24 @@ def test_prewarm_swebench_env_images_uses_remote_cache_for_hits_and_pushes_misse
     build_mock.assert_called_once()
     assert any(call == ["docker", "pull", "--platform", "linux/amd64", shared_remote_ref] for call in docker_calls)
     assert any(call == ["docker", "tag", shared_remote_ref, "sweb.env.shared:latest"] for call in docker_calls)
+    assert any(call == ["docker", "rmi", shared_remote_ref] for call in docker_calls)
     assert any(call == ["docker", "pull", "--platform", "linux/amd64", unique_remote_ref] for call in docker_calls)
     assert any(call == ["docker", "tag", "sweb.env.unique:latest", unique_remote_ref] for call in docker_calls)
     assert any(call == ["docker", "push", unique_remote_ref] for call in docker_calls)
+    assert any(call == ["docker", "rmi", unique_remote_ref] for call in docker_calls)
+
+
+def test_instance_cache_key_changes_when_repo_setup_changes() -> None:
+    shared = {
+        "env_image_key": "sweb.env.shared:latest",
+        "instance_image_key": "sweb.eval.shared:latest",
+        "env_script_list": ["setup env"],
+        "docker_specs": {"base_image": "python:3.11"},
+    }
+    spec_a = SimpleNamespace(repo_script_list=["clone branch"], **shared)
+    spec_b = SimpleNamespace(repo_script_list=["clone branch", "pip install 'pip<24'"], **shared)
+
+    assert _instance_cache_key(spec_a) != _instance_cache_key(spec_b)
 
 
 def test_build_with_auto_env_uses_cached_instance_image_without_local_rebuild(tmp_path: Path) -> None:
@@ -439,7 +459,10 @@ def test_build_with_auto_env_uses_cached_instance_image_without_local_rebuild(tm
         repository="us-central1-docker.pkg.dev/project/cache/sweb-images",
     )
 
-    remote_ref = container.env_image_cache.remote_ref_for("sweb.eval.shared:latest", kind="instance")
+    remote_ref = container.env_image_cache.remote_ref_for(
+        _instance_cache_key(container._test_spec),
+        kind="instance",
+    )
     docker_calls: list[list[str]] = []
 
     def fake_subprocess_run(cmd, **_kwargs):
@@ -447,6 +470,8 @@ def test_build_with_auto_env_uses_cached_instance_image_without_local_rebuild(tm
         if cmd[:2] == ["docker", "pull"] and cmd[-1] == remote_ref:
             return _docker_completed()
         if cmd[:2] == ["docker", "tag"] and cmd[-2:] == [remote_ref, "sweb.eval.shared:latest"]:
+            return _docker_completed()
+        if cmd[:2] == ["docker", "rmi"] and cmd[-1] == remote_ref:
             return _docker_completed()
         raise AssertionError(f"unexpected docker command: {cmd}")
 
@@ -465,6 +490,7 @@ def test_build_with_auto_env_uses_cached_instance_image_without_local_rebuild(tm
     build_env_mock.assert_not_called()
     assert any(call == ["docker", "pull", "--platform", "linux/amd64", remote_ref] for call in docker_calls)
     assert any(call == ["docker", "tag", remote_ref, "sweb.eval.shared:latest"] for call in docker_calls)
+    assert any(call == ["docker", "rmi", remote_ref] for call in docker_calls)
     assert not any(call[:2] == ["docker", "push"] for call in docker_calls)
 
 
@@ -480,7 +506,10 @@ def test_build_with_auto_env_pushes_instance_cache_after_local_build(tmp_path: P
         repository="us-central1-docker.pkg.dev/project/cache/sweb-images",
     )
 
-    remote_ref = container.env_image_cache.remote_ref_for("sweb.eval.shared:latest", kind="instance")
+    remote_ref = container.env_image_cache.remote_ref_for(
+        _instance_cache_key(container._test_spec),
+        kind="instance",
+    )
     docker_calls: list[list[str]] = []
 
     def fake_subprocess_run(cmd, **_kwargs):
@@ -490,6 +519,8 @@ def test_build_with_auto_env_pushes_instance_cache_after_local_build(tmp_path: P
         if cmd[:2] == ["docker", "tag"] and cmd[-2:] == ["sweb.eval.shared:latest", remote_ref]:
             return _docker_completed()
         if cmd[:2] == ["docker", "push"] and cmd[-1] == remote_ref:
+            return _docker_completed()
+        if cmd[:2] == ["docker", "rmi"] and cmd[-1] == remote_ref:
             return _docker_completed()
         raise AssertionError(f"unexpected docker command: {cmd}")
 
@@ -509,6 +540,69 @@ def test_build_with_auto_env_pushes_instance_cache_after_local_build(tmp_path: P
     assert any(call == ["docker", "pull", "--platform", "linux/amd64", remote_ref] for call in docker_calls)
     assert any(call == ["docker", "tag", "sweb.eval.shared:latest", remote_ref] for call in docker_calls)
     assert any(call == ["docker", "push", remote_ref] for call in docker_calls)
+    assert any(call == ["docker", "rmi", remote_ref] for call in docker_calls)
+
+
+def test_build_with_auto_env_removes_bad_cached_instance_image_before_local_rebuild(tmp_path: Path) -> None:
+    container = SWEBenchContainer(_make_item())
+    container._test_spec = SimpleNamespace(
+        env_image_key="sweb.env.shared:latest",
+        instance_image_key="sweb.eval.shared:latest",
+        repo_script_list=["setup repo"],
+        env_script_list=["setup env"],
+        docker_specs={"base_image": "python:3.11"},
+    )
+    container._docker_client = object()
+    container._logger = object()
+    container.env_image_cache = SWEBenchEnvImageCacheConfig(
+        repository="us-central1-docker.pkg.dev/project/cache/sweb-images",
+    )
+
+    remote_ref = container.env_image_cache.remote_ref_for(
+        _instance_cache_key(container._test_spec),
+        kind="instance",
+    )
+    docker_calls: list[list[str]] = []
+    build_container_calls = 0
+
+    def fake_subprocess_run(cmd, **_kwargs):
+        docker_calls.append(list(cmd))
+        if cmd[:2] == ["docker", "pull"] and cmd[-1] == remote_ref:
+            return _docker_completed()
+        if cmd[:2] == ["docker", "tag"] and cmd[-2:] == [remote_ref, "sweb.eval.shared:latest"]:
+            return _docker_completed()
+        if cmd[:2] == ["docker", "tag"] and cmd[-2:] == ["sweb.eval.shared:latest", remote_ref]:
+            return _docker_completed()
+        if cmd[:2] == ["docker", "push"] and cmd[-1] == remote_ref:
+            return _docker_completed()
+        if cmd[:2] == ["docker", "rmi"] and cmd[-1] in {remote_ref, "sweb.eval.shared:latest"}:
+            return _docker_completed()
+        raise AssertionError(f"unexpected docker command: {cmd}")
+
+    def fake_build_container(test_spec, docker_client, run_id, logger, *_args):
+        del test_spec, docker_client, logger
+        nonlocal build_container_calls
+        build_container_calls += 1
+        if build_container_calls == 1:
+            raise BuildImageError(
+                "sweb.eval.shared:latest",
+                "cached instance image is stale",
+                SimpleNamespace(log_file="build.log"),
+            )
+        return SimpleNamespace(id=f"container-{run_id}")
+
+    with (
+        patch("src.swebench_container.build_container", side_effect=fake_build_container) as build_mock,
+        patch("src.swebench_container.build_env_images") as build_env_mock,
+        patch("src.swebench_container.subprocess.run", side_effect=fake_subprocess_run),
+    ):
+        result = container._build_with_auto_env(tmp_path / "run")
+
+    assert result.id.startswith("container-")
+    assert build_mock.call_count == 2
+    build_env_mock.assert_not_called()
+    assert build_container_calls == 2
+    assert any(call == ["docker", "rmi", "sweb.eval.shared:latest"] for call in docker_calls)
 
 
 def test_build_with_auto_env_falls_back_to_local_env_build_and_pushes_cache(tmp_path: Path) -> None:
@@ -524,7 +618,10 @@ def test_build_with_auto_env_falls_back_to_local_env_build_and_pushes_cache(tmp_
     )
 
     env_remote_ref = container.env_image_cache.remote_ref_for("sweb.env.shared:latest", kind="env")
-    instance_remote_ref = container.env_image_cache.remote_ref_for("sweb.eval.shared:latest", kind="instance")
+    instance_remote_ref = container.env_image_cache.remote_ref_for(
+        _instance_cache_key(container._test_spec),
+        kind="instance",
+    )
     docker_calls: list[list[str]] = []
     build_container_calls = 0
 
@@ -558,6 +655,8 @@ def test_build_with_auto_env_falls_back_to_local_env_build_and_pushes_cache(tmp_
             return _docker_completed()
         if cmd[:2] == ["docker", "push"] and cmd[-1] == instance_remote_ref:
             return _docker_completed()
+        if cmd[:2] == ["docker", "rmi"] and cmd[-1] in {env_remote_ref, instance_remote_ref}:
+            return _docker_completed()
         raise AssertionError(f"unexpected docker command: {cmd}")
 
     with (
@@ -576,8 +675,10 @@ def test_build_with_auto_env_falls_back_to_local_env_build_and_pushes_cache(tmp_
     assert any(call == ["docker", "pull", "--platform", "linux/amd64", env_remote_ref] for call in docker_calls)
     assert any(call == ["docker", "tag", "sweb.env.shared:latest", env_remote_ref] for call in docker_calls)
     assert any(call == ["docker", "push", env_remote_ref] for call in docker_calls)
+    assert any(call == ["docker", "rmi", env_remote_ref] for call in docker_calls)
     assert any(call == ["docker", "tag", "sweb.eval.shared:latest", instance_remote_ref] for call in docker_calls)
     assert any(call == ["docker", "push", instance_remote_ref] for call in docker_calls)
+    assert any(call == ["docker", "rmi", instance_remote_ref] for call in docker_calls)
 
 
 def test_build_with_auto_env_rebuilds_locally_after_stale_cache_hit(tmp_path: Path) -> None:
@@ -628,6 +729,8 @@ def test_build_with_auto_env_rebuilds_locally_after_stale_cache_hit(tmp_path: Pa
             return _docker_completed()
         if cmd[:2] == ["docker", "push"] and cmd[-1] == remote_ref:
             return _docker_completed()
+        if cmd[:2] == ["docker", "rmi"] and cmd[-1] == remote_ref:
+            return _docker_completed()
         raise AssertionError(f"unexpected docker command: {cmd}")
 
     with (
@@ -645,6 +748,7 @@ def test_build_with_auto_env_rebuilds_locally_after_stale_cache_hit(tmp_path: Pa
     assert any(call == ["docker", "pull", "--platform", "linux/amd64", remote_ref] for call in docker_calls)
     assert any(call == ["docker", "tag", remote_ref, "sweb.env.shared:latest"] for call in docker_calls)
     assert any(call == ["docker", "push", remote_ref] for call in docker_calls)
+    assert any(call == ["docker", "rmi", remote_ref] for call in docker_calls)
 
 
 def test_build_with_auto_env_ignores_cache_push_failures(tmp_path: Path) -> None:
@@ -687,6 +791,8 @@ def test_build_with_auto_env_ignores_cache_push_failures(tmp_path: Path) -> None
             return _docker_completed()
         if cmd[:2] == ["docker", "push"] and cmd[-1] == remote_ref:
             return _docker_completed(returncode=1, stderr="denied")
+        if cmd[:2] == ["docker", "rmi"] and cmd[-1] == remote_ref:
+            return _docker_completed()
         raise AssertionError(f"unexpected docker command: {cmd}")
 
     with (
@@ -701,6 +807,7 @@ def test_build_with_auto_env_ignores_cache_push_failures(tmp_path: Path) -> None
     assert result.id.startswith("container-")
     assert build_container_calls == 3
     assert any(call == ["docker", "push", remote_ref] for call in docker_calls)
+    assert any(call == ["docker", "rmi", remote_ref] for call in docker_calls)
 
 
 def test_prewarm_swebench_env_images_surfaces_failed_build_logs(tmp_path: Path) -> None:
