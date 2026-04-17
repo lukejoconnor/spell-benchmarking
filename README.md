@@ -107,7 +107,7 @@ Execution details:
 - `mini`, `lite`, and `verified` run inside official SWE-bench instance images with the repo mounted at `/testbed`.
 - `pro` runs inside the official Docker Hub instance image with the repo at `/app`.
 - Same-container eval always runs after generation and is recorded in run metadata.
-- To reuse SWE-bench `sweb.env.*` images across fresh disposable VMs, pass `--env-image-cache-repository <Artifact Registry repo>` or set `SPELL_SWEBENCH_ENV_IMAGE_CACHE_REPOSITORY`. Use `--env-image-cache-read-only` when you want pulls but no pushes; the GCP launcher can export the env var automatically from `SPELL_GCP_ENV_IMAGE_CACHE_REPOSITORY`.
+- To reuse SWE-bench Docker layers across fresh disposable VMs, pass `--env-image-cache-repository <Artifact Registry repo>` or set `SPELL_SWEBENCH_ENV_IMAGE_CACHE_REPOSITORY`. The same repository now stores both shared `sweb.env.*` images and per-instance `sweb.eval.*` images under separate cache tags. Use `--env-image-cache-read-only` when you want pulls but no pushes; the GCP launcher can export the env var automatically from `SPELL_GCP_ENV_IMAGE_CACHE_REPOSITORY`.
 - Unified output is appended incrementally after each completed item, so a crash loses at most the in-flight item rather than the whole run.
 - To resume a partial run, rerun with the same `--run-id` and `--output`; completed items are detected from the existing unified JSONL and skipped automatically.
 - The per-condition SWE-bench predictions JSONL is regenerated from the unified output after each condition completes.

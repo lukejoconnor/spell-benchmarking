@@ -53,6 +53,7 @@ CODEX_RUNTIME_NPM_PREFIX = f"{CODEX_RUNTIME_ROOT}/npm-global"
 CODEX_RUNTIME_NPM_CACHE = f"{CODEX_RUNTIME_ROOT}/npm-cache"
 APT_FETCH_RETRY_MAX_ATTEMPTS = 3
 APT_FETCH_RETRY_SLEEP_SECONDS = 5
+INSTALL_TIMEOUT_CLEANUP_TIMEOUT_SECONDS = 30
 RETRYABLE_APT_FETCH_MARKERS = (
     "connection timed out",
     "temporary failure resolving",
@@ -65,6 +66,27 @@ RETRYABLE_APT_MIRROR_MARKERS = (
     "hash sum mismatch",
 )
 RETRYABLE_PIP_HASH_MISMATCH_MARKER = "these packages do not match the hashes"
+INSTALL_TIMEOUT_RETRY_CLEANUP_SCRIPT = r"""
+if command -v pkill >/dev/null 2>&1; then
+  pkill -TERM -f '(^|/)(apt|apt-get|dpkg)( |$)' >/dev/null 2>&1 || true
+  sleep 2
+  pkill -KILL -f '(^|/)(apt|apt-get|dpkg)( |$)' >/dev/null 2>&1 || true
+fi
+for lock_path in \
+  /var/lib/dpkg/lock-frontend \
+  /var/lib/dpkg/lock \
+  /var/cache/apt/archives/lock \
+  /var/lib/apt/lists/lock
+do
+  for _attempt in 1 2 3 4 5; do
+    [ ! -e "$lock_path" ] && break
+    sleep 1
+  done
+done
+if command -v dpkg >/dev/null 2>&1; then
+  dpkg --configure -a >/dev/null 2>&1 || true
+fi
+"""
 
 CC_ALLOWED_TOOLS = [
     "Bash", "Edit", "Write", "Read", "Glob", "Grep",
@@ -570,6 +592,28 @@ def _pip_install_command(packages: list[str], *, no_cache_dir: bool = False) -> 
     return f"python -m pip install -q --disable-pip-version-check{cache_flag} {quoted}"
 
 
+def _best_effort_timeout_retry_cleanup(
+    exec_fn: Callable[..., ExecOutput],
+    *,
+    env: dict[str, str] | None = None,
+) -> None:
+    try:
+        result = exec_fn(
+            INSTALL_TIMEOUT_RETRY_CLEANUP_SCRIPT,
+            timeout=INSTALL_TIMEOUT_CLEANUP_TIMEOUT_SECONDS,
+            env=dict(env) if env else None,
+            workdir="/",
+        )
+    except Exception:
+        logger.warning("Install timeout cleanup raised unexpectedly", exc_info=True)
+        return
+    if result.exit_code != 0:
+        logger.warning(
+            "Install timeout cleanup exited non-zero: %s",
+            _exec_output_excerpt(result),
+        )
+
+
 def _run_install_with_apt_retry(
     exec_fn: Callable[..., ExecOutput],
     script: str,
@@ -599,6 +643,7 @@ def _run_install_with_apt_retry(
                 APT_FETCH_RETRY_MAX_ATTEMPTS,
                 _exec_output_excerpt(last_result),
             )
+            _best_effort_timeout_retry_cleanup(exec_fn, env=current_env)
         elif retryable_pip_hash:
             logger.warning(
                 "%s hit pip hash mismatch (attempt %s/%s), retrying with cache disabled: %s",
