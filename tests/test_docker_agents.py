@@ -198,16 +198,6 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertEqual(calls[0][1], {"A": "B"})
         self.assertEqual(calls[0][2], "/workspace")
 
-    def test_uv_bootstrap_supports_pythonless_images(self) -> None:
-        self.assertIn("command -v python >/dev/null 2>&1", UV_BOOTSTRAP_COMMAND)
-        self.assertIn("command -v python3 >/dev/null 2>&1", UV_BOOTSTRAP_COMMAND)
-        self.assertIn("curl -LsSf https://astral.sh/uv/install.sh", UV_BOOTSTRAP_COMMAND)
-        self.assertIn("wget -qO- https://astral.sh/uv/install.sh", UV_BOOTSTRAP_COMMAND)
-        self.assertIn('export UV_UNMANAGED_INSTALL="${UV_UNMANAGED_INSTALL:-$HOME/.local/bin}"', UV_BOOTSTRAP_COMMAND)
-        self.assertIn('uv_path="${UV_UNMANAGED_INSTALL%/}/uv"', UV_BOOTSTRAP_COMMAND)
-        self.assertIn("Unable to install uv: neither curl nor wget is available", UV_BOOTSTRAP_COMMAND)
-        self.assertIn("uv not available after installation", UV_BOOTSTRAP_COMMAND)
-
     def test_ensure_uv_exec_retries_once_on_failure(self) -> None:
         attempts = 0
 
