@@ -404,9 +404,6 @@ class DockerWorkspaceContainer:
             raise RuntimeError(f"git rev-parse HEAD failed in container: {head_result.stderr.strip()}")
         self.initial_commit = head_result.stdout.strip() or None
 
-        if not ensure_uv(self):
-            raise RuntimeError("Failed to install uv in container")
-
         return self.container_id
 
     def exec_run(

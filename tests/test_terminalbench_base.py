@@ -138,6 +138,9 @@ class TerminalBenchBaseTests(unittest.TestCase):
                 def name() -> str:
                     return "dummy"
 
+                def _requires_uv(self) -> bool:
+                    return False
+
                 def _install_script(self) -> str:
                     return "true"
 
@@ -181,6 +184,9 @@ class TerminalBenchBaseTests(unittest.TestCase):
                     return "dummy"
 
                 def _requires_node(self) -> bool:
+                    return False
+
+                def _requires_uv(self) -> bool:
                     return False
 
                 def _install_script(self) -> str:
@@ -235,6 +241,9 @@ class TerminalBenchBaseTests(unittest.TestCase):
                 def _requires_node(self) -> bool:
                     return False
 
+                def _requires_uv(self) -> bool:
+                    return False
+
                 def _install_script(self) -> str:
                     return "true"
 
@@ -283,6 +292,35 @@ class TerminalBenchBaseTests(unittest.TestCase):
             )
 
             self.assertEqual(result, _FailureMode.AGENT_INSTALLATION_FAILED)
+        finally:
+            _restore_modules(prior)
+
+    def test_terminalbench_agents_require_uv_by_default(self) -> None:
+        module, prior = _load_base_module()
+        try:
+            class DummyAgent(module.DockerExecAgent):
+                @staticmethod
+                def name() -> str:
+                    return "dummy"
+
+                def _requires_node(self) -> bool:
+                    return False
+
+                def _install_script(self) -> str:
+                    return "true"
+
+                def _run_command(self, instruction: str, workdir: str) -> str:
+                    del instruction, workdir
+                    return "true"
+
+                def _parse_usage(self, stdout: str, *, container=None, workdir: str | None = None):
+                    del stdout, container, workdir
+                    return None
+
+                def _env_vars(self) -> dict[str, str]:
+                    return {}
+
+            self.assertTrue(DummyAgent()._requires_uv())
         finally:
             _restore_modules(prior)
 

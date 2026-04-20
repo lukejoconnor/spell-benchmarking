@@ -119,7 +119,7 @@ class DockerExecAgent(BaseAgent):
 
     def _requires_uv(self) -> bool:
         """Whether this agent needs uv preinstalled before task work starts."""
-        return False
+        return True
 
     def _install_uv(self, container) -> bool:
         logger.info("Installing uv...")
