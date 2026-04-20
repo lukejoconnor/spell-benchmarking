@@ -17,9 +17,11 @@ try:
     from .base import DockerExecAgent, ParsedUsage
 except ImportError:
     from base import DockerExecAgent, ParsedUsage
+from terminal_bench.agents.failure_mode import FailureMode
 
 try:
     from src.docker_agents import (
+        cc_missing_cli_error,
         cc_env_vars,
         cc_install_script,
         cc_parse_usage,
@@ -28,6 +30,7 @@ try:
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from src.docker_agents import (
+        cc_missing_cli_error,
         cc_env_vars,
         cc_install_script,
         cc_parse_usage,
@@ -72,6 +75,9 @@ class ClaudeCodeAgent(DockerExecAgent):
     def _install_script(self) -> str:
         return cc_install_script(version=self.version or "latest")
 
+    def _requires_uv(self) -> bool:
+        return True
+
     def _load_claude_json_b64(self) -> str | None:
         # Optional explicit override for nonstandard auth locations.
         if os.environ.get("CLAUDE_JSON_B64"):
@@ -115,3 +121,13 @@ class ClaudeCodeAgent(DockerExecAgent):
         if not usage:
             logger.warning("No result event found in Claude Code output")
         return usage
+
+    def _determine_failure_mode(self, result, usage):
+        del usage
+        if result.timed_out:
+            return FailureMode.AGENT_TIMEOUT
+        if result.exit_code != 0:
+            if cc_missing_cli_error(result):
+                return FailureMode.AGENT_INSTALLATION_FAILED
+            return FailureMode.UNKNOWN_AGENT_ERROR
+        return FailureMode.NONE

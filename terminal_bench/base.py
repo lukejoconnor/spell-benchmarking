@@ -23,6 +23,7 @@ try:
         ExecOutput,
         ParsedUsage,
         container_exec,
+        ensure_uv_exec,
         install_nvm_node_exec,
         iter_dicts,
         parse_jsonl_events,
@@ -33,6 +34,7 @@ except ImportError:
         ExecOutput,
         ParsedUsage,
         container_exec,
+        ensure_uv_exec,
         install_nvm_node_exec,
         iter_dicts,
         parse_jsonl_events,
@@ -115,6 +117,22 @@ class DockerExecAgent(BaseAgent):
         """Whether this agent requires Node/NVM bootstrap."""
         return True
 
+    def _requires_uv(self) -> bool:
+        """Whether this agent needs uv preinstalled before task work starts."""
+        return False
+
+    def _install_uv(self, container) -> bool:
+        logger.info("Installing uv...")
+        ok = ensure_uv_exec(
+            lambda command, **kwargs: self._container_exec(container, command, **kwargs),
+            env=self._env_vars(),
+        )
+        if not ok:
+            logger.error("uv install failed")
+            return False
+        logger.info("uv runtime ready")
+        return True
+
     def _save_logs(
         self,
         logging_dir: Path,
@@ -192,6 +210,9 @@ class DockerExecAgent(BaseAgent):
 
         # Install Node runtime if needed by this agent.
         if self._requires_node() and not self._install_nvm_node(container):
+            return AgentResult(failure_mode=FailureMode.AGENT_INSTALLATION_FAILED)
+
+        if self._requires_uv() and not self._install_uv(container):
             return AgentResult(failure_mode=FailureMode.AGENT_INSTALLATION_FAILED)
 
         # Install agent CLI

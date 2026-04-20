@@ -12,13 +12,20 @@ if str(BENCHMARK_ROOT) not in sys.path:
     sys.path.insert(0, str(BENCHMARK_ROOT))
 
 from src.docker_agents import (
+    CLAUDE_CLI_MISSING_MARKER,
+    CLAUDE_RUNTIME_NPM_PREFIX,
+    CLAUDE_RUNTIME_ROOT,
     AgentRunResult,
     CODEX_RUNTIME_CODEX_HOME,
     CODEX_RUNTIME_NPM_CACHE,
     CODEX_RUNTIME_NPM_PREFIX,
     ExecOutput,
     INSTALL_TIMEOUT_RETRY_CLEANUP_SCRIPT,
+    cc_missing_cli_error,
+    cc_install_script,
+    cc_run_command,
     NVM_NODE_INSTALL,
+    UV_BOOTSTRAP_COMMAND,
     _install_nodejs_shell,
     _is_retryable_apt_fetch_failure,
     _is_retryable_install_timeout,
@@ -33,6 +40,7 @@ from src.docker_agents import (
     codex_run_command,
     ensure_python_packages,
     install_nvm_node_exec,
+    ensure_uv_exec,
     run_agent_in_container,
     run_install_script,
     resolve_spell_model,
@@ -138,6 +146,71 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertIn('unset NPM_CONFIG_PREFIX', cmd)
         self.assertIn('export NPM_CONFIG_PREFIX="$NPM_CONFIG_PREFIX_SAVED"', cmd)
         self.assertIn("codex -c 'web_search=\"disabled\"' exec", cmd)
+
+    def test_cc_install_script_uses_explicit_runtime_prefix_and_fails_closed(self) -> None:
+        script = cc_install_script(version="latest")
+
+        self.assertIn("set -euo pipefail", script)
+        self.assertIn(f'export CLAUDE_RUNTIME_ROOT="${{CLAUDE_RUNTIME_ROOT:-{CLAUDE_RUNTIME_ROOT}}}"', script)
+        self.assertIn(f'export NPM_CONFIG_PREFIX="${{NPM_CONFIG_PREFIX:-{CLAUDE_RUNTIME_NPM_PREFIX}}}"', script)
+        self.assertIn("export PATH=\"$NPM_CONFIG_PREFIX/bin:$PATH\"", script)
+        self.assertIn("npm install -g @anthropic-ai/claude-code@latest", script)
+        self.assertIn("command -v claude >/dev/null 2>&1", script)
+        self.assertIn(CLAUDE_CLI_MISSING_MARKER, script)
+
+    def test_cc_run_command_checks_for_missing_claude_before_exec(self) -> None:
+        cmd = cc_run_command(
+            "Return 42.",
+            model="anthropic/claude-opus-4-6",
+            budget=1.25,
+            reasoning_effort="high",
+        )
+
+        self.assertIn("set -euo pipefail", cmd)
+        self.assertIn("command -v claude >/dev/null 2>&1", cmd)
+        self.assertIn(CLAUDE_CLI_MISSING_MARKER, cmd)
+        self.assertIn("--setting-sources", cmd)
+        self.assertIn("--output-format stream-json", cmd)
+        self.assertIn("--max-budget-usd 1.25", cmd)
+        self.assertIn("--model anthropic/claude-opus-4-6", cmd)
+        self.assertIn("--effort high", cmd)
+        self.assertIn("--allowedTools", cmd)
+        self.assertIn("-p 'Return 42.'", cmd)
+
+    def test_cc_missing_cli_error_detects_marker(self) -> None:
+        self.assertTrue(
+            cc_missing_cli_error(
+                ExecOutput(exit_code=1, stdout="", stderr=f"oops\n{CLAUDE_CLI_MISSING_MARKER}\n")
+            )
+        )
+        self.assertFalse(cc_missing_cli_error(ExecOutput(exit_code=1, stdout="", stderr="oops")))
+
+    def test_ensure_uv_exec_uses_shared_python_bootstrap(self) -> None:
+        calls: list[tuple[str, dict[str, str] | None, str | None]] = []
+
+        def fake_exec(cmd: str, **kwargs) -> ExecOutput:
+            calls.append((cmd, kwargs.get("env"), kwargs.get("workdir")))
+            return ExecOutput(exit_code=0, stdout="", stderr="")
+
+        self.assertTrue(ensure_uv_exec(fake_exec, env={"A": "B"}, workdir="/workspace"))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], UV_BOOTSTRAP_COMMAND)
+        self.assertEqual(calls[0][1], {"A": "B"})
+        self.assertEqual(calls[0][2], "/workspace")
+
+    def test_ensure_uv_exec_retries_once_on_failure(self) -> None:
+        attempts = 0
+
+        def fake_exec(cmd: str, **kwargs) -> ExecOutput:
+            del cmd, kwargs
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return ExecOutput(exit_code=1, stdout="", stderr="temporary failure")
+            return ExecOutput(exit_code=0, stdout="", stderr="")
+
+        self.assertTrue(ensure_uv_exec(fake_exec))
+        self.assertEqual(attempts, 2)
 
     def test_read_codex_rollout_prefers_tmp_runtime_sessions(self) -> None:
         calls: list[str] = []
@@ -590,6 +663,32 @@ class DockerAgentsTests(unittest.TestCase):
             result.raw["rollout_path"],
             f"{CODEX_RUNTIME_CODEX_HOME}/sessions/2026/04/06/rollout-2026-04-06T10-08-30-thread-1.jsonl",
         )
+
+    @patch("src.docker_agents._install_agent_runtime", return_value=True)
+    def test_claude_run_in_container_surfaces_missing_cli_as_install_error(self, _install_runtime) -> None:
+        class FakeContainer:
+            container_workdir = "/workspace"
+
+            def exec_run(self, cmd: str, **kwargs):
+                del kwargs
+                if "claude" in cmd and "command -v claude" in cmd:
+                    return ExecOutput(
+                        exit_code=1,
+                        stdout="",
+                        stderr=f"{CLAUDE_CLI_MISSING_MARKER}\n",
+                    )
+                raise AssertionError(f"Unexpected command: {cmd}")
+
+        result = run_agent_in_container(
+            FakeContainer(),
+            condition="claude_code",
+            prompt="Return 42.",
+            timeout=30,
+            model_spec="anthropic/claude-opus-4-6",
+        )
+
+        self.assertEqual(result.error_type, "install_error")
+        self.assertIn(CLAUDE_CLI_MISSING_MARKER, result.error_message or "")
 
 
 if __name__ == "__main__":

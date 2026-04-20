@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 BASE_MODULE_PATH = BENCHMARK_ROOT / "terminal_bench" / "base.py"
+CC_AGENT_MODULE_PATH = BENCHMARK_ROOT / "terminal_bench" / "cc_agent.py"
 
 
 @dataclass
@@ -97,6 +98,25 @@ def _load_base_module():
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = value
+        raise
+    return module, prior
+
+
+def _load_cc_agent_module():
+    base_module, prior = _load_base_module()
+    prior["terminal_bench.base"] = sys.modules.get("terminal_bench.base")
+    prior["base"] = sys.modules.get("base")
+    sys.modules["terminal_bench.base"] = base_module
+    sys.modules["base"] = base_module
+
+    spec = importlib.util.spec_from_file_location("terminal_bench_cc_agent_under_test", CC_AGENT_MODULE_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load {CC_AGENT_MODULE_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        _restore_modules(prior)
         raise
     return module, prior
 
@@ -245,6 +265,24 @@ class TerminalBenchBaseTests(unittest.TestCase):
 
             self.assertEqual(result.total_input_tokens, 39382)
             self.assertEqual(result.total_output_tokens, 18992)
+        finally:
+            _restore_modules(prior)
+
+    def test_claude_agent_marks_missing_cli_as_install_failure(self) -> None:
+        module, prior = _load_cc_agent_module()
+        try:
+            agent = module.ClaudeCodeAgent()
+            result = agent._determine_failure_mode(
+                types.SimpleNamespace(
+                    timed_out=False,
+                    exit_code=1,
+                    stdout="",
+                    stderr="bootstrap failed\nClaude Code CLI not available after installation\n",
+                ),
+                usage=None,
+            )
+
+            self.assertEqual(result, _FailureMode.AGENT_INSTALLATION_FAILED)
         finally:
             _restore_modules(prior)
 

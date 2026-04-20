@@ -88,6 +88,23 @@ if command -v dpkg >/dev/null 2>&1; then
 fi
 """
 
+CLAUDE_RUNTIME_ROOT = "/tmp/bench-agent-runtime/claude"
+CLAUDE_RUNTIME_NVM_DIR = f"{CLAUDE_RUNTIME_ROOT}/nvm"
+CLAUDE_RUNTIME_NPM_PREFIX = f"{CLAUDE_RUNTIME_ROOT}/npm-global"
+CLAUDE_RUNTIME_NPM_CACHE = f"{CLAUDE_RUNTIME_ROOT}/npm-cache"
+CLAUDE_CLI_MISSING_MARKER = "Claude Code CLI not available after installation"
+UV_BOOTSTRAP_COMMAND = r"""
+set -e
+if ! command -v uv >/dev/null 2>&1; then
+  python -m pip install -q --disable-pip-version-check uv
+fi
+uv_path="$(command -v uv)"
+mkdir -p "$HOME/.local/bin"
+cat > "$HOME/.local/bin/env" <<EOF
+export PATH="$(dirname "$uv_path"):\$PATH"
+EOF
+""".strip()
+
 CC_ALLOWED_TOOLS = [
     "Bash", "Edit", "Write", "Read", "Glob", "Grep",
     "WebFetch", "NotebookEdit",
@@ -164,6 +181,18 @@ fi
     if log_version:
         script += '\necho "node installed via package manager: $(node --version 2>/dev/null || echo missing)"'
     return script
+
+def _claude_runtime_shell_setup() -> str:
+    return f"""
+export CLAUDE_RUNTIME_ROOT="${{CLAUDE_RUNTIME_ROOT:-{CLAUDE_RUNTIME_ROOT}}}"
+export NVM_DIR="${{NVM_DIR:-{CLAUDE_RUNTIME_NVM_DIR}}}"
+export NPM_CONFIG_PREFIX="${{NPM_CONFIG_PREFIX:-{CLAUDE_RUNTIME_NPM_PREFIX}}}"
+export NPM_CONFIG_CACHE="${{NPM_CONFIG_CACHE:-{CLAUDE_RUNTIME_NPM_CACHE}}}"
+export npm_config_cache="${{npm_config_cache:-$NPM_CONFIG_CACHE}}"
+mkdir -p "$CLAUDE_RUNTIME_ROOT" "$NVM_DIR" "$NPM_CONFIG_PREFIX" "$npm_config_cache"
+%s
+export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
+""".strip() % _nvm_source_with_tmp_npm_prefix()
 
 
 NVM_NODE_INSTALL = r"""
@@ -374,6 +403,9 @@ class DockerWorkspaceContainer:
         if head_result.exit_code != 0:
             raise RuntimeError(f"git rev-parse HEAD failed in container: {head_result.stderr.strip()}")
         self.initial_commit = head_result.stdout.strip() or None
+
+        if not ensure_uv(self):
+            raise RuntimeError("Failed to install uv in container")
 
         return self.container_id
 
@@ -696,7 +728,37 @@ def install_nvm_node_exec(
 
 
 def ensure_uv(container: DockerWorkspaceContainer) -> bool:
-    return ensure_python_packages(container, ["uv"])
+    max_attempts = 2
+    for attempt in range(1, max_attempts + 1):
+        result = container.exec_run(UV_BOOTSTRAP_COMMAND, timeout=180)
+        if result.exit_code == 0:
+            return True
+        logger.error("uv install failed (attempt %s): %s", attempt, result.stderr[:500])
+        if attempt < max_attempts:
+            time.sleep(2)
+    return False
+
+
+def ensure_uv_exec(
+    exec_fn: Callable[..., ExecOutput],
+    *,
+    env: dict[str, str] | None = None,
+    workdir: str | None = None,
+) -> bool:
+    max_attempts = 2
+    for attempt in range(1, max_attempts + 1):
+        result = exec_fn(
+            UV_BOOTSTRAP_COMMAND,
+            timeout=180,
+            env=env,
+            workdir=workdir,
+        )
+        if result.exit_code == 0:
+            return True
+        logger.error("uv install failed (attempt %s): %s", attempt, result.stderr[:500])
+        if attempt < max_attempts:
+            time.sleep(2)
+    return False
 
 
 def ensure_python_packages(container: DockerWorkspaceContainer, packages: list[str]) -> bool:
@@ -757,10 +819,15 @@ def _load_claude_json_b64() -> str | None:
 def cc_install_script(*, version: str | None = None) -> str:
     resolved_version = version or "latest"
     return f"""
-[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"
+set -euo pipefail
+{_claude_runtime_shell_setup()}
 npm install -g @anthropic-ai/claude-code@{resolved_version}
 if [ -n "${{CLAUDE_JSON_B64:-}}" ]; then
   printf '%s' "$CLAUDE_JSON_B64" | base64 -d > "$HOME/.claude.json"
+fi
+if ! command -v claude >/dev/null 2>&1; then
+  echo "{CLAUDE_CLI_MISSING_MARKER}" >&2
+  exit 1
 fi
 echo "claude installed: $(claude --version 2>/dev/null || echo unknown)"
 """
@@ -771,7 +838,13 @@ def cc_env_vars(
     model: str | None = None,
     include_background: bool = True,
 ) -> dict[str, str]:
-    env: dict[str, str] = {}
+    env: dict[str, str] = {
+        "CLAUDE_RUNTIME_ROOT": CLAUDE_RUNTIME_ROOT,
+        "NVM_DIR": CLAUDE_RUNTIME_NVM_DIR,
+        "NPM_CONFIG_PREFIX": CLAUDE_RUNTIME_NPM_PREFIX,
+        "NPM_CONFIG_CACHE": CLAUDE_RUNTIME_NPM_CACHE,
+        "npm_config_cache": CLAUDE_RUNTIME_NPM_CACHE,
+    }
     if include_background:
         env["FORCE_AUTO_BACKGROUND_TASKS"] = "1"
         env["ENABLE_BACKGROUND_TASKS"] = "1"
@@ -803,19 +876,31 @@ def cc_run_command(
     allowed_tools: list[str] | None = None,
     setting_sources: str = "",
 ) -> str:
-    parts = ['[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"', "&&", "claude"]
-    parts.extend(["--setting-sources", shlex.quote(setting_sources)])
-    parts.extend(["--verbose", "--output-format", "stream-json"])
+    claude_parts = ["claude"]
+    claude_parts.extend(["--setting-sources", shlex.quote(setting_sources)])
+    claude_parts.extend(["--verbose", "--output-format", "stream-json"])
     if budget is not None:
-        parts.extend(["--max-budget-usd", str(budget)])
+        claude_parts.extend(["--max-budget-usd", str(budget)])
     if model:
-        parts.extend(["--model", shlex.quote(model)])
+        claude_parts.extend(["--model", shlex.quote(model)])
     if reasoning_effort:
-        parts.extend(["--effort", shlex.quote(reasoning_effort)])
+        claude_parts.extend(["--effort", shlex.quote(reasoning_effort)])
     tools = allowed_tools or CC_ALLOWED_TOOLS
-    parts.extend(["--allowedTools", " ".join(tools)])
-    parts.extend(["-p", shlex.quote(prompt)])
-    return " ".join(parts)
+    claude_parts.extend(["--allowedTools", " ".join(tools)])
+    claude_parts.extend(["-p", shlex.quote(prompt)])
+    return "\n".join(
+        [
+            "set -euo pipefail",
+            _claude_runtime_shell_setup(),
+            f'command -v claude >/dev/null 2>&1 || {{ echo "{CLAUDE_CLI_MISSING_MARKER}" >&2; exit 1; }}',
+            " ".join(claude_parts),
+        ]
+    )
+
+
+def cc_missing_cli_error(output: ExecOutput) -> bool:
+    text = "\n".join(part for part in (output.stdout, output.stderr) if part)
+    return CLAUDE_CLI_MISSING_MARKER in text
 
 
 def cc_parse_usage(stdout: str) -> UsageBreakdown | None:
@@ -1563,22 +1648,24 @@ def run_agent_in_container(
         if resolved_model and "/" in resolved_model:
             resolved_model = resolved_model.removeprefix("anthropic/")
         env = cc_env_vars(model=resolved_model)
+        command = cc_run_command(
+            prompt,
+            model=resolved_model,
+            budget=budget,
+            reasoning_effort=reasoning_effort,
+        )
         output = container.exec_run(
-            cc_run_command(
-                prompt,
-                model=resolved_model,
-                budget=budget,
-                reasoning_effort=reasoning_effort,
-            ),
+            command,
             timeout=timeout,
             env=env,
         )
         usage = cc_parse_usage(output.stdout)
+        missing_cli = cc_missing_cli_error(output)
         return AgentRunResult(
             output=output,
             usage=usage,
             error_message=output.stderr[:2000] if output.exit_code != 0 else None,
-            error_type="cli_error" if output.exit_code != 0 else None,
+            error_type=("install_error" if missing_cli else "cli_error") if output.exit_code != 0 else None,
         )
 
     if condition == "codex":
