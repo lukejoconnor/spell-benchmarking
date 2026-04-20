@@ -151,51 +151,32 @@ fi
 """.strip()
 
 
-def _install_nodejs_shell(*, log_version: bool = False) -> str:
-    script = r"""
-if command -v apt-get >/dev/null 2>&1; then
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq nodejs npm >/dev/null
-elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache nodejs npm >/dev/null 2>&1
-elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y -q nodejs npm >/dev/null 2>&1
-elif command -v yum >/dev/null 2>&1; then
-    yum install -y -q nodejs npm >/dev/null 2>&1
-else
-    echo "Unable to install Node.js runtime: unsupported package manager" >&2
-    exit 1
-fi
-""".strip()
-    if log_version:
-        script += '\necho "node installed via package manager: $(node --version 2>/dev/null || echo missing)"'
-    return script
-
-
 def _install_uv_shell() -> str:
     return f"""
 set -e
 uv_path="$(command -v uv || true)"
 if [ -z "$uv_path" ]; then
-  if command -v python >/dev/null 2>&1; then
+  export UV_UNMANAGED_INSTALL="${{UV_UNMANAGED_INSTALL:-$HOME/.local/bin}}"
+  if command -v curl >/dev/null 2>&1; then
+    curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$UV_UNMANAGED_INSTALL" sh
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO- https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$UV_UNMANAGED_INSTALL" sh
+  elif command -v python >/dev/null 2>&1 && python -m pip --version >/dev/null 2>&1; then
     python -m pip install -q --disable-pip-version-check uv
-  elif command -v python3 >/dev/null 2>&1; then
+  elif command -v python3 >/dev/null 2>&1 && python3 -m pip --version >/dev/null 2>&1; then
     python3 -m pip install -q --disable-pip-version-check uv
   else
-    export UV_UNMANAGED_INSTALL="${{UV_UNMANAGED_INSTALL:-$HOME/.local/bin}}"
-    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
-      {_install_curl_shell()}
-    fi
+    {_install_curl_shell()}
     if command -v curl >/dev/null 2>&1; then
       curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$UV_UNMANAGED_INSTALL" sh
     elif command -v wget >/dev/null 2>&1; then
       wget -qO- https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$UV_UNMANAGED_INSTALL" sh
     else
-      echo "Unable to install uv: neither curl nor wget is available" >&2
+      echo "Unable to install uv: neither curl, wget, nor pip is available" >&2
       exit 1
     fi
-    uv_path="${{UV_UNMANAGED_INSTALL%/}}/uv"
   fi
+  uv_path="${{UV_UNMANAGED_INSTALL%/}}/uv"
 fi
 if [ -z "$uv_path" ] && [ -x "$HOME/.local/bin/uv" ]; then
   uv_path="$HOME/.local/bin/uv"
@@ -222,6 +203,26 @@ EOF
 
 UV_BOOTSTRAP_COMMAND = _install_uv_shell()
 
+
+def _install_nodejs_shell(*, log_version: bool = False) -> str:
+    script = r"""
+if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq nodejs npm >/dev/null
+elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache nodejs npm >/dev/null 2>&1
+elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q nodejs npm >/dev/null 2>&1
+elif command -v yum >/dev/null 2>&1; then
+    yum install -y -q nodejs npm >/dev/null 2>&1
+else
+    echo "Unable to install Node.js runtime: unsupported package manager" >&2
+    exit 1
+fi
+""".strip()
+    if log_version:
+        script += '\necho "node installed via package manager: $(node --version 2>/dev/null || echo missing)"'
+    return script
 
 def _claude_runtime_shell_setup() -> str:
     return f"""

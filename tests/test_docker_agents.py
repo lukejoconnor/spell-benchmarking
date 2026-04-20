@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -71,6 +73,11 @@ class SequentialExec:
         if not self._outputs:
             raise AssertionError(f"Unexpected exec call: {cmd}")
         return self._outputs.pop(0)
+
+
+def _write_executable(path: Path, script: str) -> None:
+    path.write_text(script)
+    path.chmod(0o755)
 
 
 class DockerAgentsTests(unittest.TestCase):
@@ -185,7 +192,7 @@ class DockerAgentsTests(unittest.TestCase):
         )
         self.assertFalse(cc_missing_cli_error(ExecOutput(exit_code=1, stdout="", stderr="oops")))
 
-    def test_ensure_uv_exec_uses_shared_python_bootstrap(self) -> None:
+    def test_ensure_uv_exec_uses_shared_uv_bootstrap(self) -> None:
         calls: list[tuple[str, dict[str, str] | None, str | None]] = []
 
         def fake_exec(cmd: str, **kwargs) -> ExecOutput:
@@ -198,15 +205,62 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertEqual(calls[0][1], {"A": "B"})
         self.assertEqual(calls[0][2], "/workspace")
 
-    def test_uv_bootstrap_supports_pythonless_images(self) -> None:
-        self.assertIn("command -v python >/dev/null 2>&1", UV_BOOTSTRAP_COMMAND)
-        self.assertIn("command -v python3 >/dev/null 2>&1", UV_BOOTSTRAP_COMMAND)
+    def test_uv_bootstrap_checks_for_pip_before_using_python(self) -> None:
+        self.assertIn("python -m pip --version >/dev/null 2>&1", UV_BOOTSTRAP_COMMAND)
+        self.assertIn("python3 -m pip --version >/dev/null 2>&1", UV_BOOTSTRAP_COMMAND)
         self.assertIn("curl -LsSf https://astral.sh/uv/install.sh", UV_BOOTSTRAP_COMMAND)
         self.assertIn("wget -qO- https://astral.sh/uv/install.sh", UV_BOOTSTRAP_COMMAND)
-        self.assertIn('export UV_UNMANAGED_INSTALL="${UV_UNMANAGED_INSTALL:-$HOME/.local/bin}"', UV_BOOTSTRAP_COMMAND)
-        self.assertIn('uv_path="${UV_UNMANAGED_INSTALL%/}/uv"', UV_BOOTSTRAP_COMMAND)
-        self.assertIn("Unable to install uv: neither curl nor wget is available", UV_BOOTSTRAP_COMMAND)
-        self.assertIn("uv not available after installation", UV_BOOTSTRAP_COMMAND)
+        self.assertIn("Unable to install uv: neither curl, wget, nor pip is available", UV_BOOTSTRAP_COMMAND)
+
+    def test_uv_bootstrap_uses_standalone_installer_when_python3_has_no_pip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bin_dir = tmp / "bin"
+            home_dir = tmp / "home"
+            marker_path = tmp / "curl-ran"
+            bin_dir.mkdir()
+            home_dir.mkdir()
+            _write_executable(
+                bin_dir / "python3",
+                """#!/bin/sh
+if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then
+  echo "/usr/bin/python3: No module named pip" >&2
+  exit 1
+fi
+exit 0
+""",
+            )
+            _write_executable(
+                bin_dir / "curl",
+                """#!/bin/sh
+: > "$MARKER_PATH"
+cat <<'EOF'
+mkdir -p "$UV_UNMANAGED_INSTALL"
+cat > "$UV_UNMANAGED_INSTALL/uv" <<'INNER'
+#!/bin/sh
+exit 0
+INNER
+chmod +x "$UV_UNMANAGED_INSTALL/uv"
+EOF
+""",
+            )
+
+            result = subprocess.run(
+                ["bash", "-c", UV_BOOTSTRAP_COMMAND],
+                capture_output=True,
+                cwd=tmp,
+                env={
+                    "HOME": str(home_dir),
+                    "MARKER_PATH": str(marker_path),
+                    "PATH": f"{bin_dir}:/bin:/usr/bin",
+                },
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            self.assertTrue(marker_path.exists(), msg=result.stderr or result.stdout)
+            self.assertTrue((home_dir / ".local/bin/uv").exists())
+            self.assertTrue((home_dir / ".local/bin/env").exists())
 
     def test_ensure_uv_exec_retries_once_on_failure(self) -> None:
         attempts = 0
