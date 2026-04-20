@@ -93,17 +93,6 @@ CLAUDE_RUNTIME_NVM_DIR = f"{CLAUDE_RUNTIME_ROOT}/nvm"
 CLAUDE_RUNTIME_NPM_PREFIX = f"{CLAUDE_RUNTIME_ROOT}/npm-global"
 CLAUDE_RUNTIME_NPM_CACHE = f"{CLAUDE_RUNTIME_ROOT}/npm-cache"
 CLAUDE_CLI_MISSING_MARKER = "Claude Code CLI not available after installation"
-UV_BOOTSTRAP_COMMAND = r"""
-set -e
-if ! command -v uv >/dev/null 2>&1; then
-  python -m pip install -q --disable-pip-version-check uv
-fi
-uv_path="$(command -v uv)"
-mkdir -p "$HOME/.local/bin"
-cat > "$HOME/.local/bin/env" <<EOF
-export PATH="$(dirname "$uv_path"):\$PATH"
-EOF
-""".strip()
 
 CC_ALLOWED_TOOLS = [
     "Bash", "Edit", "Write", "Read", "Glob", "Grep",
@@ -160,6 +149,59 @@ else
     exit 1
 fi
 """.strip()
+
+
+def _install_uv_shell() -> str:
+    return f"""
+set -e
+uv_path="$(command -v uv || true)"
+if [ -z "$uv_path" ]; then
+  export UV_UNMANAGED_INSTALL="${{UV_UNMANAGED_INSTALL:-$HOME/.local/bin}}"
+  if command -v curl >/dev/null 2>&1; then
+    curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$UV_UNMANAGED_INSTALL" sh
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO- https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$UV_UNMANAGED_INSTALL" sh
+  elif command -v python >/dev/null 2>&1 && python -m pip --version >/dev/null 2>&1; then
+    python -m pip install -q --disable-pip-version-check uv
+  elif command -v python3 >/dev/null 2>&1 && python3 -m pip --version >/dev/null 2>&1; then
+    python3 -m pip install -q --disable-pip-version-check uv
+  else
+    {_install_curl_shell()}
+    if command -v curl >/dev/null 2>&1; then
+      curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$UV_UNMANAGED_INSTALL" sh
+    elif command -v wget >/dev/null 2>&1; then
+      wget -qO- https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$UV_UNMANAGED_INSTALL" sh
+    else
+      echo "Unable to install uv: neither curl, wget, nor pip is available" >&2
+      exit 1
+    fi
+  fi
+  uv_path="${{UV_UNMANAGED_INSTALL%/}}/uv"
+fi
+if [ -z "$uv_path" ] && [ -x "$HOME/.local/bin/uv" ]; then
+  uv_path="$HOME/.local/bin/uv"
+fi
+if [ -z "$uv_path" ] && [ -x /usr/local/bin/uv ]; then
+  uv_path=/usr/local/bin/uv
+fi
+if [ -z "$uv_path" ] && [ -x /usr/bin/uv ]; then
+  uv_path=/usr/bin/uv
+fi
+if [ -z "$uv_path" ]; then
+  uv_path="$(command -v uv || true)"
+fi
+if [ -z "$uv_path" ] || [ ! -x "$uv_path" ]; then
+  echo "uv not available after installation" >&2
+  exit 1
+fi
+mkdir -p "$HOME/.local/bin"
+cat > "$HOME/.local/bin/env" <<EOF
+export PATH="$(dirname "$uv_path"):\\$PATH"
+EOF
+""".strip()
+
+
+UV_BOOTSTRAP_COMMAND = _install_uv_shell()
 
 
 def _install_nodejs_shell(*, log_version: bool = False) -> str:
