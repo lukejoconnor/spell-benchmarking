@@ -31,7 +31,7 @@ from .codex_usage import (
     usage_from_events,
     usage_from_rollout,
 )
-from .usage_accounting import UsageBreakdown, usage_from_totals
+from .usage_accounting import UsageBreakdown, claude_code_usage_from_result, usage_from_totals
 
 BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 
@@ -468,23 +468,8 @@ class ClaudeCodeAdapter:
                 result_event = event
                 break
 
-        usage = result_event.get("usage", {}) if isinstance(result_event, dict) else {}
-        if not isinstance(usage, dict):
-            usage = {}
-        cache_write_input_tokens = _usage_int(usage.get("cache_creation_input_tokens"))
-        cached_input_tokens = _usage_int(usage.get("cache_read_input_tokens"))
-        response_usage = usage_from_totals(
-            total_input_tokens=(
-                _usage_int(usage.get("input_tokens"))
-                + cache_write_input_tokens
-                + cached_input_tokens
-            ),
-            total_output_tokens=_usage_int(usage.get("output_tokens")),
-            cached_input_tokens=cached_input_tokens,
-            cache_write_input_tokens=cache_write_input_tokens,
-        )
-        cost_raw = result_event.get("total_cost_usd") if isinstance(result_event, dict) else None
-        cost_usd = float(cost_raw) if isinstance(cost_raw, (int, float)) else None
+        response_usage = claude_code_usage_from_result(result_event, model=model)
+        cost_usd = response_usage.cost_usd if response_usage else None
         response_text = str(result_event.get("result", "")) if isinstance(result_event, dict) else ""
         num_turns = result_event.get("num_turns") if isinstance(result_event, dict) else None
         session_id = result_event.get("session_id") if isinstance(result_event, dict) else None
@@ -507,6 +492,7 @@ class ClaudeCodeAdapter:
         metadata = {
             "num_turns": num_turns,
             "session_id": session_id,
+            "cost_source": response_usage.cost_source if response_usage else None,
             "stderr": stderr[:4000],
             "trace_file": str(trace_file) if trace_file else None,
         }

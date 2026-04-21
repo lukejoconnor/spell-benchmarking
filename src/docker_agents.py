@@ -35,7 +35,7 @@ from .codex_usage import (
     usage_from_events,
     usage_from_rollout,
 )
-from .usage_accounting import UsageBreakdown
+from .usage_accounting import UsageBreakdown, claude_code_usage_from_result
 
 logger = logging.getLogger(__name__)
 
@@ -942,40 +942,14 @@ def cc_missing_cli_error(output: ExecOutput) -> bool:
     return CLAUDE_CLI_MISSING_MARKER in text
 
 
-def cc_parse_usage(stdout: str) -> UsageBreakdown | None:
+def cc_parse_usage(stdout: str, *, model: str | None = None) -> UsageBreakdown | None:
     events = parse_jsonl_events(stdout)
     result_event = None
     for event in reversed(events):
         if event.get("type") == "result":
             result_event = event
             break
-    if not result_event:
-        return None
-
-    usage = result_event.get("usage", {})
-
-    def _int(value: Any) -> int:
-        return int(value) if isinstance(value, (int, float)) else 0
-
-    total_input_tokens = (
-        _int(usage.get("input_tokens", 0))
-        + _int(usage.get("cache_creation_input_tokens", 0))
-        + _int(usage.get("cache_read_input_tokens", 0))
-    )
-    cached = _int(usage.get("cache_read_input_tokens", 0))
-    cache_write = _int(usage.get("cache_creation_input_tokens", 0))
-    output_tokens = _int(usage.get("output_tokens", 0))
-    cost = result_event.get("total_cost_usd")
-    if cost is None:
-        cost = result_event.get("cost_usd")
-    cost_usd = float(cost) if isinstance(cost, (int, float)) else None
-    return UsageBreakdown(
-        uncached_input_tokens=max(total_input_tokens - cached - cache_write, 0),
-        cached_input_tokens=cached,
-        cache_write_input_tokens=cache_write,
-        visible_output_tokens=output_tokens,
-        cost_usd=cost_usd,
-    )
+    return claude_code_usage_from_result(result_event, model=model)
 
 
 def _load_codex_auth_b64() -> str | None:
@@ -1698,7 +1672,7 @@ def run_agent_in_container(
             timeout=timeout,
             env=env,
         )
-        usage = cc_parse_usage(output.stdout)
+        usage = cc_parse_usage(output.stdout, model=resolved_model)
         missing_cli = cc_missing_cli_error(output)
         return AgentRunResult(
             output=output,

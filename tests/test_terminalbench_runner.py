@@ -416,6 +416,64 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             self.assertEqual(record.metadata["resolved_model"], "gpt-5.3-codex")
             self.assertEqual(record.metadata["cost_source"], "estimated")
 
+    def test_terminalbench_records_preserve_claude_cache_write_and_reprice_underreported_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            run_dir = root / "results" / "claude_demo"
+            trial_dir = run_dir / "hello-world" / "hello-world.1-of-1.claude_demo"
+            agent_log_dir = trial_dir / "agent-logs"
+            agent_log_dir.mkdir(parents=True, exist_ok=True)
+            (agent_log_dir / "result.json").write_text(
+                json.dumps(
+                    {
+                        "input_tokens": 175_000,
+                        "cached_input_tokens": 25_000,
+                        "cache_write_input_tokens": 50_000,
+                        "visible_output_tokens": 10_000,
+                        "total_input_tokens": 175_000,
+                        "total_output_tokens": 10_000,
+                        "cost_usd": 0.4575,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (run_dir / "results.json").write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "trial_name": "hello-world.1-of-1.claude_demo",
+                                "task_id": "hello-world",
+                                "is_resolved": True,
+                                "failure_mode": "none",
+                                "parser_results": {"check": "passed"},
+                                "total_input_tokens": 175_000,
+                                "total_output_tokens": 10_000,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            records = terminalbench_records_from_run(
+                run_dir=run_dir,
+                run_id="terminalbench_demo",
+                condition="claude_code",
+                dataset="terminal-bench-core==0.1.1",
+                model_spec="anthropic/claude-sonnet-4-6",
+                name=None,
+                agent_file=None,
+            )
+
+            self.assertEqual(len(records), 1)
+            record = records[0]
+            self.assertEqual(record.status, "resolved")
+            self.assertEqual(record.cached_input_tokens, 25_000)
+            self.assertEqual(record.cache_write_input_tokens, 50_000)
+            self.assertAlmostEqual(record.cost_usd or 0.0, 0.645, places=6)
+            self.assertEqual(record.metadata["cost_source"], "estimated")
+
     def test_terminalbench_records_skip_cost_estimate_when_shared_pricing_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

@@ -150,6 +150,7 @@ class DockerExecAgent(BaseAgent):
             "latency_s": round(latency_s, 1),
             "input_tokens": usage.input_tokens if usage else 0,
             "cached_input_tokens": usage.cached_input_tokens if usage else 0,
+            "cache_write_input_tokens": usage.cache_write_input_tokens if usage else 0,
             "visible_output_tokens": usage.visible_output_tokens if usage else 0,
             "reasoning_output_tokens": usage.reasoning_output_tokens if usage else None,
             "total_input_tokens": usage.total_input_tokens if usage else 0,

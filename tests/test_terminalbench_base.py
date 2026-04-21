@@ -160,6 +160,7 @@ class TerminalBenchBaseTests(unittest.TestCase):
                 logging_dir = Path(tmp_dir)
                 usage = module.ParsedUsage(
                     uncached_input_tokens=39382,
+                    cache_write_input_tokens=512,
                     visible_output_tokens=1123,
                     reasoning_output_tokens=17869,
                     cost_usd=0.324007,
@@ -169,6 +170,7 @@ class TerminalBenchBaseTests(unittest.TestCase):
                 result = json.loads((logging_dir / "result.json").read_text(encoding="utf-8"))
 
             self.assertEqual(result["visible_output_tokens"], 1123)
+            self.assertEqual(result["cache_write_input_tokens"], 512)
             self.assertEqual(result["reasoning_output_tokens"], 17869)
             self.assertEqual(result["total_output_tokens"], 18992)
             self.assertNotIn("output_tokens", result)

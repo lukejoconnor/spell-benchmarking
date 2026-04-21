@@ -117,7 +117,7 @@ class ClaudeCodeAgent(DockerExecAgent):
          "usage": {"input_tokens": N, "output_tokens": M}}
         """
         del container, workdir
-        usage = cc_parse_usage(stdout)
+        usage = cc_parse_usage(stdout, model=self._resolve_model())
         if not usage:
             logger.warning("No result event found in Claude Code output")
         return usage
