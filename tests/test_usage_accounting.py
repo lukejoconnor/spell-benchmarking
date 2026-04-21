@@ -51,6 +51,25 @@ class UsageAccountingTests(unittest.TestCase):
         self.assertAlmostEqual(usage.cost_usd or 0.0, 0.645, places=6)
         self.assertEqual(usage.cost_source, "estimated")
 
+    def test_claude_code_usage_from_result_normalizes_provider_qualified_model(self) -> None:
+        usage = claude_code_usage_from_result(
+            {
+                "type": "result",
+                "usage": {
+                    "input_tokens": 100_000,
+                    "cache_creation_input_tokens": 50_000,
+                    "cache_read_input_tokens": 25_000,
+                    "output_tokens": 10_000,
+                },
+                "total_cost_usd": 0.4575,
+            },
+            model="anthropic/claude-sonnet-4-6",
+        )
+
+        assert usage is not None
+        self.assertAlmostEqual(usage.cost_usd or 0.0, 0.645, places=6)
+        self.assertEqual(usage.cost_source, "estimated")
+
 
 if __name__ == "__main__":
     unittest.main()

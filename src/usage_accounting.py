@@ -188,6 +188,17 @@ def _usage_int(value: Any) -> int:
     return int(value) if isinstance(value, (int, float)) else 0
 
 
+def _normalize_claude_model(model: str | None) -> str | None:
+    if not model:
+        return None
+    normalized = model.strip()
+    if ":" in normalized:
+        _, normalized = normalized.split(":", 1)
+    if "/" in normalized:
+        _, normalized = normalized.split("/", 1)
+    return normalized or None
+
+
 def claude_code_usage_from_result(
     result_event: dict[str, Any] | None,
     *,
@@ -217,7 +228,7 @@ def claude_code_usage_from_result(
     if reported_cost_raw is None:
         reported_cost_raw = result_event.get("cost_usd")
     reported_cost = float(reported_cost_raw) if isinstance(reported_cost_raw, (int, float)) else None
-    estimated_cost = estimate_cost(model, usage)
+    estimated_cost = estimate_cost(_normalize_claude_model(model), usage)
 
     if reported_cost is not None and (
         estimated_cost is None
