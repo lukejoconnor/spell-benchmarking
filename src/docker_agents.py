@@ -1541,6 +1541,12 @@ def spell_parse_benchmark_response(stdout: str) -> dict[str, Any] | None:
     return None
 
 
+def _spell_error_type(output: ExecOutput, parsed: dict[str, Any] | None) -> str:
+    if output.timed_out:
+        return (parsed or {}).get("error_type") or "subprocess_timeout"
+    return (parsed or {}).get("error_type") if parsed else "parse_error"
+
+
 def copy_container_tree_to_host(
     container: DockerWorkspaceContainer,
     source: str,
@@ -1835,7 +1841,7 @@ def run_agent_in_container(
         usage=usage,
         response_text=parsed.get("result") if parsed else None,
         error_message=((parsed or {}).get("error") if parsed else output.stderr[:2000]) or None,
-        error_type=(parsed or {}).get("error_type") if parsed else "parse_error",
+        error_type=_spell_error_type(output, parsed),
         raw=parsed,
         trace_dir=persisted_trace_dir,
     )
