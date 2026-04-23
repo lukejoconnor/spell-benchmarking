@@ -40,6 +40,18 @@ class CodexUsageTests(unittest.TestCase):
 
         self.assertAlmostEqual(cost or 0.0, 0.02012225, places=8)
 
+    def test_estimate_cost_uses_long_context_pricing_above_threshold(self) -> None:
+        cost = estimate_cost(
+            "gpt-5.4",
+            272_001,
+            100_000,
+            cached_input_tokens=20_000,
+            cache_write_input_tokens=10_000,
+            reasoning_output_tokens=25_000,
+        )
+
+        self.assertAlmostEqual(cost or 0.0, 4.095005, places=8)
+
     def test_usage_from_payload_keeps_input_tokens_as_total_when_cached_subset_present(self) -> None:
         usage = usage_from_payload(
             {

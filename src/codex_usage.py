@@ -25,10 +25,14 @@ def estimate_cost(
 ) -> float | None:
     usage = usage_from_totals(
         total_input_tokens=tokens_in,
-        total_output_tokens=tokens_out,
+        total_output_tokens=(
+            max(0, tokens_out or 0) + max(0, reasoning_output_tokens or 0)
+            if tokens_out is not None or reasoning_output_tokens is not None
+            else None
+        ),
         cached_input_tokens=cached_input_tokens,
         cache_write_input_tokens=cache_write_input_tokens,
-        reasoning_output_tokens=reasoning_output_tokens or 0,
+        reasoning_output_tokens=max(0, reasoning_output_tokens or 0),
     )
     return estimate_usage_cost(model, usage)
 
@@ -112,7 +116,11 @@ def usage_from_payload(payload: dict[str, Any] | None, *, model: str | None = No
 
     usage = usage_from_totals(
         total_input_tokens=total_input_tokens,
-        total_output_tokens=visible_output_tokens,
+        total_output_tokens=(
+            max(0, visible_output_tokens or 0) + max(0, reasoning_output_tokens)
+            if visible_output_tokens is not None or reasoning_raw is not None
+            else None
+        ),
         cached_input_tokens=cached_input_tokens,
         cache_write_input_tokens=cache_write_input_tokens,
         reasoning_output_tokens=reasoning_output_tokens,

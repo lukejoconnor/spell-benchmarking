@@ -13,6 +13,9 @@ from typing import Any
 BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 _TOKEN_RE = re.compile(r'\s+|[{}]|"(?:\\.|[^"\\])*"|[-+]?\d+(?:\.\d+)?')
 CLAUDE_REPORTED_COST_TOLERANCE_USD = 1e-6
+GPT54_LONG_CONTEXT_INPUT_THRESHOLD = 272_000
+GPT54_LONG_CONTEXT_INPUT_MULTIPLIER = 2.0
+GPT54_LONG_CONTEXT_OUTPUT_MULTIPLIER = 1.5
 
 
 def resolve_spell_root() -> Path:
@@ -94,6 +97,33 @@ def lookup_pricing(model: str | None) -> dict[str, float] | None:
     return best_cost
 
 
+def _uses_gpt54_long_context_pricing(model: str | None, usage: UsageBreakdown | None) -> bool:
+    if model is None or usage is None:
+        return False
+    if not model.startswith("gpt-5.4") or model.startswith("gpt-5.4-mini"):
+        return False
+    return usage.total_input_tokens > GPT54_LONG_CONTEXT_INPUT_THRESHOLD
+
+
+def _effective_pricing(model: str | None, usage: UsageBreakdown | None) -> dict[str, float] | None:
+    pricing = lookup_pricing(model)
+    if pricing is None or usage is None:
+        return None
+    if not _uses_gpt54_long_context_pricing(model, usage):
+        return pricing
+
+    # OpenAI documents the long-context tier as 2x input and 1.5x output.
+    # The benchmark-specific cache-write field is treated as input-side usage,
+    # so it follows the same input multiplier as the uncached and cached input
+    # token buckets.
+    return {
+        "input": float(pricing["input"]) * GPT54_LONG_CONTEXT_INPUT_MULTIPLIER,
+        "cache-read-input": float(pricing["cache-read-input"]) * GPT54_LONG_CONTEXT_INPUT_MULTIPLIER,
+        "cache-write-input": float(pricing["cache-write-input"]) * GPT54_LONG_CONTEXT_INPUT_MULTIPLIER,
+        "output": float(pricing["output"]) * GPT54_LONG_CONTEXT_OUTPUT_MULTIPLIER,
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class UsageBreakdown:
     uncached_input_tokens: int = 0
@@ -173,7 +203,7 @@ def sum_usages(*usages: UsageBreakdown | None) -> UsageBreakdown | None:
 
 
 def estimate_cost(model: str | None, usage: UsageBreakdown | None) -> float | None:
-    pricing = lookup_pricing(model)
+    pricing = _effective_pricing(model, usage)
     if pricing is None or usage is None:
         return None
     return (

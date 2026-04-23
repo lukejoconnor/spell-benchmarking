@@ -745,7 +745,7 @@ EOF
         self.assertIsInstance(result, AgentRunResult)
         self.assertIsNotNone(result.usage)
         assert result.usage is not None
-        self.assertEqual(result.usage.reasoning_output_tokens, 200)
+        self.assertEqual(result.usage.reasoning_output_tokens, 350)
         self.assertEqual(result.metadata["thread_id"], "thread-1")
         self.assertEqual(result.metadata["rollout_status"], "ok")
         self.assertEqual(result.metadata["rollout_token_count"]["total_token_usage"]["reasoning_output_tokens"], 350)
@@ -780,6 +780,64 @@ EOF
 
         self.assertEqual(result.error_type, "install_error")
         self.assertIn(CLAUDE_CLI_MISSING_MARKER, result.error_message or "")
+
+
+class SpellRunTimeoutClassificationTest(unittest.TestCase):
+    @patch("src.docker_agents._install_agent_runtime", return_value=True)
+    def test_spell_timeout_without_payload_is_labelled_subprocess_timeout(self, _install_runtime):
+        class FakeContainer:
+            def exec_run(self, cmd: str, **kwargs):
+                del cmd, kwargs
+                return ExecOutput(exit_code=124, stdout="", stderr="Timeout after 30s", timed_out=True)
+
+        result = run_agent_in_container(
+            FakeContainer(),
+            condition="spell",
+            prompt="Return 42.",
+            timeout=30,
+            model_spec="anthropic-tc:opus46",
+        )
+
+        self.assertTrue(result.output.timed_out)
+        self.assertEqual(result.error_type, "subprocess_timeout")
+        self.assertEqual(result.error_message, "Timeout after 30s")
+        self.assertIsNone(result.raw)
+
+    @patch("src.docker_agents._install_agent_runtime", return_value=True)
+    def test_spell_timeout_with_partial_payload_preserves_killed_metadata(self, _install_runtime):
+        partial_payload = {
+            "ok": False,
+            "mode": "spell",
+            "error": "spell.benchmark-api was terminated before completing",
+            "error_type": "killed",
+            "patch_on_disk": True,
+            "error_data": {"patch_on_disk": True, "partial_work": True},
+        }
+
+        class FakeContainer:
+            def exec_run(self, cmd: str, **kwargs):
+                del cmd, kwargs
+                return ExecOutput(
+                    exit_code=124,
+                    stdout=json.dumps(partial_payload),
+                    stderr="Timeout after 30s",
+                    timed_out=True,
+                )
+
+        result = run_agent_in_container(
+            FakeContainer(),
+            condition="spell",
+            prompt="Return 42.",
+            timeout=30,
+            model_spec="anthropic-tc:opus46",
+        )
+
+        self.assertTrue(result.output.timed_out)
+        self.assertEqual(result.error_type, "killed")
+        self.assertEqual(result.error_message, partial_payload["error"])
+        self.assertEqual(result.raw, partial_payload)
+        self.assertTrue(result.raw["patch_on_disk"])
+        self.assertTrue(result.raw["error_data"]["partial_work"])
 
 
 if __name__ == "__main__":

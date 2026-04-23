@@ -76,12 +76,16 @@ class SpellBenchmarkClientTimeoutRaceTest(unittest.TestCase):
 
     def test_recovers_usage_when_timeout_teardown_returns_final_json(self):
         final_payload = {
-            "ok": True,
+            "ok": False,
             "mode": "test",
             "result": "partial-result",
             "usage": {"total": {"input_tokens": 11, "output_tokens": 7, "cost": 0.42}},
             "latency_ms": 1234.0,
             "trace_dir": "traces/demo",
+            "error": "terminated",
+            "error_type": "killed",
+            "patch_on_disk": True,
+            "error_data": {"patch_on_disk": True, "partial_work": True},
         }
         proc = _FakeProc(
             [
@@ -100,6 +104,9 @@ class SpellBenchmarkClientTimeoutRaceTest(unittest.TestCase):
         self.assertEqual(response.usage, final_payload["usage"])
         self.assertEqual(response.latency_ms, 1234.0)
         self.assertEqual(response.trace_dir, "traces/demo")
+        self.assertTrue(response.raw["patch_on_disk"])
+        self.assertEqual(response.raw["error_type"], "timeout")
+        self.assertEqual(response.raw["recovered_payload"]["error_type"], "killed")
         self.assertTrue(response.error_data["recovered_payload"])
 
 

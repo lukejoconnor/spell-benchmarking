@@ -76,6 +76,7 @@ SWE-bench harness defaults and workflow:
   - final condition: configurable final cleanup (`--eval-final-cache-level`, `--eval-final-clean`)
 - For explicit eval-only runs, use `bench.py swebench-eval` and pass the same `--name` you used for generation when predictions were label-tagged.
 - For remote SWE-bench image caching on GCP, set `SPELL_GCP_ENV_IMAGE_CACHE_REPOSITORY` to an Artifact Registry repo. The startup script logs Docker into that repo with the VM service account token and exports `SPELL_SWEBENCH_ENV_IMAGE_CACHE_REPOSITORY` so `bench.py swebench` can pull/push both shared `sweb.env.*` images and per-instance `sweb.eval.*` images across fresh VMs.
+- GPT-5.4 and GPT-5.4-pro switch to the long-context pricing tier once total input exceeds 272k tokens; benchmark-side cost estimates apply the session-level 2x input / 1.5x output rates, including the benchmark's cache-write input bucket as input-side usage.
 
 ### Coding (Clojure harness)
 
