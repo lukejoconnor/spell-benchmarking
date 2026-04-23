@@ -86,6 +86,9 @@ class SpellAgent(DockerExecAgent):
     def _requires_node(self) -> bool:
         return False
 
+    def _requires_uv(self) -> bool:
+        return False
+
     def _install_script(self) -> str:
         return spell_install_script()
 
