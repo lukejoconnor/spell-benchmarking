@@ -36,6 +36,7 @@ from src.docker_agents import (
     _load_swe_agent_trajectory,
     _normalize_spell_trailing,
     build_spell_init,
+    cc_parse_usage,
     codex_env_vars,
     codex_install_script,
     codex_parse_usage,
@@ -131,6 +132,32 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertEqual(env["NPM_CONFIG_CACHE"], CODEX_RUNTIME_NPM_CACHE)
         self.assertEqual(env["npm_config_cache"], CODEX_RUNTIME_NPM_CACHE)
         self.assertNotIn("HOME", env)
+
+    def test_cc_parse_usage_preserves_cache_write_and_reprices_underreported_cost(self) -> None:
+        usage = cc_parse_usage(
+            json.dumps(
+                {
+                    "type": "result",
+                    "result": "ok",
+                    "usage": {
+                        "input_tokens": 100_000,
+                        "cache_creation_input_tokens": 50_000,
+                        "cache_read_input_tokens": 25_000,
+                        "output_tokens": 10_000,
+                    },
+                    "total_cost_usd": 0.4575,
+                }
+            ),
+            model="claude-sonnet-4-6",
+        )
+
+        self.assertIsNotNone(usage)
+        assert usage is not None
+        self.assertEqual(usage.total_input_tokens, 175_000)
+        self.assertEqual(usage.cached_input_tokens, 25_000)
+        self.assertEqual(usage.cache_write_input_tokens, 50_000)
+        self.assertAlmostEqual(usage.cost_usd or 0.0, 0.645, places=6)
+        self.assertEqual(usage.cost_source, "estimated")
 
     def test_codex_install_script_uses_tmp_runtime_paths(self) -> None:
         script = codex_install_script(version="latest")
@@ -718,7 +745,7 @@ EOF
         self.assertIsInstance(result, AgentRunResult)
         self.assertIsNotNone(result.usage)
         assert result.usage is not None
-        self.assertEqual(result.usage.reasoning_output_tokens, 200)
+        self.assertEqual(result.usage.reasoning_output_tokens, 350)
         self.assertEqual(result.metadata["thread_id"], "thread-1")
         self.assertEqual(result.metadata["rollout_status"], "ok")
         self.assertEqual(result.metadata["rollout_token_count"]["total_token_usage"]["reasoning_output_tokens"], 350)

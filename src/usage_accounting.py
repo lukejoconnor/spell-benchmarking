@@ -8,9 +8,11 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 _TOKEN_RE = re.compile(r'\s+|[{}]|"(?:\\.|[^"\\])*"|[-+]?\d+(?:\.\d+)?')
+CLAUDE_REPORTED_COST_TOLERANCE_USD = 1e-6
 GPT54_LONG_CONTEXT_INPUT_THRESHOLD = 272_000
 GPT54_LONG_CONTEXT_INPUT_MULTIPLIER = 2.0
 GPT54_LONG_CONTEXT_OUTPUT_MULTIPLIER = 1.5
@@ -209,6 +211,91 @@ def estimate_cost(model: str | None, usage: UsageBreakdown | None) -> float | No
         + usage.cached_input_tokens * float(pricing["cache-read-input"]) / 1_000_000
         + usage.cache_write_input_tokens * float(pricing["cache-write-input"]) / 1_000_000
         + usage.total_output_tokens * float(pricing["output"]) / 1_000_000
+    )
+
+
+def _usage_int(value: Any) -> int:
+    return int(value) if isinstance(value, (int, float)) else 0
+
+
+def _normalize_claude_model(model: str | None) -> str | None:
+    if not model:
+        return None
+    normalized = model.strip()
+    if ":" in normalized:
+        _, normalized = normalized.split(":", 1)
+    if "/" in normalized:
+        _, normalized = normalized.split("/", 1)
+    return normalized or None
+
+
+def claude_code_usage_from_result(
+    result_event: dict[str, Any] | None,
+    *,
+    model: str | None = None,
+) -> UsageBreakdown | None:
+    if not isinstance(result_event, dict):
+        return None
+
+    usage_payload = result_event.get("usage", {})
+    if not isinstance(usage_payload, dict):
+        usage_payload = {}
+
+    cache_write_input_tokens = _usage_int(usage_payload.get("cache_creation_input_tokens"))
+    cached_input_tokens = _usage_int(usage_payload.get("cache_read_input_tokens"))
+    usage = usage_from_totals(
+        total_input_tokens=(
+            _usage_int(usage_payload.get("input_tokens"))
+            + cache_write_input_tokens
+            + cached_input_tokens
+        ),
+        total_output_tokens=_usage_int(usage_payload.get("output_tokens")),
+        cached_input_tokens=cached_input_tokens,
+        cache_write_input_tokens=cache_write_input_tokens,
+    )
+
+    reported_cost_raw = result_event.get("total_cost_usd")
+    if reported_cost_raw is None:
+        reported_cost_raw = result_event.get("cost_usd")
+    reported_cost = float(reported_cost_raw) if isinstance(reported_cost_raw, (int, float)) else None
+    estimated_cost = estimate_cost(_normalize_claude_model(model), usage)
+
+    if reported_cost is not None and (
+        estimated_cost is None
+        or reported_cost >= estimated_cost - CLAUDE_REPORTED_COST_TOLERANCE_USD
+    ):
+        return UsageBreakdown(
+            uncached_input_tokens=usage.uncached_input_tokens if usage else 0,
+            cached_input_tokens=usage.cached_input_tokens if usage else 0,
+            cache_write_input_tokens=usage.cache_write_input_tokens if usage else 0,
+            visible_output_tokens=usage.visible_output_tokens if usage else 0,
+            reasoning_output_tokens=usage.reasoning_output_tokens if usage else 0,
+            cost_usd=reported_cost,
+            cost_source="reported",
+        )
+
+    if usage is not None and estimated_cost is not None:
+        return UsageBreakdown(
+            uncached_input_tokens=usage.uncached_input_tokens,
+            cached_input_tokens=usage.cached_input_tokens,
+            cache_write_input_tokens=usage.cache_write_input_tokens,
+            visible_output_tokens=usage.visible_output_tokens,
+            reasoning_output_tokens=usage.reasoning_output_tokens,
+            cost_usd=estimated_cost,
+            cost_source="estimated",
+        )
+
+    if usage is None and reported_cost is None:
+        return None
+
+    return UsageBreakdown(
+        uncached_input_tokens=usage.uncached_input_tokens if usage else 0,
+        cached_input_tokens=usage.cached_input_tokens if usage else 0,
+        cache_write_input_tokens=usage.cache_write_input_tokens if usage else 0,
+        visible_output_tokens=usage.visible_output_tokens if usage else 0,
+        reasoning_output_tokens=usage.reasoning_output_tokens if usage else 0,
+        cost_usd=reported_cost,
+        cost_source="reported" if reported_cost is not None else None,
     )
 
 

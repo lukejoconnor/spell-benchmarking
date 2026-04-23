@@ -16,7 +16,13 @@ from .codex_usage import normalize_codex_model
 from .docker_agents import discover_spell_root
 from .provenance import benchmark_git_versions
 from .reasoning_effort import effective_reasoning_effort
-from .usage_accounting import UsageBreakdown, estimate_cost, usage_from_totals, usage_record_fields
+from .usage_accounting import (
+    CLAUDE_REPORTED_COST_TOLERANCE_USD,
+    UsageBreakdown,
+    estimate_cost,
+    usage_from_totals,
+    usage_record_fields,
+)
 from .unified_results import UnifiedRunRecord, now_iso
 
 TERMINALBENCH_DATASET = "terminal-bench-core==0.1.1"
@@ -249,6 +255,7 @@ def _terminalbench_usage(
     *,
     trial: dict[str, Any],
     agent_result: dict[str, Any],
+    condition: str,
     model: str | None,
 ) -> UsageBreakdown | None:
     total_input_tokens = _usage_int(agent_result.get("total_input_tokens"))
@@ -258,6 +265,7 @@ def _terminalbench_usage(
         total_input_tokens = _usage_int(trial.get("total_input_tokens"))
 
     cached_input_tokens = _usage_int(agent_result.get("cached_input_tokens")) or 0
+    cache_write_input_tokens = _usage_int(agent_result.get("cache_write_input_tokens")) or 0
     reasoning_output_tokens = _usage_int(agent_result.get("reasoning_output_tokens")) or 0
 
     total_output_tokens = _usage_int(agent_result.get("total_output_tokens"))
@@ -280,12 +288,41 @@ def _terminalbench_usage(
         total_input_tokens=total_input_tokens,
         total_output_tokens=total_output_tokens,
         cached_input_tokens=cached_input_tokens,
+        cache_write_input_tokens=cache_write_input_tokens,
         reasoning_output_tokens=reasoning_output_tokens,
         cost_usd=cost_usd,
         cost_source=agent_result.get("cost_source"),
     )
-    if usage is None or usage.cost_usd is not None:
+    if usage is None:
         return usage
+
+    if usage.cost_usd is not None and condition != "claude_code":
+        return usage
+
+    reported_cost = usage.cost_usd
+    if reported_cost is not None:
+        estimated_cost = estimate_cost(model, usage)
+        if estimated_cost is not None and reported_cost < estimated_cost - CLAUDE_REPORTED_COST_TOLERANCE_USD:
+            return UsageBreakdown(
+                uncached_input_tokens=usage.uncached_input_tokens,
+                cached_input_tokens=usage.cached_input_tokens,
+                cache_write_input_tokens=usage.cache_write_input_tokens,
+                visible_output_tokens=usage.visible_output_tokens,
+                reasoning_output_tokens=usage.reasoning_output_tokens,
+                cost_usd=estimated_cost,
+                cost_source="estimated",
+            )
+        if usage.cost_source is not None:
+            return usage
+        return UsageBreakdown(
+            uncached_input_tokens=usage.uncached_input_tokens,
+            cached_input_tokens=usage.cached_input_tokens,
+            cache_write_input_tokens=usage.cache_write_input_tokens,
+            visible_output_tokens=usage.visible_output_tokens,
+            reasoning_output_tokens=usage.reasoning_output_tokens,
+            cost_usd=reported_cost,
+            cost_source="reported",
+        )
 
     estimated_cost = estimate_cost(model, usage)
     return UsageBreakdown(
@@ -412,6 +449,7 @@ def terminalbench_records_from_run(
         usage = _terminalbench_usage(
             trial=trial,
             agent_result=agent_result,
+            condition=condition,
             model=normalized_model,
         )
         cached_input_tokens = usage.cached_input_tokens if usage else agent_result.get("cached_input_tokens")

@@ -408,6 +408,36 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
 
         self.assertEqual(response.tokens_in, 13)
         self.assertEqual(response.cached_input_tokens, 3)
+        self.assertEqual(response.metadata["cost_source"], "reported")
+
+    @patch("src.unified_adapters.subprocess.run")
+    def test_claude_adapter_reprices_underreported_cache_write_cost(self, run_mock):
+        run_mock.return_value = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "type": "result",
+                    "result": "ok",
+                    "usage": {
+                        "input_tokens": 100_000,
+                        "cache_creation_input_tokens": 50_000,
+                        "cache_read_input_tokens": 25_000,
+                        "output_tokens": 10_000,
+                    },
+                    "total_cost_usd": 0.4575,
+                }
+            ),
+            stderr="",
+        )
+
+        adapter = ClaudeCodeAdapter(model="claude-sonnet-4-6", budget=1.0)
+        response = adapter.run(_request("claude_code", "claude_code:claude-sonnet-4-6"))
+
+        self.assertEqual(response.status, "ok")
+        self.assertEqual(response.tokens_in, 175_000)
+        self.assertEqual(response.cached_input_tokens, 75_000)
+        self.assertAlmostEqual(response.cost_usd or 0.0, 0.645, places=6)
+        self.assertEqual(response.metadata["cost_source"], "estimated")
 
     @patch("src.unified_adapters.SpellBenchmarkClient.run")
     def test_spell_adapter_skips_default_format_for_software(self, client_run_mock):
