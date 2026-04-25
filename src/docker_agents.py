@@ -1644,9 +1644,10 @@ def _install_agent_runtime(
     model_spec: str | None = None,
 ) -> bool:
     if condition == "claude_code":
-        if not install_nvm_node(container):
+        env = cc_env_vars(model=model_spec)
+        if not install_nvm_node(container, env=env):
             return False
-        return run_install_script(container, cc_install_script(version=version), env=cc_env_vars(model=model_spec))
+        return run_install_script(container, cc_install_script(version=version), env=env)
     if condition == "codex":
         env = codex_env_vars()
         if not install_nvm_node(container, env=env):

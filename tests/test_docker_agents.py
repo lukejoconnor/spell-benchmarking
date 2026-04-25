@@ -23,11 +23,13 @@ from src.docker_agents import (
     CODEX_RUNTIME_NPM_PREFIX,
     ExecOutput,
     INSTALL_TIMEOUT_RETRY_CLEANUP_SCRIPT,
+    cc_env_vars,
     cc_missing_cli_error,
     cc_install_script,
     cc_run_command,
     NVM_NODE_INSTALL,
     UV_BOOTSTRAP_COMMAND,
+    _install_agent_runtime,
     _install_nodejs_shell,
     _is_retryable_apt_fetch_failure,
     _is_retryable_install_timeout,
@@ -219,6 +221,29 @@ class DockerAgentsTests(unittest.TestCase):
             )
         )
         self.assertFalse(cc_missing_cli_error(ExecOutput(exit_code=1, stdout="", stderr="oops")))
+
+    def test_install_agent_runtime_uses_same_env_for_claude_code_node_and_install(self) -> None:
+        container = object()
+        expected_env = cc_env_vars(model="claude-opus-4-7")
+
+        with (
+            patch("src.docker_agents.install_nvm_node", return_value=True) as install_node,
+            patch("src.docker_agents.run_install_script", return_value=True) as install_script,
+        ):
+            ok = _install_agent_runtime(
+                container,
+                condition="claude_code",
+                version="latest",
+                model_spec="claude-opus-4-7",
+            )
+
+        self.assertTrue(ok)
+        install_node.assert_called_once_with(container, env=expected_env)
+        install_script.assert_called_once()
+        install_container, script = install_script.call_args.args
+        self.assertIs(install_container, container)
+        self.assertIn("npm install -g @anthropic-ai/claude-code@latest", script)
+        self.assertEqual(install_script.call_args.kwargs, {"env": expected_env})
 
     def test_ensure_uv_exec_uses_shared_uv_bootstrap(self) -> None:
         calls: list[tuple[str, dict[str, str] | None, str | None]] = []
