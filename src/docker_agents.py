@@ -297,7 +297,19 @@ url="https://nodejs.org/dist/${{node_version}}/${{tarball}}"
 curl -fsSL "$url" -o "$tmpdir/$tarball"
 mkdir -p "$NPM_CONFIG_PREFIX"
 tar -xzf "$tmpdir/$tarball" -C "$NPM_CONFIG_PREFIX" --strip-components=1
-echo "node installed via official binary: $($NPM_CONFIG_PREFIX/bin/node --version 2>/dev/null || echo missing)"
+"$NPM_CONFIG_PREFIX/bin/node" --version >/dev/null
+"$NPM_CONFIG_PREFIX/bin/npm" --version >/dev/null
+echo "node installed via official binary: $($NPM_CONFIG_PREFIX/bin/node --version)"
+""".strip()
+
+
+def _cleanup_nodejs_binary_shell() -> str:
+    return f"""
+set -e
+{_claude_runtime_shell_setup()}
+if [ -n "${{NPM_CONFIG_PREFIX:-}}" ] && [ -d "$NPM_CONFIG_PREFIX" ]; then
+  find "$NPM_CONFIG_PREFIX" -mindepth 1 -maxdepth 1 -exec rm -rf {{}} +
+fi
 """.strip()
 
 
@@ -845,6 +857,14 @@ def install_nvm_node_exec(
         logger.warning("Node binary install failed, falling back to package manager: %s", _exec_output_excerpt(binary))
     else:
         logger.warning("Node binary install did not provide Node >=%s and npm, falling back to package manager", MIN_NODE_MAJOR_VERSION)
+    cleanup = exec_fn(
+        _cleanup_nodejs_binary_shell(),
+        timeout=60,
+        env=dict(env) if env else None,
+        workdir=None,
+    )
+    if cleanup.exit_code != 0:
+        logger.warning("Node binary cleanup failed before package-manager fallback: %s", _exec_output_excerpt(cleanup))
     fallback = _run_install_with_apt_retry(
         exec_fn,
         _install_nodejs_shell(log_version=True),
