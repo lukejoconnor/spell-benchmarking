@@ -92,6 +92,8 @@ CLAUDE_RUNTIME_ROOT = "/tmp/bench-agent-runtime/claude"
 CLAUDE_RUNTIME_NVM_DIR = f"{CLAUDE_RUNTIME_ROOT}/nvm"
 CLAUDE_RUNTIME_NPM_PREFIX = f"{CLAUDE_RUNTIME_ROOT}/npm-global"
 CLAUDE_RUNTIME_NPM_CACHE = f"{CLAUDE_RUNTIME_ROOT}/npm-cache"
+NODE_BINARY_VERSION = "v22.22.2"
+MIN_NODE_MAJOR_VERSION = 18
 CLAUDE_CLI_MISSING_MARKER = "Claude Code CLI not available after installation"
 
 CC_ALLOWED_TOOLS = [
@@ -249,8 +251,53 @@ if ! command -v npm >/dev/null 2>&1; then
   echo "npm not available after installation" >&2
   exit 1
 fi
-echo "node verified: $(node --version 2>/dev/null || echo unknown)"
+node_version="$(node --version 2>/dev/null || true)"
+node_major="${{node_version#v}}"
+node_major="${{node_major%%.*}}"
+case "$node_major" in
+  ""|*[!0-9]*)
+    echo "Unable to parse node version after installation: ${{node_version:-unknown}}" >&2
+    exit 1
+    ;;
+esac
+if [ "$node_major" -lt {MIN_NODE_MAJOR_VERSION} ]; then
+  echo "node too old after installation: $node_version (need >={MIN_NODE_MAJOR_VERSION})" >&2
+  exit 1
+fi
+echo "node verified: $node_version"
 echo "npm verified: $(npm --version 2>/dev/null || echo unknown)"
+""".strip()
+
+
+def _install_nodejs_binary_shell(*, version: str = NODE_BINARY_VERSION) -> str:
+    quoted_version = shlex.quote(version)
+    return f"""
+set -e
+{_claude_runtime_shell_setup()}
+node_version={quoted_version}
+case "$(uname -m)" in
+  x86_64|amd64)
+    node_arch=x64
+    ;;
+  aarch64|arm64)
+    node_arch=arm64
+    ;;
+  *)
+    echo "Unsupported architecture for Node.js binary install: $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+if ! command -v curl >/dev/null 2>&1; then
+  {_install_curl_shell()}
+fi
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+tarball="node-${{node_version}}-linux-${{node_arch}}.tar.gz"
+url="https://nodejs.org/dist/${{node_version}}/${{tarball}}"
+curl -fsSL "$url" -o "$tmpdir/$tarball"
+mkdir -p "$NPM_CONFIG_PREFIX"
+tar -xzf "$tmpdir/$tarball" -C "$NPM_CONFIG_PREFIX" --strip-components=1
+echo "node installed via official binary: $($NPM_CONFIG_PREFIX/bin/node --version 2>/dev/null || echo missing)"
 """.strip()
 
 
@@ -781,9 +828,23 @@ def install_nvm_node_exec(
     if result.exit_code == 0 and verify("NVM/Node install"):
         return True
     if result.exit_code != 0:
-        logger.warning("NVM/Node install failed, falling back to package manager: %s", _exec_output_excerpt(result))
+        logger.warning("NVM/Node install failed, falling back to official Node binary: %s", _exec_output_excerpt(result))
     else:
-        logger.warning("NVM/Node install did not make node and npm available, falling back to package manager")
+        logger.warning("NVM/Node install did not provide Node >=%s and npm, falling back to official Node binary", MIN_NODE_MAJOR_VERSION)
+    binary = _run_install_with_apt_retry(
+        exec_fn,
+        _install_nodejs_binary_shell(),
+        timeout=300,
+        env=env,
+        workdir="/",
+        label="Node binary install",
+    )
+    if binary.exit_code == 0 and verify("Node binary install"):
+        return True
+    if binary.exit_code != 0:
+        logger.warning("Node binary install failed, falling back to package manager: %s", _exec_output_excerpt(binary))
+    else:
+        logger.warning("Node binary install did not provide Node >=%s and npm, falling back to package manager", MIN_NODE_MAJOR_VERSION)
     fallback = _run_install_with_apt_retry(
         exec_fn,
         _install_nodejs_shell(log_version=True),

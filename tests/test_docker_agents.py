@@ -17,6 +17,8 @@ from src.docker_agents import (
     CLAUDE_CLI_MISSING_MARKER,
     CLAUDE_RUNTIME_NPM_PREFIX,
     CLAUDE_RUNTIME_ROOT,
+    MIN_NODE_MAJOR_VERSION,
+    NODE_BINARY_VERSION,
     AgentRunResult,
     CODEX_RUNTIME_CODEX_HOME,
     CODEX_RUNTIME_NPM_CACHE,
@@ -30,6 +32,7 @@ from src.docker_agents import (
     NVM_NODE_INSTALL,
     UV_BOOTSTRAP_COMMAND,
     _install_agent_runtime,
+    _install_nodejs_binary_shell,
     _install_nodejs_shell,
     _is_retryable_apt_fetch_failure,
     _is_retryable_install_timeout,
@@ -394,6 +397,40 @@ EOF
         self.assertIn("command -v node", script)
         self.assertIn("command -v npm", script)
         self.assertIn("npm not available after installation", script)
+        self.assertIn(f"need >={MIN_NODE_MAJOR_VERSION}", script)
+
+    def test_verify_nodejs_shell_rejects_node_12(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            prefix = tmp / "npm-global"
+            bin_dir = prefix / "bin"
+            bin_dir.mkdir(parents=True)
+            _write_executable(bin_dir / "node", "#!/bin/sh\necho v12.22.9\n")
+            _write_executable(bin_dir / "npm", "#!/bin/sh\necho 8.5.1\n")
+
+            result = subprocess.run(
+                ["bash", "-c", _verify_nodejs_shell()],
+                capture_output=True,
+                env={
+                    "PATH": "/bin:/usr/bin",
+                    "CLAUDE_RUNTIME_ROOT": str(tmp / "runtime"),
+                    "NVM_DIR": str(tmp / "nvm"),
+                    "NPM_CONFIG_PREFIX": str(prefix),
+                    "NPM_CONFIG_CACHE": str(tmp / "npm-cache"),
+                },
+                text=True,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("node too old after installation: v12.22.9", result.stderr)
+
+    def test_install_nodejs_binary_shell_uses_official_tarball_and_runtime_prefix(self) -> None:
+        script = _install_nodejs_binary_shell()
+
+        self.assertIn(NODE_BINARY_VERSION, script)
+        self.assertIn("https://nodejs.org/dist/${node_version}/${tarball}", script)
+        self.assertIn('tar -xzf "$tmpdir/$tarball" -C "$NPM_CONFIG_PREFIX" --strip-components=1', script)
+        self.assertIn("node installed via official binary", script)
 
     def test_retryable_apt_fetch_failure_matches_transient_mirror_errors(self) -> None:
         self.assertTrue(
@@ -635,12 +672,12 @@ EOF
 
     def test_install_nvm_node_exec_falls_back_after_non_retryable_failure(self) -> None:
         env = {"NVM_DIR": "/tmp/nvm"}
-        fallback_script = _install_nodejs_shell(log_version=True)
+        binary_script = _install_nodejs_binary_shell()
         verify_script = _verify_nodejs_shell()
         exec_fn = SequentialExec(
             [
                 ExecOutput(exit_code=1, stdout="", stderr="apt-get: command not found"),
-                ExecOutput(exit_code=0, stdout="node installed via package manager: v22.0.0", stderr=""),
+                ExecOutput(exit_code=0, stdout="node installed via official binary: v22.22.2", stderr=""),
                 ExecOutput(exit_code=0, stdout="node verified: v22.0.0\nnpm verified: 10.0.0", stderr=""),
             ]
         )
@@ -649,18 +686,18 @@ EOF
 
         self.assertTrue(ok)
         self.assertEqual(exec_fn.calls[0], (NVM_NODE_INSTALL, {"timeout": 300, "env": env, "workdir": None}))
-        self.assertEqual(exec_fn.calls[1], (fallback_script, {"timeout": 300, "env": env, "workdir": "/"}))
+        self.assertEqual(exec_fn.calls[1], (binary_script, {"timeout": 300, "env": env, "workdir": "/"}))
         self.assertEqual(exec_fn.calls[2], (verify_script, {"timeout": 60, "env": env, "workdir": None}))
 
     def test_install_nvm_node_exec_falls_back_when_nvm_success_lacks_npm(self) -> None:
         env = {"NVM_DIR": "/tmp/nvm"}
-        fallback_script = _install_nodejs_shell(log_version=True)
+        binary_script = _install_nodejs_binary_shell()
         verify_script = _verify_nodejs_shell()
         exec_fn = SequentialExec(
             [
                 ExecOutput(exit_code=0, stdout="node installed: v22.0.0", stderr=""),
                 ExecOutput(exit_code=1, stdout="", stderr="npm not available after installation"),
-                ExecOutput(exit_code=0, stdout="node installed via package manager: v22.0.0", stderr=""),
+                ExecOutput(exit_code=0, stdout="node installed via official binary: v22.22.2", stderr=""),
                 ExecOutput(exit_code=0, stdout="node verified: v22.0.0\nnpm verified: 10.0.0", stderr=""),
             ]
         )
@@ -673,20 +710,49 @@ EOF
             [
                 (NVM_NODE_INSTALL, {"timeout": 300, "env": env, "workdir": None}),
                 (verify_script, {"timeout": 60, "env": env, "workdir": None}),
-                (fallback_script, {"timeout": 300, "env": env, "workdir": "/"}),
+                (binary_script, {"timeout": 300, "env": env, "workdir": "/"}),
                 (verify_script, {"timeout": 60, "env": env, "workdir": None}),
             ],
         )
 
-    def test_install_nvm_node_exec_fails_when_fallback_lacks_npm(self) -> None:
+    def test_install_nvm_node_exec_tries_binary_before_package_manager(self) -> None:
         env = {"NVM_DIR": "/tmp/nvm"}
+        binary_script = _install_nodejs_binary_shell()
         fallback_script = _install_nodejs_shell(log_version=True)
         verify_script = _verify_nodejs_shell()
         exec_fn = SequentialExec(
             [
                 ExecOutput(exit_code=1, stdout="", stderr="apt-get: command not found"),
+                ExecOutput(exit_code=1, stdout="", stderr="curl: (22) The requested URL returned error: 404"),
                 ExecOutput(exit_code=0, stdout="node installed via package manager: v22.0.0", stderr=""),
-                ExecOutput(exit_code=1, stdout="", stderr="npm not available after installation"),
+                ExecOutput(exit_code=0, stdout="node verified: v22.0.0\nnpm verified: 10.0.0", stderr=""),
+            ]
+        )
+
+        ok = install_nvm_node_exec(exec_fn, env=env)
+
+        self.assertTrue(ok)
+        self.assertEqual(
+            exec_fn.calls,
+            [
+                (NVM_NODE_INSTALL, {"timeout": 300, "env": env, "workdir": None}),
+                (binary_script, {"timeout": 300, "env": env, "workdir": "/"}),
+                (fallback_script, {"timeout": 300, "env": env, "workdir": "/"}),
+                (verify_script, {"timeout": 60, "env": env, "workdir": None}),
+            ],
+        )
+
+    def test_install_nvm_node_exec_fails_when_package_manager_installs_node_12(self) -> None:
+        env = {"NVM_DIR": "/tmp/nvm"}
+        binary_script = _install_nodejs_binary_shell()
+        fallback_script = _install_nodejs_shell(log_version=True)
+        verify_script = _verify_nodejs_shell()
+        exec_fn = SequentialExec(
+            [
+                ExecOutput(exit_code=1, stdout="", stderr="apt-get: command not found"),
+                ExecOutput(exit_code=1, stdout="", stderr="curl: (22) The requested URL returned error: 404"),
+                ExecOutput(exit_code=0, stdout="node installed via package manager: v12.22.9", stderr=""),
+                ExecOutput(exit_code=1, stdout="", stderr="node too old after installation: v12.22.9 (need >=18)"),
             ]
         )
 
@@ -697,6 +763,7 @@ EOF
             exec_fn.calls,
             [
                 (NVM_NODE_INSTALL, {"timeout": 300, "env": env, "workdir": None}),
+                (binary_script, {"timeout": 300, "env": env, "workdir": "/"}),
                 (fallback_script, {"timeout": 300, "env": env, "workdir": "/"}),
                 (verify_script, {"timeout": 60, "env": env, "workdir": None}),
             ],
@@ -709,6 +776,7 @@ EOF
         exec_fn = SequentialExec(
             [
                 ExecOutput(exit_code=1, stdout="", stderr="apt-get: command not found"),
+                ExecOutput(exit_code=1, stdout="", stderr="curl: (22) The requested URL returned error: 404"),
                 ExecOutput(exit_code=1, stdout="", stderr="Failed to fetch nodejs: Connection timed out"),
                 ExecOutput(exit_code=1, stdout="", stderr="Failed to fetch npm: Could not connect"),
                 ExecOutput(exit_code=0, stdout="node installed via package manager: v22.0.0", stderr=""),
@@ -721,10 +789,11 @@ EOF
 
         self.assertTrue(ok)
         self.assertEqual(exec_fn.calls[0], (NVM_NODE_INSTALL, {"timeout": 300, "env": env, "workdir": None}))
-        self.assertEqual([cmd for cmd, _kwargs in exec_fn.calls[1:4]], [fallback_script] * 3)
-        for _cmd, kwargs in exec_fn.calls[1:4]:
+        self.assertEqual(exec_fn.calls[1], (_install_nodejs_binary_shell(), {"timeout": 300, "env": env, "workdir": "/"}))
+        self.assertEqual([cmd for cmd, _kwargs in exec_fn.calls[2:5]], [fallback_script] * 3)
+        for _cmd, kwargs in exec_fn.calls[2:5]:
             self.assertEqual(kwargs, {"timeout": 300, "env": env, "workdir": "/"})
-        self.assertEqual(exec_fn.calls[4], (verify_script, {"timeout": 60, "env": env, "workdir": None}))
+        self.assertEqual(exec_fn.calls[5], (verify_script, {"timeout": 60, "env": env, "workdir": None}))
         self.assertEqual(sleep.call_count, 2)
 
     def test_spell_env_vars_forwards_fireworks_api_key(self) -> None:
