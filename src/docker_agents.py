@@ -237,6 +237,23 @@ export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
 """.strip() % _nvm_source_with_tmp_npm_prefix()
 
 
+def _verify_nodejs_shell() -> str:
+    return f"""
+set -e
+{_claude_runtime_shell_setup()}
+if ! command -v node >/dev/null 2>&1; then
+  echo "node not available after installation" >&2
+  exit 1
+fi
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm not available after installation" >&2
+  exit 1
+fi
+echo "node verified: $(node --version 2>/dev/null || echo unknown)"
+echo "npm verified: $(npm --version 2>/dev/null || echo unknown)"
+""".strip()
+
+
 NVM_NODE_INSTALL = r"""
 set -e
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
@@ -742,6 +759,18 @@ def install_nvm_node_exec(
     *,
     env: dict[str, str] | None = None,
 ) -> bool:
+    def verify(label: str) -> bool:
+        verify_result = exec_fn(
+            _verify_nodejs_shell(),
+            timeout=60,
+            env=dict(env) if env else None,
+            workdir=None,
+        )
+        if verify_result.exit_code == 0:
+            return True
+        logger.warning("%s succeeded but Node/npm verification failed: %s", label, _exec_output_excerpt(verify_result))
+        return False
+
     result = _run_install_with_apt_retry(
         exec_fn,
         NVM_NODE_INSTALL,
@@ -749,9 +778,12 @@ def install_nvm_node_exec(
         env=env,
         label="NVM/Node install",
     )
-    if result.exit_code == 0:
+    if result.exit_code == 0 and verify("NVM/Node install"):
         return True
-    logger.warning("NVM/Node install failed, falling back to package manager: %s", _exec_output_excerpt(result))
+    if result.exit_code != 0:
+        logger.warning("NVM/Node install failed, falling back to package manager: %s", _exec_output_excerpt(result))
+    else:
+        logger.warning("NVM/Node install did not make node and npm available, falling back to package manager")
     fallback = _run_install_with_apt_retry(
         exec_fn,
         _install_nodejs_shell(log_version=True),
@@ -763,7 +795,7 @@ def install_nvm_node_exec(
     if fallback.exit_code != 0:
         logger.error("Node fallback install failed: %s", _exec_output_excerpt(fallback))
         return False
-    return True
+    return verify("Node fallback install")
 
 
 def ensure_uv(container: DockerWorkspaceContainer) -> bool:
