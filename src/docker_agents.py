@@ -92,6 +92,8 @@ CLAUDE_RUNTIME_ROOT = "/tmp/bench-agent-runtime/claude"
 CLAUDE_RUNTIME_NVM_DIR = f"{CLAUDE_RUNTIME_ROOT}/nvm"
 CLAUDE_RUNTIME_NPM_PREFIX = f"{CLAUDE_RUNTIME_ROOT}/npm-global"
 CLAUDE_RUNTIME_NPM_CACHE = f"{CLAUDE_RUNTIME_ROOT}/npm-cache"
+NODE_BINARY_VERSION = "v22.22.2"
+MIN_NODE_MAJOR_VERSION = 18
 CLAUDE_CLI_MISSING_MARKER = "Claude Code CLI not available after installation"
 
 CC_ALLOWED_TOOLS = [
@@ -235,6 +237,80 @@ mkdir -p "$CLAUDE_RUNTIME_ROOT" "$NVM_DIR" "$NPM_CONFIG_PREFIX" "$npm_config_cac
 %s
 export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
 """.strip() % _nvm_source_with_tmp_npm_prefix()
+
+
+def _verify_nodejs_shell() -> str:
+    return f"""
+set -e
+{_claude_runtime_shell_setup()}
+if ! command -v node >/dev/null 2>&1; then
+  echo "node not available after installation" >&2
+  exit 1
+fi
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm not available after installation" >&2
+  exit 1
+fi
+node_version="$(node --version 2>/dev/null || true)"
+node_major="${{node_version#v}}"
+node_major="${{node_major%%.*}}"
+case "$node_major" in
+  ""|*[!0-9]*)
+    echo "Unable to parse node version after installation: ${{node_version:-unknown}}" >&2
+    exit 1
+    ;;
+esac
+if [ "$node_major" -lt {MIN_NODE_MAJOR_VERSION} ]; then
+  echo "node too old after installation: $node_version (need >={MIN_NODE_MAJOR_VERSION})" >&2
+  exit 1
+fi
+echo "node verified: $node_version"
+echo "npm verified: $(npm --version 2>/dev/null || echo unknown)"
+""".strip()
+
+
+def _install_nodejs_binary_shell(*, version: str = NODE_BINARY_VERSION) -> str:
+    quoted_version = shlex.quote(version)
+    return f"""
+set -e
+{_claude_runtime_shell_setup()}
+node_version={quoted_version}
+case "$(uname -m)" in
+  x86_64|amd64)
+    node_arch=x64
+    ;;
+  aarch64|arm64)
+    node_arch=arm64
+    ;;
+  *)
+    echo "Unsupported architecture for Node.js binary install: $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+if ! command -v curl >/dev/null 2>&1; then
+  {_install_curl_shell()}
+fi
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+tarball="node-${{node_version}}-linux-${{node_arch}}.tar.gz"
+url="https://nodejs.org/dist/${{node_version}}/${{tarball}}"
+curl -fsSL "$url" -o "$tmpdir/$tarball"
+mkdir -p "$NPM_CONFIG_PREFIX"
+tar -xzf "$tmpdir/$tarball" -C "$NPM_CONFIG_PREFIX" --strip-components=1
+"$NPM_CONFIG_PREFIX/bin/node" --version >/dev/null
+"$NPM_CONFIG_PREFIX/bin/npm" --version >/dev/null
+echo "node installed via official binary: $($NPM_CONFIG_PREFIX/bin/node --version)"
+""".strip()
+
+
+def _cleanup_nodejs_binary_shell() -> str:
+    return f"""
+set -e
+{_claude_runtime_shell_setup()}
+if [ -n "${{NPM_CONFIG_PREFIX:-}}" ] && [ -d "$NPM_CONFIG_PREFIX" ]; then
+  find "$NPM_CONFIG_PREFIX" -mindepth 1 -maxdepth 1 -exec rm -rf {{}} +
+fi
+""".strip()
 
 
 NVM_NODE_INSTALL = r"""
@@ -742,6 +818,18 @@ def install_nvm_node_exec(
     *,
     env: dict[str, str] | None = None,
 ) -> bool:
+    def verify(label: str) -> bool:
+        verify_result = exec_fn(
+            _verify_nodejs_shell(),
+            timeout=60,
+            env=dict(env) if env else None,
+            workdir=None,
+        )
+        if verify_result.exit_code == 0:
+            return True
+        logger.warning("%s succeeded but Node/npm verification failed: %s", label, _exec_output_excerpt(verify_result))
+        return False
+
     result = _run_install_with_apt_retry(
         exec_fn,
         NVM_NODE_INSTALL,
@@ -749,9 +837,34 @@ def install_nvm_node_exec(
         env=env,
         label="NVM/Node install",
     )
-    if result.exit_code == 0:
+    if result.exit_code == 0 and verify("NVM/Node install"):
         return True
-    logger.warning("NVM/Node install failed, falling back to package manager: %s", _exec_output_excerpt(result))
+    if result.exit_code != 0:
+        logger.warning("NVM/Node install failed, falling back to official Node binary: %s", _exec_output_excerpt(result))
+    else:
+        logger.warning("NVM/Node install did not provide Node >=%s and npm, falling back to official Node binary", MIN_NODE_MAJOR_VERSION)
+    binary = _run_install_with_apt_retry(
+        exec_fn,
+        _install_nodejs_binary_shell(),
+        timeout=300,
+        env=env,
+        workdir="/",
+        label="Node binary install",
+    )
+    if binary.exit_code == 0 and verify("Node binary install"):
+        return True
+    if binary.exit_code != 0:
+        logger.warning("Node binary install failed, falling back to package manager: %s", _exec_output_excerpt(binary))
+    else:
+        logger.warning("Node binary install did not provide Node >=%s and npm, falling back to package manager", MIN_NODE_MAJOR_VERSION)
+    cleanup = exec_fn(
+        _cleanup_nodejs_binary_shell(),
+        timeout=60,
+        env=dict(env) if env else None,
+        workdir=None,
+    )
+    if cleanup.exit_code != 0:
+        logger.warning("Node binary cleanup failed before package-manager fallback: %s", _exec_output_excerpt(cleanup))
     fallback = _run_install_with_apt_retry(
         exec_fn,
         _install_nodejs_shell(log_version=True),
@@ -763,7 +876,7 @@ def install_nvm_node_exec(
     if fallback.exit_code != 0:
         logger.error("Node fallback install failed: %s", _exec_output_excerpt(fallback))
         return False
-    return True
+    return verify("Node fallback install")
 
 
 def ensure_uv(container: DockerWorkspaceContainer) -> bool:
@@ -1612,9 +1725,10 @@ def _install_agent_runtime(
     model_spec: str | None = None,
 ) -> bool:
     if condition == "claude_code":
-        if not install_nvm_node(container):
+        env = cc_env_vars(model=model_spec)
+        if not install_nvm_node(container, env=env):
             return False
-        return run_install_script(container, cc_install_script(version=version), env=cc_env_vars(model=model_spec))
+        return run_install_script(container, cc_install_script(version=version), env=env)
     if condition == "codex":
         env = codex_env_vars()
         if not install_nvm_node(container, env=env):
