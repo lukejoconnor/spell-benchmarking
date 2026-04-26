@@ -101,6 +101,26 @@ class TerminalBenchRunnerTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--dataset") + 1], TERMINALBENCH_HEAD_DATASET)
         self.assertEqual(cmd[cmd.index("--local-registry-path") + 1], str(TERMINALBENCH_HEAD_REGISTRY))
 
+    def test_build_terminalbench_command_preserves_raw_head_passthrough(self) -> None:
+        cmd = build_terminalbench_command(
+            condition="codex",
+            run_id="codex_demo",
+            model="openai/gpt-5.3-codex",
+            dataset="terminal-bench-core==head",
+            task_ids=(),
+            n_tasks=1,
+            n_concurrent=1,
+            budget=7.5,
+            cleanup=True,
+            reasoning_effort="high",
+            agent_file=None,
+            trailing=None,
+            trace=False,
+        )
+
+        self.assertEqual(cmd[cmd.index("--dataset") + 1], TERMINALBENCH_HEAD_DATASET)
+        self.assertNotIn("--local-registry-path", cmd)
+
     def test_build_terminalbench_command_threads_claude_and_codex_effort(self) -> None:
         claude_cmd = build_terminalbench_command(
             condition="claude_code",

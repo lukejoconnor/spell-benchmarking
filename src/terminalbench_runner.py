@@ -29,15 +29,13 @@ TERMINALBENCH_OLD_CORE_DATASET = "terminal-bench-core==0.1.1"
 TERMINALBENCH_HEAD_DATASET = "terminal-bench-core==head"
 TERMINALBENCH_DATASET = TERMINALBENCH_OLD_CORE_DATASET
 TERMINALBENCH_HEAD_REGISTRY = Path("terminal_bench") / "terminal-bench-core-head-registry.json"
+TERMINALBENCH_HEAD_ALIASES = frozenset({"2.0", "head", "current", "latest"})
 TERMINALBENCH_DATASET_ALIASES = {
     "old-core": TERMINALBENCH_OLD_CORE_DATASET,
     "core-0.1.1": TERMINALBENCH_OLD_CORE_DATASET,
     "0.1.1": TERMINALBENCH_OLD_CORE_DATASET,
     "1.1": TERMINALBENCH_OLD_CORE_DATASET,
-    "2.0": TERMINALBENCH_HEAD_DATASET,
-    "head": TERMINALBENCH_HEAD_DATASET,
-    "current": TERMINALBENCH_HEAD_DATASET,
-    "latest": TERMINALBENCH_HEAD_DATASET,
+    **{alias: TERMINALBENCH_HEAD_DATASET for alias in TERMINALBENCH_HEAD_ALIASES},
 }
 TERMINALBENCH_CONDITIONS = ("spell", "claude_code", "codex")
 TERMINALBENCH_RESULTS_DIR = Path("results") / "terminal-bench"
@@ -84,7 +82,7 @@ def resolve_terminalbench_dataset_spec(dataset: str | None) -> TerminalBenchData
         return TerminalBenchDatasetSpec(TERMINALBENCH_DATASET)
     requested = dataset.strip()
     resolved = TERMINALBENCH_DATASET_ALIASES.get(requested, requested)
-    registry_path = TERMINALBENCH_HEAD_REGISTRY if resolved == TERMINALBENCH_HEAD_DATASET else None
+    registry_path = TERMINALBENCH_HEAD_REGISTRY if requested in TERMINALBENCH_HEAD_ALIASES else None
     return TerminalBenchDatasetSpec(resolved, registry_path)
 
 

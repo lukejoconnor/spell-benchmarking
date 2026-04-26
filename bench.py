@@ -97,7 +97,7 @@ from src.terminalbench_runner import (
     parse_terminalbench_conditions,
     prepare_terminalbench_env,
     prune_terminalbench_docker,
-    resolve_terminalbench_dataset,
+    resolve_terminalbench_dataset_spec,
     resolve_terminalbench_model,
     terminalbench_condition_run_id,
     terminalbench_output_file,
@@ -2444,7 +2444,7 @@ def run_terminalbench(
     output_file = Path(output) if output else terminalbench_output_file(run_id)
     conditions = _parse_terminalbench_conditions_option(condition_values)
     requested_dataset = dataset
-    resolved_dataset = resolve_terminalbench_dataset(dataset)
+    resolved_dataset = resolve_terminalbench_dataset_spec(dataset).dataset
     requested_task_ids = tuple(task_ids) + tuple(task_ids_short)
 
     click.echo(f"Run ID: {run_id}")
@@ -2471,7 +2471,7 @@ def run_terminalbench(
             condition=cond,
             run_id=tb_run_id,
             model=models_by_condition.get(cond),
-            dataset=resolved_dataset,
+            dataset=requested_dataset,
             task_ids=requested_task_ids,
             n_tasks=n_tasks,
             n_concurrent=n_concurrent,

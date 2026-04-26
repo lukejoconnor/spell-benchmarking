@@ -94,7 +94,7 @@ Software-benchmark container infra:
 | Benchmark | Items | What it tests | Run command |
 |-----------|-------|---------------|-------------|
 | Terminal-Bench old core | 80 | Shell tasks in Docker containers | `uv run python bench.py terminalbench --dataset old-core --condition all` |
-| Terminal-Bench current/head | ~94 | Current public/core shell tasks in Docker containers | `uv run python bench.py terminalbench --dataset 2.0 --condition all` |
+| Terminal-Bench 2.x pinned | ~94 | Current public/core shell tasks in Docker containers | `uv run python bench.py terminalbench --dataset 2.0 --condition all` |
 
 Requires Docker (Colima or Docker Desktop). Uses `tb` CLI (`uv tool install terminal-bench`).
 All three conditions use imported Docker agents under `terminal_bench/`, orchestrated through `bench.py terminalbench`.
@@ -102,9 +102,9 @@ If `benchmarking/` is checked out as a standalone worktree instead of nested und
 The default dataset remains old core (`terminal-bench-core==0.1.1`) for comparability with recent local runs. Dataset aliases resolve as follows:
 
 - `old-core`, `core-0.1.1`, `0.1.1`, and `1.1` -> `terminal-bench-core==0.1.1`
-- `2.0`, `head`, `current`, and `latest` -> `terminal-bench-core==head` using the bundled local registry entry for the upstream `dataset/terminal-bench-core/v0.2.x` branch
+- `2.0`, `head`, `current`, and `latest` -> `terminal-bench-core==head` using the bundled local registry entry pinned to upstream `dataset/terminal-bench-core/v0.2.x` commit `76de0a03069c2a1101d8e0845daedb5065da87ea`
 
-Raw `tb --dataset` strings still pass through, so use the registry string directly when you need a specific pinned dataset. Note that the upstream default registry may treat raw `terminal-bench-core` as a moving head entry; prefer the aliases above for reproducible local CLI behavior.
+Raw `tb --dataset` strings still pass through without the bundled registry override, so use the registry string directly when you need upstream registry behavior. Note that the upstream default registry may treat raw `terminal-bench-core` as a moving head entry; prefer the aliases above for reproducible local CLI behavior.
 
 Examples:
 ```bash
@@ -125,7 +125,7 @@ uv run python bench.py terminalbench \
   -t hello-world \
   --dry-run
 
-# Dry-run the current/head Terminal-Bench task set without executing it
+# Dry-run the pinned 2.x Terminal-Bench task set without executing it
 uv run python bench.py terminalbench \
   --condition spell \
   --dataset 2.0 \
