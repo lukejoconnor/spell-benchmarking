@@ -25,9 +25,26 @@ from .usage_accounting import (
 )
 from .unified_results import UnifiedRunRecord, now_iso
 
-TERMINALBENCH_DATASET = "terminal-bench-core==0.1.1"
+TERMINALBENCH_OLD_CORE_DATASET = "terminal-bench-core==0.1.1"
+TERMINALBENCH_HEAD_DATASET = "terminal-bench-core==head"
+TERMINALBENCH_DATASET = TERMINALBENCH_OLD_CORE_DATASET
+TERMINALBENCH_HEAD_REGISTRY = Path("terminal_bench") / "terminal-bench-core-head-registry.json"
+TERMINALBENCH_HEAD_ALIASES = frozenset({"2.0", "head", "current", "latest"})
+TERMINALBENCH_DATASET_ALIASES = {
+    "old-core": TERMINALBENCH_OLD_CORE_DATASET,
+    "core-0.1.1": TERMINALBENCH_OLD_CORE_DATASET,
+    "0.1.1": TERMINALBENCH_OLD_CORE_DATASET,
+    "1.1": TERMINALBENCH_OLD_CORE_DATASET,
+    **{alias: TERMINALBENCH_HEAD_DATASET for alias in TERMINALBENCH_HEAD_ALIASES},
+}
 TERMINALBENCH_CONDITIONS = ("spell", "claude_code", "codex")
 TERMINALBENCH_RESULTS_DIR = Path("results") / "terminal-bench"
+
+
+@dataclass(frozen=True)
+class TerminalBenchDatasetSpec:
+    dataset: str
+    local_registry_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +71,19 @@ CONDITION_SPECS: dict[str, TerminalBenchConditionSpec] = {
 
 def resolve_terminalbench_model(condition: str, override: str | None) -> str:
     return override or CONDITION_SPECS[condition].default_model
+
+
+def resolve_terminalbench_dataset(dataset: str | None) -> str:
+    return resolve_terminalbench_dataset_spec(dataset).dataset
+
+
+def resolve_terminalbench_dataset_spec(dataset: str | None) -> TerminalBenchDatasetSpec:
+    if dataset is None:
+        return TerminalBenchDatasetSpec(TERMINALBENCH_DATASET)
+    requested = dataset.strip()
+    resolved = TERMINALBENCH_DATASET_ALIASES.get(requested, requested)
+    registry_path = TERMINALBENCH_HEAD_REGISTRY if requested in TERMINALBENCH_HEAD_ALIASES else None
+    return TerminalBenchDatasetSpec(resolved, registry_path)
 
 
 def parse_terminalbench_conditions(values: tuple[str, ...] | list[str]) -> list[str]:
@@ -130,6 +160,7 @@ def build_terminalbench_command(
 ) -> list[str]:
     spec = CONDITION_SPECS[condition]
     effective_effort = effective_reasoning_effort(condition, model or spec.default_model, reasoning_effort)
+    dataset_spec = resolve_terminalbench_dataset_spec(dataset)
     cmd = [
         "tb",
         "run",
@@ -138,7 +169,7 @@ def build_terminalbench_command(
         "--model",
         model or spec.default_model,
         "--dataset",
-        dataset,
+        dataset_spec.dataset,
         "--output-path",
         str(output_root),
         "--run-id",
@@ -146,6 +177,8 @@ def build_terminalbench_command(
         "--n-concurrent",
         str(n_concurrent),
     ]
+    if dataset_spec.local_registry_path is not None:
+        cmd.extend(["--local-registry-path", str(dataset_spec.local_registry_path)])
 
     if cleanup:
         cmd.append("--cleanup")
@@ -429,12 +462,14 @@ def terminalbench_records_from_run(
     model_spec: str | None,
     name: str | None,
     agent_file: str | None,
+    requested_dataset: str | None = None,
     reasoning_effort: str | None = None,
     host_trace_root: Path | None = None,
 ) -> list[UnifiedRunRecord]:
     payload = load_terminalbench_results(run_dir)
     trials = payload.get("results") or []
     records: list[UnifiedRunRecord] = []
+    resolved_dataset = resolve_terminalbench_dataset(dataset)
     resolved_model = resolve_terminalbench_model(condition, model_spec)
     normalized_model = _normalize_record_model(condition, resolved_model)
     recorded_reasoning_effort = effective_reasoning_effort(condition, resolved_model, reasoning_effort)
@@ -483,6 +518,8 @@ def terminalbench_records_from_run(
             "resolved_model": normalized_model if condition == "codex" else None,
             "cost_source": usage.cost_source if usage else None,
             "reasoning_output_tokens": reasoning_output_tokens if condition == "codex" else None,
+            "requested_dataset": requested_dataset if requested_dataset and requested_dataset != resolved_dataset else None,
+            "resolved_dataset": resolved_dataset if requested_dataset and requested_dataset != resolved_dataset else None,
             "versions": benchmark_git_versions(),
         }
         metadata = {key: value for key, value in metadata.items() if value is not None}
@@ -492,7 +529,7 @@ def terminalbench_records_from_run(
                 run_id=run_id,
                 timestamp=now_iso(),
                 benchmark="terminalbench",
-                dataset=dataset,
+                dataset=resolved_dataset,
                 split=None,
                 item_id=task_id,
                 condition=condition,

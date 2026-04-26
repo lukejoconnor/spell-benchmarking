@@ -12,8 +12,13 @@ if str(BENCHMARK_ROOT) not in sys.path:
     sys.path.insert(0, str(BENCHMARK_ROOT))
 
 from src.terminalbench_runner import (
+    TERMINALBENCH_DATASET,
+    TERMINALBENCH_HEAD_DATASET,
+    TERMINALBENCH_HEAD_REGISTRY,
+    TERMINALBENCH_OLD_CORE_DATASET,
     build_terminalbench_command,
     parse_terminalbench_conditions,
+    resolve_terminalbench_dataset,
     terminalbench_condition_run_id,
     terminalbench_records_from_run,
     terminalbench_run_dir,
@@ -30,6 +35,22 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             parse_terminalbench_conditions(["spell", "codex", "spell"]),
             ["spell", "codex"],
         )
+
+    def test_terminalbench_dataset_aliases_keep_old_core_default_and_head_aliases(self) -> None:
+        self.assertEqual(TERMINALBENCH_DATASET, TERMINALBENCH_OLD_CORE_DATASET)
+        self.assertEqual(resolve_terminalbench_dataset(None), TERMINALBENCH_OLD_CORE_DATASET)
+        self.assertEqual(resolve_terminalbench_dataset("old-core"), TERMINALBENCH_OLD_CORE_DATASET)
+        self.assertEqual(resolve_terminalbench_dataset("core-0.1.1"), TERMINALBENCH_OLD_CORE_DATASET)
+        self.assertEqual(resolve_terminalbench_dataset("1.1"), TERMINALBENCH_OLD_CORE_DATASET)
+        self.assertEqual(resolve_terminalbench_dataset("2.0"), TERMINALBENCH_HEAD_DATASET)
+        self.assertEqual(resolve_terminalbench_dataset("head"), TERMINALBENCH_HEAD_DATASET)
+        self.assertEqual(resolve_terminalbench_dataset("latest"), TERMINALBENCH_HEAD_DATASET)
+
+    def test_terminalbench_dataset_resolution_preserves_raw_passthrough(self) -> None:
+        self.assertEqual(resolve_terminalbench_dataset("terminal-bench-core==0.1.1"), TERMINALBENCH_OLD_CORE_DATASET)
+        self.assertEqual(resolve_terminalbench_dataset("terminal-bench-core"), "terminal-bench-core")
+        self.assertEqual(resolve_terminalbench_dataset("terminal-bench-core==head"), TERMINALBENCH_HEAD_DATASET)
+        self.assertEqual(resolve_terminalbench_dataset("custom-dataset==2026.04"), "custom-dataset==2026.04")
 
     def test_build_terminalbench_command_threads_spell_kwargs(self) -> None:
         cmd = build_terminalbench_command(
@@ -59,6 +80,46 @@ class TerminalBenchRunnerTests(unittest.TestCase):
         self.assertIn("-k agent_file=config/agents/io-tc.agent.edn", rendered)
         self.assertIn("-k trailing='(!describe io)", rendered)
         self.assertIn("-k trace=false", rendered)
+
+    def test_build_terminalbench_command_resolves_dataset_alias(self) -> None:
+        cmd = build_terminalbench_command(
+            condition="codex",
+            run_id="codex_demo",
+            model="openai/gpt-5.3-codex",
+            dataset="2.0",
+            task_ids=(),
+            n_tasks=1,
+            n_concurrent=1,
+            budget=7.5,
+            cleanup=True,
+            reasoning_effort="high",
+            agent_file=None,
+            trailing=None,
+            trace=False,
+        )
+
+        self.assertEqual(cmd[cmd.index("--dataset") + 1], TERMINALBENCH_HEAD_DATASET)
+        self.assertEqual(cmd[cmd.index("--local-registry-path") + 1], str(TERMINALBENCH_HEAD_REGISTRY))
+
+    def test_build_terminalbench_command_preserves_raw_head_passthrough(self) -> None:
+        cmd = build_terminalbench_command(
+            condition="codex",
+            run_id="codex_demo",
+            model="openai/gpt-5.3-codex",
+            dataset="terminal-bench-core==head",
+            task_ids=(),
+            n_tasks=1,
+            n_concurrent=1,
+            budget=7.5,
+            cleanup=True,
+            reasoning_effort="high",
+            agent_file=None,
+            trailing=None,
+            trace=False,
+        )
+
+        self.assertEqual(cmd[cmd.index("--dataset") + 1], TERMINALBENCH_HEAD_DATASET)
+        self.assertNotIn("--local-registry-path", cmd)
 
     def test_build_terminalbench_command_threads_claude_and_codex_effort(self) -> None:
         claude_cmd = build_terminalbench_command(
@@ -205,6 +266,43 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             )
             copied_trace = Path(record.metadata["trace_dir"])
             self.assertTrue((copied_trace / "trace-1" / "tree.txt").exists())
+
+    def test_terminalbench_records_store_resolved_dataset_and_alias_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir) / "results" / "codex_demo"
+            trial_dir = run_dir / "hello-world" / "hello-world.1-of-1.codex_demo"
+            trial_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "results.json").write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "trial_name": "hello-world.1-of-1.codex_demo",
+                                "task_id": "hello-world",
+                                "is_resolved": True,
+                                "failure_mode": "none",
+                                "parser_results": {"check": "passed"},
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            records = terminalbench_records_from_run(
+                run_dir=run_dir,
+                run_id="terminalbench_demo",
+                condition="codex",
+                dataset="2.0",
+                model_spec="openai/gpt-5.3-codex",
+                name=None,
+                agent_file=None,
+                requested_dataset="2.0",
+            )
+
+            self.assertEqual(records[0].dataset, TERMINALBENCH_HEAD_DATASET)
+            self.assertEqual(records[0].metadata["requested_dataset"], "2.0")
+            self.assertEqual(records[0].metadata["resolved_dataset"], TERMINALBENCH_HEAD_DATASET)
 
     def test_terminalbench_records_recover_spell_visible_and_reasoning_from_agent_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
