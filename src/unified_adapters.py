@@ -414,6 +414,22 @@ class ClaudeCodeAdapter:
         if model and ":" in model:
             _, model = model.split(":", 1)
 
+        oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+        if not oauth_token:
+            return RunResponse(
+                status="error",
+                response_text=None,
+                usage=None,
+                cost_usd=None,
+                latency_ms=0.0,
+                error_message=(
+                    "CLAUDE_CODE_OAUTH_TOKEN is required for Claude Code benchmark runs. "
+                    "Run `claude setup-token` and export/store that token; Claude Code harnesses "
+                    "do not accept ANTHROPIC_API_KEY or CLAUDE_JSON_B64."
+                ),
+                error_type="auth_error",
+            )
+
         cmd = [
             "claude",
             "--setting-sources",
@@ -435,7 +451,12 @@ class ClaudeCodeAdapter:
         if add_dir := req.metadata.get("add_dir"):
             cmd[1:1] = ["--add-dir", str(add_dir)]
 
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in {"ANTHROPIC_API_KEY", "CLAUDE_JSON_B64", "CLAUDECODE"}
+        }
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
         start = time.time()
         try:
             proc = subprocess.run(

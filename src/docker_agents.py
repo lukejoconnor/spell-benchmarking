@@ -959,24 +959,12 @@ def run_install_script(
     return True
 
 
-def _load_claude_json_b64() -> str | None:
-    if os.environ.get("CLAUDE_JSON_B64"):
-        return os.environ["CLAUDE_JSON_B64"]
-    path = Path.home() / ".claude.json"
-    if not path.exists():
-        return None
-    return base64.b64encode(path.read_bytes()).decode("ascii")
-
-
 def cc_install_script(*, version: str | None = None) -> str:
     resolved_version = version or "latest"
     return f"""
 set -euo pipefail
 {_claude_runtime_shell_setup()}
 npm install -g @anthropic-ai/claude-code@{resolved_version}
-if [ -n "${{CLAUDE_JSON_B64:-}}" ]; then
-  printf '%s' "$CLAUDE_JSON_B64" | base64 -d > "$HOME/.claude.json"
-fi
 if ! command -v claude >/dev/null 2>&1; then
   echo "{CLAUDE_CLI_MISSING_MARKER}" >&2
   exit 1
@@ -1001,17 +989,14 @@ def cc_env_vars(
         env["FORCE_AUTO_BACKGROUND_TASKS"] = "1"
         env["ENABLE_BACKGROUND_TASKS"] = "1"
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if api_key:
-        env["ANTHROPIC_API_KEY"] = api_key
-
     cc_oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
-    if cc_oauth_token:
-        env["CLAUDE_CODE_OAUTH_TOKEN"] = cc_oauth_token
-
-    claude_json_b64 = _load_claude_json_b64()
-    if claude_json_b64:
-        env["CLAUDE_JSON_B64"] = claude_json_b64
+    if not cc_oauth_token:
+        raise RuntimeError(
+            "CLAUDE_CODE_OAUTH_TOKEN is required for Claude Code benchmark runs. "
+            "Run `claude setup-token` and export/store that token; Claude Code harnesses "
+            "do not accept ANTHROPIC_API_KEY or CLAUDE_JSON_B64."
+        )
+    env["CLAUDE_CODE_OAUTH_TOKEN"] = cc_oauth_token
 
     if model:
         env["ANTHROPIC_MODEL"] = model

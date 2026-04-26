@@ -226,6 +226,7 @@ class DockerAgentsTests(unittest.TestCase):
         )
         self.assertFalse(cc_missing_cli_error(ExecOutput(exit_code=1, stdout="", stderr="oops")))
 
+    @patch.dict("os.environ", {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-token"}, clear=False)
     def test_install_agent_runtime_uses_same_env_for_claude_code_node_and_install(self) -> None:
         container = object()
         expected_env = cc_env_vars(model="claude-opus-4-7")
@@ -248,6 +249,28 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertIs(install_container, container)
         self.assertIn("npm install -g @anthropic-ai/claude-code@latest", script)
         self.assertEqual(install_script.call_args.kwargs, {"env": expected_env})
+
+    @patch.dict(
+        "os.environ",
+        {
+            "CLAUDE_CODE_OAUTH_TOKEN": "oauth-token",
+            "ANTHROPIC_API_KEY": "sk-should-not-forward",
+            "CLAUDE_JSON_B64": "legacy-json",
+        },
+        clear=False,
+    )
+    def test_cc_env_vars_uses_oauth_only(self) -> None:
+        env = cc_env_vars(model="claude-opus-4-7")
+
+        self.assertEqual(env["CLAUDE_CODE_OAUTH_TOKEN"], "oauth-token")
+        self.assertEqual(env["ANTHROPIC_MODEL"], "claude-opus-4-7")
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+        self.assertNotIn("CLAUDE_JSON_B64", env)
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_cc_env_vars_requires_oauth_token(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "CLAUDE_CODE_OAUTH_TOKEN is required"):
+            cc_env_vars()
 
     def test_ensure_uv_exec_uses_shared_uv_bootstrap(self) -> None:
         calls: list[tuple[str, dict[str, str] | None, str | None]] = []
@@ -968,6 +991,7 @@ EOF
             f"{CODEX_RUNTIME_CODEX_HOME}/sessions/2026/04/06/rollout-2026-04-06T10-08-30-thread-1.jsonl",
         )
 
+    @patch.dict("os.environ", {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-token"}, clear=False)
     @patch("src.docker_agents._install_agent_runtime", return_value=True)
     def test_claude_run_in_container_surfaces_missing_cli_as_install_error(self, _install_runtime) -> None:
         class FakeContainer:
