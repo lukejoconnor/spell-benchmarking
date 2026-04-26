@@ -97,6 +97,7 @@ from src.terminalbench_runner import (
     parse_terminalbench_conditions,
     prepare_terminalbench_env,
     prune_terminalbench_docker,
+    resolve_terminalbench_dataset,
     resolve_terminalbench_model,
     terminalbench_condition_run_id,
     terminalbench_output_file,
@@ -2395,7 +2396,12 @@ def run_featurebench(
     default=("all",),
     help="Condition(s) to run. Repeat the flag to run multiple explicit conditions.",
 )
-@click.option("--dataset", default=TERMINALBENCH_DATASET, show_default=True)
+@click.option(
+    "--dataset",
+    default=TERMINALBENCH_DATASET,
+    show_default=True,
+    help="Terminal-Bench dataset or alias. Aliases: old-core/core-0.1.1/1.1 -> terminal-bench-core==0.1.1; 2.0/head/current/latest -> terminal-bench-core==head via the bundled 2.x registry.",
+)
 @click.option("--model", default=None, help="provider:model override for Spell")
 @click.option("--claude-model", default=None, help="Model override for Claude Code")
 @click.option("--codex-model", default=None, help="Model override for Codex CLI")
@@ -2437,10 +2443,15 @@ def run_terminalbench(
     run_id = run_id or _run_id("terminalbench")
     output_file = Path(output) if output else terminalbench_output_file(run_id)
     conditions = _parse_terminalbench_conditions_option(condition_values)
+    requested_dataset = dataset
+    resolved_dataset = resolve_terminalbench_dataset(dataset)
     requested_task_ids = tuple(task_ids) + tuple(task_ids_short)
 
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
+    click.echo(f"Dataset: {resolved_dataset}")
+    if requested_dataset != resolved_dataset:
+        click.echo(f"Requested dataset: {requested_dataset}")
     if name:
         click.echo(f"Name: {name}")
 
@@ -2460,7 +2471,7 @@ def run_terminalbench(
             condition=cond,
             run_id=tb_run_id,
             model=models_by_condition.get(cond),
-            dataset=dataset,
+            dataset=resolved_dataset,
             task_ids=requested_task_ids,
             n_tasks=n_tasks,
             n_concurrent=n_concurrent,
@@ -2486,7 +2497,9 @@ def run_terminalbench(
         click.echo(
             json.dumps(
                 {
-                    "dataset": dataset,
+                    "dataset": resolved_dataset,
+                    "requested_dataset": requested_dataset,
+                    "resolved_dataset": resolved_dataset,
                     "conditions": conditions,
                     "task_ids": list(requested_task_ids),
                     "n_tasks": n_tasks,
@@ -2517,10 +2530,11 @@ def run_terminalbench(
             run_dir=terminalbench_run_dir(run_id, cond, name=name),
             run_id=run_id,
             condition=cond,
-            dataset=dataset,
+            dataset=resolved_dataset,
             model_spec=command_info["model"],
             name=name,
             agent_file=agent if cond == "spell" else None,
+            requested_dataset=requested_dataset,
             reasoning_effort=reasoning_effort,
             host_trace_root=_trace_dir_for_condition(host_trace_root, cond, name=name) if cond == "spell" else None,
         )

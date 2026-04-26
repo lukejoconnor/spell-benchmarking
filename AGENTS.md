@@ -93,11 +93,18 @@ Software-benchmark container infra:
 
 | Benchmark | Items | What it tests | Run command |
 |-----------|-------|---------------|-------------|
-| Terminal-Bench 2.0 | ~80 | Shell tasks in Docker containers | `uv run python bench.py terminalbench --condition all` |
+| Terminal-Bench old core | 80 | Shell tasks in Docker containers | `uv run python bench.py terminalbench --dataset old-core --condition all` |
+| Terminal-Bench current/head | ~94 | Current public/core shell tasks in Docker containers | `uv run python bench.py terminalbench --dataset 2.0 --condition all` |
 
 Requires Docker (Colima or Docker Desktop). Uses `tb` CLI (`uv tool install terminal-bench`).
 All three conditions use imported Docker agents under `terminal_bench/`, orchestrated through `bench.py terminalbench`.
 If `benchmarking/` is checked out as a standalone worktree instead of nested under the main Spell repo, export `SPELL_ROOT=/path/to/spell` before running `bench.py terminalbench`.
+The default dataset remains old core (`terminal-bench-core==0.1.1`) for comparability with recent local runs. Dataset aliases resolve as follows:
+
+- `old-core`, `core-0.1.1`, `0.1.1`, and `1.1` -> `terminal-bench-core==0.1.1`
+- `2.0`, `head`, `current`, and `latest` -> `terminal-bench-core==head` using the bundled local registry entry for the upstream `dataset/terminal-bench-core/v0.2.x` branch
+
+Raw `tb --dataset` strings still pass through, so use the registry string directly when you need a specific pinned dataset. Note that the upstream default registry may treat raw `terminal-bench-core` as a moving head entry; prefer the aliases above for reproducible local CLI behavior.
 
 Examples:
 ```bash
@@ -111,9 +118,17 @@ uv run python bench.py terminalbench \
   -t hello-world \
   -t csv-to-parquet
 
-# Dry-run the exact tb commands without executing them
+# Dry-run old-core/default commands without executing them
 uv run python bench.py terminalbench \
   --condition spell \
+  --dataset old-core \
+  -t hello-world \
+  --dry-run
+
+# Dry-run the current/head Terminal-Bench task set without executing it
+uv run python bench.py terminalbench \
+  --condition spell \
+  --dataset 2.0 \
   -t hello-world \
   --dry-run
 ```

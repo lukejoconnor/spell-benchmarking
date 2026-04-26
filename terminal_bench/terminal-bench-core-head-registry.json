@@ -1,0 +1,13 @@
+[
+  {
+    "name": "terminal-bench-core",
+    "version": "head",
+    "description": "Terminal-Bench core 2.x/head task set from the upstream dataset branch.",
+    "terminal_bench_version": ">=0.2.4",
+    "github_url": "https://github.com/laude-institute/terminal-bench",
+    "dataset_path": "./tasks",
+    "branch": "dataset/terminal-bench-core/v0.2.x",
+    "commit_hash": "head",
+    "task_id_subset": null
+  }
+]
