@@ -275,6 +275,8 @@ The Clojure API supports short aliases: `haiku`, `sonnet`, `opus`, `opus46`, `o3
 
 `--claude-model` accepts a plain model name (no provider prefix): `claude-opus-4-5-20251101`, `claude-sonnet-4-5-20250929`, or the aliases `opus`, `sonnet`.
 
+Claude Code conditions require `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` (Max subscription OAuth). The harness removes `ANTHROPIC_API_KEY` and legacy `CLAUDE_JSON_B64` from Claude Code subprocess/container environments so Claude Code runs cannot silently fall back to Anthropic API billing.
+
 `--codex-model` defaults to `codex`, which resolves to `gpt-5-codex` internally.
 
 ## Architecture

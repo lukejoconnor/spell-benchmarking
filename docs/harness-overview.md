@@ -22,6 +22,8 @@ A **condition** is the system under test. Four are supported:
 
 Each adapter implements a `run(req: RunRequest) -> RunResponse` protocol. The adapters live in `src/unified_adapters.py`. Docker variants (`DockerSpellAdapter`, `DockerSweAgentAdapter`, etc.) in `src/docker_adapters.py` wrap the same logic but execute inside containers.
 
+`claude_code` requires `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`. The Claude Code harness strips `ANTHROPIC_API_KEY` and legacy `CLAUDE_JSON_B64` from its process/container environments to keep benchmark runs on Claude Max subscription OAuth.
+
 ### The init construction pipeline (Spell only)
 
 Spell conditions don't receive a bare prompt — they receive an **init string**, a Spell program that becomes the starting point of execution. The construction chain is:

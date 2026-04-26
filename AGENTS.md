@@ -298,6 +298,7 @@ tb run --agent-import-path "codex_agent:CodexAgent" \
   --model "openai/gpt-5.3-codex"
 
 # Claude Code (installs in Docker, stream-json for JSONL token tracking)
+# Requires CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`; does not use ANTHROPIC_API_KEY.
 tb run --agent-import-path "cc_agent:ClaudeCodeAgent" \
   --model "anthropic/claude-opus-4-6" -k "max_budget_usd=5.0"
 ```

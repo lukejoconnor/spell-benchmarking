@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import types
@@ -314,6 +315,38 @@ class TerminalBenchBaseTests(unittest.TestCase):
             )
 
             self.assertEqual(result, _FailureMode.AGENT_INSTALLATION_FAILED)
+        finally:
+            _restore_modules(prior)
+
+    @patch.dict(
+        os.environ,
+        {
+            "CLAUDE_CODE_OAUTH_TOKEN": "oauth-token",
+            "ANTHROPIC_API_KEY": "sk-should-not-forward",
+            "CLAUDE_JSON_B64": "legacy-json",
+        },
+        clear=False,
+    )
+    def test_claude_agent_env_uses_oauth_only(self) -> None:
+        module, prior = _load_cc_agent_module()
+        try:
+            agent = module.ClaudeCodeAgent(model_name="anthropic/claude-opus-4-7")
+            env = agent._env_vars()
+
+            self.assertEqual(env["CLAUDE_CODE_OAUTH_TOKEN"], "oauth-token")
+            self.assertEqual(env["ANTHROPIC_MODEL"], "claude-opus-4-7")
+            self.assertNotIn("ANTHROPIC_API_KEY", env)
+            self.assertNotIn("CLAUDE_JSON_B64", env)
+        finally:
+            _restore_modules(prior)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_claude_agent_env_requires_oauth_token(self) -> None:
+        module, prior = _load_cc_agent_module()
+        try:
+            agent = module.ClaudeCodeAgent()
+            with self.assertRaisesRegex(RuntimeError, "CLAUDE_CODE_OAUTH_TOKEN is required"):
+                agent._env_vars()
         finally:
             _restore_modules(prior)
 
