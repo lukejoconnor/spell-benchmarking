@@ -88,6 +88,8 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         self.assertEqual(env["CLAUDE_CODE_OAUTH_TOKEN"], "oauth-token")
         self.assertNotIn("ANTHROPIC_API_KEY", env)
         self.assertNotIn("CLAUDE_JSON_B64", env)
+        self.assertNotEqual(env.get("HOME"), os.environ.get("HOME"))
+        self.assertTrue(Path(env["HOME"]).name.startswith("spell-claude-code-home-"))
 
     @patch.dict(os.environ, {}, clear=True)
     @patch("src.unified_adapters.subprocess.run")

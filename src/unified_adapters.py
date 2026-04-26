@@ -459,14 +459,16 @@ class ClaudeCodeAdapter:
         env["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
         start = time.time()
         try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=req.timeout,
-                cwd=str(req.workspace) if req.workspace else None,
-                env=env,
-            )
+            with tempfile.TemporaryDirectory(prefix="spell-claude-code-home-") as isolated_home:
+                env["HOME"] = isolated_home
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=req.timeout,
+                    cwd=str(req.workspace) if req.workspace else None,
+                    env=env,
+                )
         except subprocess.TimeoutExpired:
             return RunResponse(
                 status="timeout",
