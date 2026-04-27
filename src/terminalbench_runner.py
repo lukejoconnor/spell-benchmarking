@@ -155,6 +155,7 @@ def build_terminalbench_command(
     budget: float,
     cleanup: bool,
     reasoning_effort: str,
+    agent_timeout_sec: int = 3600,
     agent_file: str | None,
     trailing: str | None,
     trace: bool,
@@ -187,10 +188,7 @@ def build_terminalbench_command(
     else:
         cmd.append("--no-cleanup")
 
-    # Set the harness-level agent timeout to 3600s (1 hour) to align with
-    # other coding benchmarks (SWE-bench-style) and accommodate high-effort
-    # reasoning runs. The tb CLI defaults to 360s which kills slow runs.
-    cmd.extend(["--global-agent-timeout-sec", "3600"])
+    cmd.extend(["--global-agent-timeout-sec", str(agent_timeout_sec)])
 
     for task_id in task_ids:
         cmd.extend(["-t", task_id])
@@ -206,7 +204,7 @@ def build_terminalbench_command(
             # 120s value forced Spell agents to kill training mid-run on
             # the train-fasttext task, cycling through truncated attempts.
             "sh_timeout": 600,
-            "agent_timeout": 3600,
+            "agent_timeout": agent_timeout_sec,
             "trace": trace,
         }
         if effective_effort is not None:
@@ -220,7 +218,7 @@ def build_terminalbench_command(
         if effective_effort is not None:
             agent_kwargs["reasoning_effort"] = effective_effort
     elif condition == "codex":
-        agent_kwargs = {"agent_timeout": 3600}
+        agent_kwargs = {"agent_timeout": agent_timeout_sec}
         if effective_effort is not None:
             agent_kwargs["reasoning_effort"] = effective_effort
 

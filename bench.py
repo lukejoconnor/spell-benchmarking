@@ -2413,7 +2413,14 @@ def run_featurebench(
 @click.option("--agent", default=None, help="Spell agent override")
 @click.option("--cleanup/--no-cleanup", default=True, show_default=True)
 @click.option("--trace/--no-trace", default=True, show_default=True, help="Extract Spell traces to traces/<run-id>/spell/")
-@click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
+@click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high", "xhigh"]), default="high", show_default=True)
+@click.option(
+    "--agent-timeout-sec",
+    type=int,
+    default=3600,
+    show_default=True,
+    help="Per-task wall-clock cap passed to the tb harness and condition agents.",
+)
 @click.option("--name", default=None, help="Label for this run variant (flows into output directories and JSONL records)")
 @click.option("--trailing", default=None, help="Custom Spell trailing expression (default: '(!extend))")
 @click.option("--dry-run", is_flag=True, default=False)
@@ -2434,6 +2441,7 @@ def run_terminalbench(
     cleanup: bool,
     trace: bool,
     reasoning_effort: str,
+    agent_timeout_sec: int,
     name: str | None,
     trailing: str | None,
     dry_run: bool,
@@ -2478,6 +2486,7 @@ def run_terminalbench(
             budget=budget,
             cleanup=cleanup,
             reasoning_effort=reasoning_effort,
+            agent_timeout_sec=agent_timeout_sec,
             agent_file=agent,
             trailing=trailing,
             trace=trace,
