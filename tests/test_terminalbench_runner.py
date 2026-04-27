@@ -317,6 +317,60 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             self.assertEqual(records[0].metadata["requested_dataset"], "2.0")
             self.assertEqual(records[0].metadata["resolved_dataset"], TERMINALBENCH_HEAD_DATASET)
 
+    def test_terminalbench_records_extract_recovery_caveat_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir) / "results" / "codex_demo"
+            trial_dir = run_dir / "swe-bench-fsspec" / "swe-bench-fsspec.1-of-1.codex_demo"
+            agent_log_dir = trial_dir / "agent-logs"
+            sessions_dir = trial_dir / "sessions"
+            agent_log_dir.mkdir(parents=True, exist_ok=True)
+            sessions_dir.mkdir(parents=True, exist_ok=True)
+            (agent_log_dir / "result.json").write_text(
+                json.dumps(
+                    {
+                        "touched_test_files": ["fsspec/implementations/tests/test_dirfs.py"],
+                        "test_patch_collision_recovery_enabled": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (sessions_dir / "tests.log").write_text(
+                "SPELL_TB_TEST_PATCH_COLLISION_RECOVERED path=fsspec/implementations/tests/test_dirfs.py\n",
+                encoding="utf-8",
+            )
+            (run_dir / "results.json").write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "trial_name": "swe-bench-fsspec.1-of-1.codex_demo",
+                                "task_id": "swe-bench-fsspec",
+                                "is_resolved": True,
+                                "failure_mode": "none",
+                                "parser_results": {"check": "passed"},
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            records = terminalbench_records_from_run(
+                run_dir=run_dir,
+                run_id="terminalbench_demo",
+                condition="codex",
+                dataset="2.0",
+                model_spec="openai/gpt-5.4",
+                name=None,
+                agent_file=None,
+            )
+
+            metadata = records[0].metadata
+            self.assertTrue(metadata["test_patch_collision_recovered"])
+            self.assertEqual(metadata["touched_test_files"], ["fsspec/implementations/tests/test_dirfs.py"])
+            self.assertEqual(metadata["test_patch_collision_paths"], ["fsspec/implementations/tests/test_dirfs.py"])
+            self.assertIn("official test patch collided", metadata["score_caveat"])
+
     def test_terminalbench_records_recover_spell_visible_and_reasoning_from_agent_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
