@@ -46,6 +46,20 @@ DEFAULT_WORKDIR = "/workspace"
 SPELL_AGENT_IN_CONTAINER = "/opt/spell/config/agents/io-tc.agent.edn"
 SPELL_SDEPS = '{:deps {local/spell {:local/root "/opt/spell"}}}'
 SPELL_BUNDLE_PATHS = ("deps.edn", "src", "config", "data")
+HARBOR_SPELL_BUNDLE_PATHS = ("deps.edn", "src", "config", "data/pricing.edn")
+HARBOR_SPELL_BUNDLE_FORBIDDEN_PARTS = frozenset(
+    {
+        "benchmarking",
+        "terminal_bench",
+        "terminal-bench",
+        "results",
+        "traces",
+        "logs",
+        "notebook",
+        "workspace",
+        "submissions",
+    }
+)
 CODEX_RUNTIME_ROOT = "/tmp/bench-agent-runtime/codex"
 CODEX_RUNTIME_CODEX_HOME = f"{CODEX_RUNTIME_ROOT}/home"
 CODEX_RUNTIME_NVM_DIR = f"{CODEX_RUNTIME_ROOT}/nvm"
@@ -1471,7 +1485,22 @@ def build_spell_init(prompt: str, trailing: str | None = None) -> str:
     )
 
 
-def spell_build_bundle(spell_root: Path | None = None) -> bytes:
+def _validate_spell_bundle_member(arcname: str) -> None:
+    parts = set(PurePosixPath(arcname).parts)
+    forbidden = sorted(parts & HARBOR_SPELL_BUNDLE_FORBIDDEN_PARTS)
+    if forbidden:
+        raise RuntimeError(
+            f"Refusing to add forbidden path(s) to Spell bundle member {arcname}: "
+            f"{', '.join(forbidden)}"
+        )
+
+
+def spell_build_bundle(
+    spell_root: Path | None = None,
+    *,
+    bundle_paths: tuple[str, ...] = SPELL_BUNDLE_PATHS,
+    harbor_safe: bool = False,
+) -> bytes:
     resolved_root = spell_root or discover_spell_root()
     if resolved_root is None:
         raise RuntimeError(
@@ -1479,7 +1508,7 @@ def spell_build_bundle(spell_root: Path | None = None) -> bytes:
             "(must contain deps.edn, src/spell/benchmark_api.clj, and config/agents)."
         )
 
-    missing = [rel for rel in SPELL_BUNDLE_PATHS if not (resolved_root / rel).exists()]
+    missing = [rel for rel in bundle_paths if not (resolved_root / rel).exists()]
     if missing:
         raise RuntimeError(
             f"Spell source tree at {resolved_root} is missing required paths: {', '.join(missing)}"
@@ -1487,9 +1516,20 @@ def spell_build_bundle(spell_root: Path | None = None) -> bytes:
 
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
-        for rel in SPELL_BUNDLE_PATHS:
-            tar.add(resolved_root / rel, arcname=f"spell/{rel}")
+        for rel in bundle_paths:
+            arcname = f"spell/{rel}"
+            if harbor_safe:
+                _validate_spell_bundle_member(arcname)
+            tar.add(resolved_root / rel, arcname=arcname)
     return buf.getvalue()
+
+
+def spell_build_harbor_bundle(spell_root: Path | None = None) -> bytes:
+    return spell_build_bundle(
+        spell_root,
+        bundle_paths=HARBOR_SPELL_BUNDLE_PATHS,
+        harbor_safe=True,
+    )
 
 
 def spell_pre_install(

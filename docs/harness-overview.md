@@ -2,7 +2,7 @@
 
 ## Architecture
 
-The harness is a Click CLI (`bench.py`) with subcommands for each benchmark family: `general` (math, long-context, QA), `swebench`, `featurebench`, `terminalbench`, `exercism`, `scienceagentbench`. Every subcommand follows the same execution pipeline:
+The harness is a Click CLI (`bench.py`) with subcommands for each benchmark family: `general` (math, long-context, QA), `swebench`, `featurebench`, `terminalbench`, `harbor-terminalbench`, `exercism`, `scienceagentbench`. Every subcommand follows the same execution pipeline:
 
 ```
 CLI flags → load dataset → build adapter per condition → construct RunRequests → execute → evaluate → write JSONL
@@ -46,7 +46,9 @@ Three modes exist for software benchmarks (SWE-bench, FeatureBench, Exercism):
 - **Docker** (`--docker`): Docker-wrapped adapters run the agent inside a container. Patch returned in response metadata.
 - **Unified** (`--unified`): Shared container-agent infrastructure (`src/docker_agents.py`). The agent runs in a `DockerWorkspaceContainer` with the repo pre-cloned. Used by Terminal-Bench and now available for SWE-bench/FeatureBench/Exercism. Calls `run_unified_swebench()` / `run_unified_featurebench()` / `run_unified_exercism()` instead of `adapter.run()`.
 
-Terminal-Bench now uses `bench.py terminalbench` as the primary entrypoint. That subcommand wraps `tb run`, normalizes per-task `results.json` into `UnifiedRunRecord`s, and copies Spell traces out of per-task `agent-logs/spell-trace/` directories into the standard `traces/<run-id>/spell/...` layout.
+Terminal-Bench local/regression runs use `bench.py terminalbench`. That subcommand wraps legacy `tb run`, normalizes per-task `results.json` into `UnifiedRunRecord`s, and copies Spell traces out of per-task `agent-logs/spell-trace/` directories into the standard `traces/<run-id>/spell/...` layout. Its `--dataset 2.0` alias is not public leaderboard-compliant.
+
+Public Terminal-Bench 2.0 runs use `bench.py harbor-terminalbench`, which shells out to `harbor run -d terminal-bench@2.0`. Submission mode requires `k >= 5`, forbids task filters, and does not expose timeout/resource/local-registry/recovery knobs. `--dev-smoke` is explicitly non-submission and permits `k=1`, `--n`, and task selectors for smoke runs.
 
 In unified mode, `bench.py` still constructs the `RunRequest` (including `init`) identically — the unified runners just receive the pre-built init string.
 
