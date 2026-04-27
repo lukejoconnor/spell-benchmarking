@@ -119,6 +119,7 @@ def terminalbench_run_dir(run_id: str, condition: str, *, name: str | None = Non
 
 def prepare_terminalbench_env(benchmark_root: Path) -> dict[str, str]:
     env = os.environ.copy()
+    env.setdefault("DOCKER_BUILDKIT", "1")
 
     colima_sock = Path.home() / ".colima" / "default" / "docker.sock"
     if not env.get("DOCKER_HOST") and not Path("/var/run/docker.sock").exists() and colima_sock.exists():

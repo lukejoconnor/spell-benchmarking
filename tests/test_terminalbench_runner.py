@@ -18,6 +18,7 @@ from src.terminalbench_runner import (
     TERMINALBENCH_OLD_CORE_DATASET,
     build_terminalbench_command,
     parse_terminalbench_conditions,
+    prepare_terminalbench_env,
     resolve_terminalbench_dataset,
     terminalbench_condition_run_id,
     terminalbench_records_from_run,
@@ -51,6 +52,18 @@ class TerminalBenchRunnerTests(unittest.TestCase):
         self.assertEqual(resolve_terminalbench_dataset("terminal-bench-core"), "terminal-bench-core")
         self.assertEqual(resolve_terminalbench_dataset("terminal-bench-core==head"), TERMINALBENCH_HEAD_DATASET)
         self.assertEqual(resolve_terminalbench_dataset("custom-dataset==2026.04"), "custom-dataset==2026.04")
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_prepare_terminalbench_env_enables_buildkit_by_default(self) -> None:
+        env = prepare_terminalbench_env(BENCHMARK_ROOT)
+
+        self.assertEqual(env["DOCKER_BUILDKIT"], "1")
+
+    @patch.dict("os.environ", {"DOCKER_BUILDKIT": "0"}, clear=True)
+    def test_prepare_terminalbench_env_respects_explicit_buildkit_override(self) -> None:
+        env = prepare_terminalbench_env(BENCHMARK_ROOT)
+
+        self.assertEqual(env["DOCKER_BUILDKIT"], "0")
 
     def test_build_terminalbench_command_threads_spell_kwargs(self) -> None:
         cmd = build_terminalbench_command(

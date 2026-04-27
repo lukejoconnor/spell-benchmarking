@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,7 @@ from src.docker_agents import (
     cc_run_command,
     NVM_NODE_INSTALL,
     UV_BOOTSTRAP_COMMAND,
+    UV_RUNTIME_BIN,
     _install_agent_runtime,
     _cleanup_nodejs_binary_shell,
     _install_nodejs_binary_shell,
@@ -187,6 +189,9 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertIn('unset NPM_CONFIG_PREFIX', cmd)
         self.assertIn('export NPM_CONFIG_PREFIX="$NPM_CONFIG_PREFIX_SAVED"', cmd)
         self.assertIn("codex -c 'web_search=\"disabled\"' exec", cmd)
+        codex_args = shlex.split(cmd.split(" codex ", 1)[1])
+        self.assertNotIn("-", codex_args)
+        self.assertEqual(codex_args[-1], "Return 42.")
 
     def test_cc_install_script_uses_explicit_runtime_prefix_and_fails_closed(self) -> None:
         script = cc_install_script(version="latest")
@@ -291,6 +296,7 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertIn("curl -LsSf https://astral.sh/uv/install.sh", UV_BOOTSTRAP_COMMAND)
         self.assertIn("wget -qO- https://astral.sh/uv/install.sh", UV_BOOTSTRAP_COMMAND)
         self.assertIn("Unable to install uv: neither curl, wget, nor pip is available", UV_BOOTSTRAP_COMMAND)
+        self.assertIn(f'UV_UNMANAGED_INSTALL="${{UV_UNMANAGED_INSTALL:-{UV_RUNTIME_BIN}}}"', UV_BOOTSTRAP_COMMAND)
 
     def test_uv_bootstrap_uses_standalone_installer_when_python3_has_no_pip(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -339,8 +345,51 @@ EOF
 
             self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
             self.assertTrue(marker_path.exists(), msg=result.stderr or result.stdout)
-            self.assertTrue((home_dir / ".local/bin/uv").exists())
+            self.assertFalse((home_dir / ".local/bin/uv").exists())
+            self.assertTrue((Path(UV_RUNTIME_BIN) / "uv").exists())
             self.assertTrue((home_dir / ".local/bin/env").exists())
+            env_text = (home_dir / ".local/bin/env").read_text()
+            self.assertIn(UV_RUNTIME_BIN, env_text)
+
+    def test_uv_bootstrap_respects_explicit_unmanaged_install(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bin_dir = tmp / "bin"
+            home_dir = tmp / "home"
+            custom_uv_dir = tmp / "custom-uv"
+            bin_dir.mkdir()
+            home_dir.mkdir()
+            _write_executable(
+                bin_dir / "curl",
+                """#!/bin/sh
+cat <<'EOF'
+mkdir -p "$UV_UNMANAGED_INSTALL"
+cat > "$UV_UNMANAGED_INSTALL/uv" <<'INNER'
+#!/bin/sh
+exit 0
+INNER
+chmod +x "$UV_UNMANAGED_INSTALL/uv"
+EOF
+""",
+            )
+
+            result = subprocess.run(
+                ["bash", "-c", UV_BOOTSTRAP_COMMAND],
+                capture_output=True,
+                cwd=tmp,
+                env={
+                    "HOME": str(home_dir),
+                    "PATH": f"{bin_dir}:/bin:/usr/bin",
+                    "UV_UNMANAGED_INSTALL": str(custom_uv_dir),
+                },
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            self.assertTrue((custom_uv_dir / "uv").exists())
+            self.assertTrue((home_dir / ".local/bin/env").exists())
+            env_text = (home_dir / ".local/bin/env").read_text()
+            self.assertIn(str(custom_uv_dir), env_text)
 
     def test_ensure_uv_exec_retries_once_on_failure(self) -> None:
         attempts = 0
