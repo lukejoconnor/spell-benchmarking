@@ -51,6 +51,7 @@ CODEX_RUNTIME_CODEX_HOME = f"{CODEX_RUNTIME_ROOT}/home"
 CODEX_RUNTIME_NVM_DIR = f"{CODEX_RUNTIME_ROOT}/nvm"
 CODEX_RUNTIME_NPM_PREFIX = f"{CODEX_RUNTIME_ROOT}/npm-global"
 CODEX_RUNTIME_NPM_CACHE = f"{CODEX_RUNTIME_ROOT}/npm-cache"
+UV_RUNTIME_BIN = "/tmp/bench-agent-runtime/uv-bin"
 APT_FETCH_RETRY_MAX_ATTEMPTS = 3
 APT_FETCH_RETRY_SLEEP_SECONDS = 5
 INSTALL_TIMEOUT_CLEANUP_TIMEOUT_SECONDS = 30
@@ -158,11 +159,14 @@ def _install_uv_shell() -> str:
 set -e
 uv_path="$(command -v uv || true)"
 if [ -z "$uv_path" ]; then
-  export UV_UNMANAGED_INSTALL="${{UV_UNMANAGED_INSTALL:-$HOME/.local/bin}}"
+  export UV_UNMANAGED_INSTALL="${{UV_UNMANAGED_INSTALL:-{UV_RUNTIME_BIN}}}"
+  uv_installed_with_standalone=
   if command -v curl >/dev/null 2>&1; then
     curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$UV_UNMANAGED_INSTALL" sh
+    uv_installed_with_standalone=1
   elif command -v wget >/dev/null 2>&1; then
     wget -qO- https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$UV_UNMANAGED_INSTALL" sh
+    uv_installed_with_standalone=1
   elif command -v python >/dev/null 2>&1 && python -m pip --version >/dev/null 2>&1; then
     python -m pip install -q --disable-pip-version-check uv
   elif command -v python3 >/dev/null 2>&1 && python3 -m pip --version >/dev/null 2>&1; then
@@ -171,14 +175,20 @@ if [ -z "$uv_path" ]; then
     {_install_curl_shell()}
     if command -v curl >/dev/null 2>&1; then
       curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$UV_UNMANAGED_INSTALL" sh
+      uv_installed_with_standalone=1
     elif command -v wget >/dev/null 2>&1; then
       wget -qO- https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$UV_UNMANAGED_INSTALL" sh
+      uv_installed_with_standalone=1
     else
       echo "Unable to install uv: neither curl, wget, nor pip is available" >&2
       exit 1
     fi
   fi
-  uv_path="${{UV_UNMANAGED_INSTALL%/}}/uv"
+  if [ -n "$uv_installed_with_standalone" ]; then
+    uv_path="${{UV_UNMANAGED_INSTALL%/}}/uv"
+  else
+    uv_path="$(command -v uv || true)"
+  fi
 fi
 if [ -z "$uv_path" ] && [ -x "$HOME/.local/bin/uv" ]; then
   uv_path="$HOME/.local/bin/uv"
