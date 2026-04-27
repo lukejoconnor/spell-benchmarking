@@ -95,11 +95,12 @@ Software-benchmark container infra:
 |-----------|-------|---------------|-------------|
 | Terminal-Bench old core | 80 | Shell tasks in Docker containers | `uv run python bench.py terminalbench --dataset old-core --condition all` |
 | Terminal-Bench 2.x pinned | ~94 | Local/core shell tasks in Docker containers | `uv run python bench.py terminalbench --dataset 2.0 --condition all` |
-| Harbor Terminal-Bench 2.0 | 89 | Public TB2 submission path | `uv run python bench.py harbor-terminalbench --condition all` |
+| Harbor Terminal-Bench 2.0 | 89 | Public TB2 Spell submission path | `uv run python bench.py harbor-terminalbench --condition spell` |
 
-Requires Docker (Colima or Docker Desktop). Uses `tb` CLI (`uv tool install terminal-bench`).
-All three conditions use imported Docker agents under `terminal_bench/`, orchestrated through `bench.py terminalbench`.
-If `benchmarking/` is checked out as a standalone worktree instead of nested under the main Spell repo, export `SPELL_ROOT=/path/to/spell` before running `bench.py terminalbench`.
+Requires Docker (Colima or Docker Desktop). The legacy rows use `tb` CLI (`uv tool install terminal-bench`).
+The Harbor row uses Harbor CLI (`uv tool install harbor`) and the `harbor_spell_agent.py` adapter.
+Legacy `terminalbench` conditions use imported Docker agents under `terminal_bench/`, orchestrated through `bench.py terminalbench`.
+If `benchmarking/` is checked out as a standalone worktree instead of nested under the main Spell repo, export `SPELL_ROOT=/path/to/spell` before running either Terminal-Bench path.
 The default dataset remains old core (`terminal-bench-core==0.1.1`) for comparability with recent local runs. Dataset aliases resolve as follows:
 
 - `old-core`, `core-0.1.1`, `0.1.1`, and `1.1` -> `terminal-bench-core==0.1.1`
@@ -109,13 +110,13 @@ Raw `tb --dataset` strings still pass through without the bundled registry overr
 
 `bench.py terminalbench --dataset 2.0` is **not** a public leaderboard-compliant Terminal-Bench 2.0 run. It is the local scientific/regression harness: it uses `tb run`, a local registry path for the pinned 2.x task set, local timeout/cleanup knobs, and the test-patch-collision recovery wrapper.
 
-Public Terminal-Bench 2.0 runs must use Harbor:
+Public Terminal-Bench 2.0 Spell submission runs must use Harbor:
 
 - Submission mode: `uv run python bench.py harbor-terminalbench --condition spell --model openai-tc:gpt-5.4 --reasoning-effort medium -k 5`
-- Codex comparison: `uv run python bench.py harbor-terminalbench --condition codex --codex-model gpt-5.4 --reasoning-effort medium -k 5`
-- Development smoke only: add `--dev-smoke` to allow `-k 1`, `--n`, `--task`, or task-name filters.
+- Development Codex comparison: `uv run python bench.py harbor-terminalbench --condition codex --codex-model gpt-5.4 --reasoning-effort medium --dev-smoke -k 1`
+- Development smoke only: add `--dev-smoke` to allow `-k 1`, `--n`, `--task`, task-name filters, or the built-in Harbor Codex comparator.
 
-Submission mode is guarded to use `harbor run -d terminal-bench@2.0`, require `k >= 5`, run the full dataset, and avoid timeout/resource/local-registry/recovery flags. Stage-1 Codex comparisons intentionally use Harbor's built-in `codex` agent with `--agent-kwarg reasoning_effort=medium`; do not add a custom Codex adapter unless the built-in agent becomes unusable.
+Submission mode is guarded to use `harbor run -d terminal-bench@2.0`, require `k >= 5`, run the full dataset, and avoid timeout/resource/local-registry/recovery flags. Stage-1 Codex comparisons intentionally use Harbor's built-in `codex` agent with `--agent-kwarg reasoning_effort=medium` only in non-submission `--dev-smoke` mode because the built-in adapter does not expose the local harness's explicit `web_search="disabled"` guard. A submission-grade Codex comparison needs a Stage-2 adapter or upstream Harbor support for that guarantee.
 
 Examples:
 ```bash

@@ -69,6 +69,7 @@ def normalize_harbor_codex_model(model: str) -> str:
 
 def assert_harbor_submission_request_compliant(
     *,
+    condition: str,
     dataset: str,
     trials: int,
     task: str | None,
@@ -79,6 +80,12 @@ def assert_harbor_submission_request_compliant(
     if dataset != HARBOR_TERMINALBENCH_DATASET:
         raise HarborTerminalBenchComplianceError(
             f"Harbor Terminal-Bench submissions must use {HARBOR_TERMINALBENCH_DATASET}, got {dataset!r}"
+        )
+    selected_conditions = parse_harbor_terminalbench_conditions(condition)
+    if "codex" in selected_conditions:
+        raise HarborTerminalBenchComplianceError(
+            "Harbor's built-in Codex agent is currently allowed only for --dev-smoke comparisons; "
+            "submission-mode Codex needs a Stage 2 adapter that explicitly disables web search."
         )
     if trials < 5:
         raise HarborTerminalBenchComplianceError(
@@ -123,6 +130,7 @@ def build_harbor_terminalbench_commands(
 ) -> list[HarborTerminalBenchCommand]:
     if not dev_smoke:
         assert_harbor_submission_request_compliant(
+            condition=condition,
             dataset=dataset,
             trials=trials,
             task=task,
