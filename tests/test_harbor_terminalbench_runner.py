@@ -219,6 +219,24 @@ class HarborTerminalBenchRunnerTests(unittest.TestCase):
 
         self.assertTrue(any("override_timeout_sec" in error for error in errors))
 
+    def test_submission_config_validator_rejects_agent_setup_timeout_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "datasets": [{"name": "terminal-bench", "version": "2.0"}],
+                        "n_attempts": 5,
+                        "agents": [{"override_setup_timeout_sec": 3600}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            errors = validate_config(path)
+
+        self.assertTrue(any("override_setup_timeout_sec" in error for error in errors))
+
     def test_prepare_submission_copies_job_dirs_directly_under_agent_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

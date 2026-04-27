@@ -22,6 +22,7 @@ BANNED_CONFIG_KEYS = {
     "agent_setup_timeout_multiplier",
     "environment_build_timeout_multiplier",
     "override_timeout_sec",
+    "override_setup_timeout_sec",
     "max_timeout_sec",
     "override_cpus",
     "override_memory",
