@@ -135,6 +135,11 @@ uv run python bench.py terminalbench \
 
 Direct `tb run` still works for one-off debugging when you need raw harness behavior, but batch runs and unified JSONL collection should go through `bench.py terminalbench`.
 
+Terminal-Bench scoring caveat:
+- If an agent touches test-like files and the official evaluator patch later collides with those edits, the harness attempts to restore only those touched test files, retry the evaluator patch, and run the tests.
+- Unified records for recovered rows include `metadata.test_patch_collision_recovered=true` and `metadata.score_caveat`; display such rows with an asterisk in paper/report tables.
+- For old artifacts, use `uv run python scripts/scan_terminalbench_patch_collisions.py [results-root] --format table` to identify unrechecked collision rows for annotation.
+
 ### Orchestration (Clojure harness)
 
 | Benchmark | Items | What it tests | Run command |

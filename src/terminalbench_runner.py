@@ -16,6 +16,7 @@ from .codex_usage import normalize_codex_model
 from .docker_agents import discover_spell_root
 from .provenance import benchmark_git_versions
 from .reasoning_effort import effective_reasoning_effort
+from .terminalbench_patch_recovery import recovered_metadata_from_texts
 from .usage_accounting import (
     CLAUDE_REPORTED_COST_TOLERANCE_USD,
     UsageBreakdown,
@@ -279,6 +280,27 @@ def _load_agent_result(run_dir: Path, task_id: str, trial_name: str) -> dict[str
         return {}
 
 
+def _read_optional_text(path: Path) -> str:
+    if not path.exists():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _terminalbench_test_log_texts(run_dir: Path, task_id: str, trial_name: str) -> list[str]:
+    trial_dir = run_dir / task_id / trial_name
+    return [
+        text
+        for text in [
+            _read_optional_text(trial_dir / "sessions" / "tests.log"),
+            _read_optional_text(trial_dir / "panes" / "post-test.txt"),
+        ]
+        if text
+    ]
+
+
 def _usage_int(value: Any) -> int | None:
     if isinstance(value, (int, float)):
         return int(value)
@@ -482,6 +504,13 @@ def terminalbench_records_from_run(
         error_type = _error_type_for_trial(trial)
         error_message = _error_message_for_trial(trial)
         agent_result = _load_agent_result(run_dir, task_id, trial_name)
+        touched_test_files = agent_result.get("touched_test_files")
+        if not isinstance(touched_test_files, list) or not all(isinstance(path, str) for path in touched_test_files):
+            touched_test_files = []
+        recovery_metadata = recovered_metadata_from_texts(
+            _terminalbench_test_log_texts(run_dir, task_id, trial_name),
+            touched_test_files=touched_test_files,
+        )
         usage = _terminalbench_usage(
             trial=trial,
             agent_result=agent_result,
@@ -523,6 +552,7 @@ def terminalbench_records_from_run(
             "resolved_dataset": resolved_dataset if requested_dataset and requested_dataset != resolved_dataset else None,
             "versions": benchmark_git_versions(),
         }
+        metadata.update(recovery_metadata)
         metadata = {key: value for key, value in metadata.items() if value is not None}
 
         records.append(

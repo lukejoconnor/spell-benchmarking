@@ -388,6 +388,58 @@ class TerminalBenchBaseTests(unittest.TestCase):
         finally:
             _restore_modules(prior)
 
+    def test_perform_task_records_touched_tests_and_installs_recovery_wrapper(self) -> None:
+        module, prior = _load_base_module()
+        try:
+            commands: list[str] = []
+
+            class DummyAgent(module.DockerExecAgent):
+                @staticmethod
+                def name() -> str:
+                    return "dummy"
+
+                def _requires_node(self) -> bool:
+                    return False
+
+                def _requires_uv(self) -> bool:
+                    return False
+
+                def _install_script(self) -> str:
+                    return "true"
+
+                def _run_command(self, instruction: str, workdir: str) -> str:
+                    del instruction, workdir
+                    return "run-agent"
+
+                def _parse_usage(self, stdout: str, *, container=None, workdir: str | None = None):
+                    del stdout, container, workdir
+                    return None
+
+                def _env_vars(self) -> dict[str, str]:
+                    return {}
+
+                def _container_exec(self, container, cmd: str, **kwargs):
+                    del container, kwargs
+                    commands.append(cmd)
+                    if "status --porcelain" in cmd:
+                        return module.ExecOutput(exit_code=0, stdout="?? tests/test_created.py\n M src/app.py\n", stderr="")
+                    return module.ExecOutput(exit_code=0, stdout="stdout", stderr="")
+
+            agent = DummyAgent()
+            session = _TmuxSession()
+            session.container = _FakeContainer()
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                result = agent.perform_task("instruction", session, logging_dir=Path(tmp_dir))
+                saved = json.loads((Path(tmp_dir) / "result.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(result.failure_mode, _FailureMode.NONE)
+            self.assertEqual(saved["touched_test_files"], ["tests/test_created.py"])
+            self.assertTrue(saved["test_patch_collision_recovery_enabled"])
+            self.assertTrue(any("/usr/local/bin/patch" in command for command in commands))
+        finally:
+            _restore_modules(prior)
+
 
 if __name__ == "__main__":
     unittest.main()
