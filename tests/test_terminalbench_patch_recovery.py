@@ -84,13 +84,23 @@ class TerminalBenchPatchRecoveryTests(unittest.TestCase):
                 " M src/app.py",
                 "?? tests/test_created.py",
                 " M package/module_test.py",
+                " M cmd/foo_test.go",
+                " M web/foo.spec.ts",
+                " M web/__tests__/foo.js",
                 "R  tests/old.py -> tests/new.py",
             ]
         )
 
         self.assertEqual(
             parse_git_status_touched_test_files(status),
-            ["tests/test_created.py", "package/module_test.py", "tests/new.py"],
+            [
+                "tests/test_created.py",
+                "package/module_test.py",
+                "cmd/foo_test.go",
+                "web/foo.spec.ts",
+                "web/__tests__/foo.js",
+                "tests/new.py",
+            ],
         )
 
     def test_wrapper_removes_untracked_test_file_and_retries_patch(self) -> None:
@@ -138,6 +148,63 @@ class TerminalBenchPatchRecoveryTests(unittest.TestCase):
             self.assertEqual((root / "src" / "app.py").read_text(encoding="utf-8"), "model source change\n")
             self.assertIn("path=tests/test_existing.py", result.stderr)
 
+    def test_wrapper_dry_run_avoids_partial_apply_before_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            self._init_repo(root)
+            fake_patch = root / "partial-patch.sh"
+            fake_patch.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/bin/sh
+                    dry_run=false
+                    while [ "$#" -gt 0 ]; do
+                      case "$1" in
+                        --batch) shift ;;
+                        --dry-run) dry_run=true; shift ;;
+                        *) shift ;;
+                      esac
+                    done
+                    cat >/dev/null
+                    if grep -q 'agent changed test' tests/test_existing.py; then
+                      echo 'patching file tests/test_early.py' >&2
+                      echo 'Reversed (or previously applied) patch detected!' >&2
+                      exit 1
+                    fi
+                    if [ "$dry_run" = false ]; then
+                      printf 'official early test\\n' > tests/test_early.py
+                      printf 'official existing test\\n' > tests/test_existing.py
+                    fi
+                    exit 0
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_patch.chmod(0o755)
+            (root / "tests" / "test_early.py").write_text("baseline early test\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tests/test_early.py"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "early test"], cwd=root, check=True, capture_output=True)
+            (root / "tests" / "test_existing.py").write_text("agent changed test\n", encoding="utf-8")
+            wrapper = self._write_wrapper(root, fake_patch, ["tests/test_existing.py"])
+
+            result = subprocess.run(
+                [str(wrapper)],
+                cwd=root,
+                input=(
+                    "diff --git a/tests/test_early.py b/tests/test_early.py\n"
+                    "+++ b/tests/test_early.py\n"
+                    "diff --git a/tests/test_existing.py b/tests/test_existing.py\n"
+                    "+++ b/tests/test_existing.py\n"
+                ),
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((root / "tests" / "test_early.py").read_text(encoding="utf-8"), "official early test\n")
+            self.assertEqual((root / "tests" / "test_existing.py").read_text(encoding="utf-8"), "official existing test\n")
+            self.assertIn("path=tests/test_existing.py", result.stderr)
+
     def test_wrapper_does_not_retry_non_test_patch_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -163,11 +230,17 @@ class TerminalBenchPatchRecoveryTests(unittest.TestCase):
             root = Path(tmp_dir)
             run_dir = root / "terminalbench_20260427_000232_eb650234"
             affected_trial = run_dir / "swe-bench-langcodes" / "swe-bench-langcodes.1-of-1.codex"
+            direct_failure_trial = run_dir / "direct-failure" / "direct-failure.1-of-1.codex"
             near_miss_trial = run_dir / "near-miss" / "near-miss.1-of-1.codex"
             (affected_trial / "sessions").mkdir(parents=True)
+            (direct_failure_trial / "sessions").mkdir(parents=True)
             (near_miss_trial / "sessions").mkdir(parents=True)
             (affected_trial / "sessions" / "tests.log").write_text(
                 "File langcodes/tests/test_language.py, which already exists!\nTimed out after 600s\n",
+                encoding="utf-8",
+            )
+            (direct_failure_trial / "sessions" / "tests.log").write_text(
+                "Reversed (or previously applied) patch detected!\n",
                 encoding="utf-8",
             )
             (near_miss_trial / "sessions" / "tests.log").write_text(
@@ -185,6 +258,12 @@ class TerminalBenchPatchRecoveryTests(unittest.TestCase):
                                 "is_resolved": False,
                             },
                             {
+                                "task_id": "direct-failure",
+                                "trial_name": "direct-failure.1-of-1.codex",
+                                "failure_mode": "test_failed",
+                                "is_resolved": False,
+                            },
+                            {
                                 "task_id": "near-miss",
                                 "trial_name": "near-miss.1-of-1.codex",
                                 "failure_mode": "test_timeout",
@@ -198,8 +277,8 @@ class TerminalBenchPatchRecoveryTests(unittest.TestCase):
 
             records = scan_terminalbench_patch_collision_artifacts(root)
 
-            self.assertEqual([record.task_id for record in records], ["swe-bench-langcodes"])
-            self.assertEqual(records[0].status, "test_patch_collision_unrechecked")
+            self.assertEqual([record.task_id for record in records], ["swe-bench-langcodes", "direct-failure"])
+            self.assertEqual({record.status for record in records}, {"test_patch_collision_unrechecked"})
 
 
 if __name__ == "__main__":

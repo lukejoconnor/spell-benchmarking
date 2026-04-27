@@ -62,9 +62,13 @@ def is_test_like_path(path: str) -> bool:
         return False
     name = parts[-1].lower()
     lowered_parts = {part.lower() for part in parts[:-1]}
-    if "tests" in lowered_parts or "test" in lowered_parts:
+    if lowered_parts & {"test", "tests", "__tests__", "spec", "specs"}:
         return True
-    if name.startswith("test_") or name.endswith("_test.py") or name.endswith(".test.py"):
+    if name.startswith(("test_", "test-", "test.")):
+        return True
+    if re.search(r"(^|[._-])(test|spec)([._-]|$)", name):
+        return True
+    if re.search(r"_(test|spec)\.[^.]+$", name):
         return True
     return False
 
@@ -145,11 +149,15 @@ output="$(mktemp "${{TMPDIR:-/tmp}}/spell-tb-patch-output.XXXXXX")" || exit 2
 trap 'rm -f "$payload" "$output"' EXIT
 cat > "$payload"
 
-"$REAL_PATCH" --batch "$@" < "$payload" > "$output" 2>&1
+"$REAL_PATCH" --batch --dry-run "$@" < "$payload" > "$output" 2>&1
 status=$?
 cat "$output" >&2
 if [ "$status" -eq 0 ]; then
-  exit 0
+  : > "$output"
+  "$REAL_PATCH" --batch "$@" < "$payload" > "$output" 2>&1
+  apply_status=$?
+  cat "$output" >&2
+  exit "$apply_status"
 fi
 
 if ! grep -E {shlex.quote(collision_regex)} "$output" >/dev/null 2>&1; then
@@ -158,6 +166,7 @@ fi
 
 targets="$(python3 - "$payload" "$TOUCHED_FILES_PATH" <<'PY'
 from pathlib import Path
+import re
 import sys
 
 payload_path = Path(sys.argv[1])
@@ -183,13 +192,15 @@ def is_test(path):
         return False
     name = parts[-1].lower()
     parents = {{part.lower() for part in parts[:-1]}}
-    return (
-        "tests" in parents
-        or "test" in parents
-        or name.startswith("test_")
-        or name.endswith("_test.py")
-        or name.endswith(".test.py")
-    )
+    if parents & {{"test", "tests", "__tests__", "spec", "specs"}}:
+        return True
+    if name.startswith(("test_", "test-", "test.")):
+        return True
+    if re.search(r"(^|[._-])(test|spec)([._-]|$)", name):
+        return True
+    if re.search(r"_(test|spec)\\.[^.]+$", name):
+        return True
+    return False
 
 def patch_targets(text):
     seen = set()
@@ -350,7 +361,7 @@ def scan_terminalbench_patch_collision_artifacts(root: Path) -> list[TerminalBen
                 isinstance(failure_mode, str)
                 and "timeout" in failure_mode.lower()
             ) or _text_has_timeout(combined)
-            if not recovered and not (signatures and timed_out):
+            if not recovered and not signatures:
                 continue
             status = "test_patch_collision_recovered" if recovered else "test_patch_collision_unrechecked"
             records.append(
