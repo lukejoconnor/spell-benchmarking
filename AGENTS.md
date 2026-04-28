@@ -118,6 +118,8 @@ Public Terminal-Bench 2.0 Spell submission runs must use Harbor:
 
 Submission mode is guarded to use `harbor run -d terminal-bench@2.0`, require `k >= 5`, run the full dataset, and avoid timeout/resource/local-registry/recovery flags. Stage-1 Codex comparisons intentionally use Harbor's built-in `codex` agent with `--agent-kwarg reasoning_effort=medium` only in non-submission `--dev-smoke` mode because the built-in adapter does not expose the local harness's explicit `web_search="disabled"` guard. A submission-grade Codex comparison needs a Stage-2 adapter or upstream Harbor support for that guarantee.
 
+Harbor Spell writes live cumulative usage snapshots to `/logs/agent/spell-usage.json`; this file is the source of truth for Spell token/cost accounting on success, error, and timeout rows. `spell-output.txt` may contain final-response metadata, but Harbor Spell must not use it as a cost/token fallback.
+
 Examples:
 ```bash
 # Spell vs Codex CLI on two tasks with an explicit io reminder

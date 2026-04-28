@@ -1606,6 +1606,7 @@ def spell_run_command(
     trace: bool = False,
     trace_dir: str | None = None,
     init: str | None = None,
+    usage_log_path: str | None = None,
 ) -> str:
     from .reasoning_effort import anthropic_thinking_budget, is_anthropic_provider
 
@@ -1621,6 +1622,7 @@ def spell_run_command(
         "thinking": thinking,
         "trace": trace,
         "trace_dir": trace_dir,
+        "usage_log_path": usage_log_path,
     }
     if init is not None:
         payload["init"] = init
@@ -1717,12 +1719,8 @@ def copy_spell_traces_to_host(
     return None
 
 
-def spell_parse_usage(stdout: str) -> UsageBreakdown | None:
-    parsed = spell_parse_benchmark_response(stdout)
-    if not parsed:
-        return None
-
-    usage = (parsed.get("usage") or {}).get("total", {})
+def spell_usage_from_summary(summary: dict[str, Any] | None) -> UsageBreakdown | None:
+    usage = (summary or {}).get("total", {})
 
     def _int(value: Any) -> int:
         return int(value) if isinstance(value, (int, float)) else 0
@@ -1750,6 +1748,26 @@ def spell_parse_usage(stdout: str) -> UsageBreakdown | None:
         reasoning_output_tokens=reasoning_output_tokens,
         cost_usd=cost_usd,
     )
+
+
+def spell_parse_usage(stdout: str) -> UsageBreakdown | None:
+    parsed = spell_parse_benchmark_response(stdout)
+    if not parsed:
+        return None
+    return spell_usage_from_summary(parsed.get("usage"))
+
+
+def spell_parse_usage_log(path: Path) -> UsageBreakdown | None:
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    usage = parsed.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    return spell_usage_from_summary(usage)
 
 
 def _install_agent_runtime(
