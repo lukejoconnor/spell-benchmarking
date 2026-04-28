@@ -101,6 +101,7 @@ CC_ALLOWED_TOOLS = [
     "Bash", "Edit", "Write", "Read", "Glob", "Grep",
     "WebFetch", "NotebookEdit",
 ]
+CC_PAPER_COMPLIANT_ALLOWED_TOOLS = [tool for tool in CC_ALLOWED_TOOLS if tool != "WebFetch"]
 
 LITELLM_TO_SPELL_MODEL = {
     "anthropic/claude-opus-4-6-20250826": "anthropic-tc:opus46",
@@ -1032,7 +1033,7 @@ def cc_run_command(
         claude_parts.extend(["--model", shlex.quote(model)])
     if reasoning_effort:
         claude_parts.extend(["--effort", shlex.quote(reasoning_effort)])
-    tools = allowed_tools or CC_ALLOWED_TOOLS
+    tools = CC_ALLOWED_TOOLS if allowed_tools is None else allowed_tools
     claude_parts.extend(["--allowedTools", " ".join(tools)])
     claude_parts.extend(["-p", shlex.quote(prompt)])
     return "\n".join(
@@ -1763,6 +1764,7 @@ def run_agent_in_container(
     trace_subdir: str | None = None,
     init: str | None = None,
     version: str | None = None,
+    paper_compliant: bool = False,
 ) -> AgentRunResult:
     if not _install_agent_runtime(container, condition=condition, version=version, model_spec=model_spec):
         return AgentRunResult(
@@ -1781,6 +1783,7 @@ def run_agent_in_container(
             model=resolved_model,
             budget=budget,
             reasoning_effort=reasoning_effort,
+            allowed_tools=CC_PAPER_COMPLIANT_ALLOWED_TOOLS if paper_compliant else None,
         )
         output = container.exec_run(
             command,

@@ -16,6 +16,7 @@ if str(BENCHMARK_ROOT) not in sys.path:
 
 from src.docker_agents import (
     CLAUDE_CLI_MISSING_MARKER,
+    CC_PAPER_COMPLIANT_ALLOWED_TOOLS,
     CLAUDE_RUNTIME_NPM_PREFIX,
     CLAUDE_RUNTIME_ROOT,
     MIN_NODE_MAJOR_VERSION,
@@ -222,6 +223,16 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertIn("--effort high", cmd)
         self.assertIn("--allowedTools", cmd)
         self.assertIn("-p 'Return 42.'", cmd)
+
+    def test_cc_paper_compliant_allowed_tools_excludes_webfetch(self) -> None:
+        cmd = cc_run_command(
+            "Return 42.",
+            allowed_tools=CC_PAPER_COMPLIANT_ALLOWED_TOOLS,
+        )
+
+        self.assertIn("--allowedTools", cmd)
+        self.assertNotIn("WebFetch", cmd)
+        self.assertIn("Bash Edit Write Read Glob Grep NotebookEdit", cmd)
 
     def test_cc_missing_cli_error_detects_marker(self) -> None:
         self.assertTrue(
@@ -1066,6 +1077,37 @@ EOF
 
         self.assertEqual(result.error_type, "install_error")
         self.assertIn(CLAUDE_CLI_MISSING_MARKER, result.error_message or "")
+
+    @patch.dict("os.environ", {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-token"}, clear=False)
+    @patch("src.docker_agents._install_agent_runtime", return_value=True)
+    def test_claude_run_in_container_paper_compliant_omits_webfetch(self, _install_runtime) -> None:
+        commands = []
+
+        class FakeContainer:
+            container_workdir = "/workspace"
+
+            def exec_run(self, cmd: str, **kwargs):
+                del kwargs
+                commands.append(cmd)
+                return ExecOutput(
+                    exit_code=0,
+                    stdout=json.dumps({"type": "result", "result": "ok", "usage": {}}),
+                    stderr="",
+                )
+
+        result = run_agent_in_container(
+            FakeContainer(),
+            condition="claude_code",
+            prompt="Return 42.",
+            timeout=30,
+            model_spec="anthropic/claude-opus-4-6",
+            paper_compliant=True,
+        )
+
+        self.assertEqual(result.output.exit_code, 0)
+        self.assertEqual(len(commands), 1)
+        self.assertIn("--allowedTools", commands[0])
+        self.assertNotIn("WebFetch", commands[0])
 
 
 class SpellRunTimeoutClassificationTest(unittest.TestCase):

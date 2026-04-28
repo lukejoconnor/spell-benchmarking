@@ -79,6 +79,72 @@ class WebSearchCliRegressionTest(unittest.TestCase):
     def _web_search_by_condition(self, requests):
         return {req.condition: req.web_search for req in requests}
 
+    def test_swebench_paper_compliant_prompt_omits_hints_and_adds_instruction(self):
+        item = self.bench.SWEBenchItem(
+            instance_id="django__django-1",
+            repo="django/django",
+            base_commit="abc123",
+            problem_statement="Fix a bug.",
+            hints_text="Maintainer hint with an attached patch.",
+            test_patch="",
+            patch="",
+            metadata={},
+            raw_instance={},
+        )
+
+        default_prompt = self.bench._format_swebench_prompt(item, workspace="/testbed")
+        paper_prompt = self.bench._format_swebench_prompt(
+            item,
+            workspace="/testbed",
+            paper_compliant=True,
+        )
+
+        self.assertIn("## Hints", default_prompt)
+        self.assertIn("Maintainer hint", default_prompt)
+        self.assertNotIn("## Hints", paper_prompt)
+        self.assertNotIn("Maintainer hint", paper_prompt)
+        self.assertIn("Paper-compliance rule: Do not use web browsing", paper_prompt)
+        self.assertIn("Use only the repository files in /testbed", paper_prompt)
+
+    def test_swebench_paper_compliant_rejects_web_search(self):
+        result = self.runner.invoke(
+            self.bench.cli,
+            [
+                "swebench",
+                "--dataset",
+                "lite",
+                "--condition",
+                "codex",
+                "--paper-compliant",
+                "--web-search",
+                "--dry-run",
+            ],
+        )
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("--paper-compliant cannot be combined with --web-search", result.output)
+
+    def test_swebench_paper_compliant_rejects_custom_spell_agents(self):
+        result = self.runner.invoke(
+            self.bench.cli,
+            [
+                "swebench",
+                "--dataset",
+                "lite",
+                "--condition",
+                "spell",
+                "--model",
+                "openai-tc:gpt-5.4",
+                "--paper-compliant",
+                "--agent",
+                "config/agents/cli.agent.edn",
+                "--dry-run",
+            ],
+        )
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("--paper-compliant does not support custom Spell agent overrides", result.output)
+
     def test_resolve_web_search_default_treats_gaia_subsets_as_gaia(self):
         self.assertTrue(self.bench._resolve_web_search_default({"gaia_l1"}, None))
         self.assertTrue(self.bench._resolve_web_search_default({"gaia_l2"}, None))
@@ -784,6 +850,10 @@ class WebSearchCliRegressionTest(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(len(written_records), 1)
         self.assertEqual(written_records[0].cached_input_tokens, 23)
+        self.assertIs(written_records[0].metadata["paper_compliant"], False)
+        self.assertIs(written_records[0].metadata["hints_included"], False)
+        self.assertIs(written_records[0].metadata["paper_compliance_instruction"], False)
+        self.assertIs(written_records[0].metadata["web_search"], False)
 
     def test_swebench_prewarm_runs_before_generation(self):
         lite_item = SimpleNamespace(
@@ -1095,6 +1165,7 @@ class WebSearchCliRegressionTest(unittest.TestCase):
                     "codex",
                     "--codex-model",
                     "codex",
+                    "--web-search",
                     "--n",
                     "1",
                     "--output",
@@ -1111,6 +1182,7 @@ class WebSearchCliRegressionTest(unittest.TestCase):
         self.assertEqual(record.metadata["container_error_stage"], "build_container")
         self.assertEqual(record.metadata["container_error_log_path"], "/tmp/prepare_image.log")
         self.assertEqual(record.metadata["container_error_log_tail"], "pip install failed")
+        self.assertIs(record.metadata["web_search"], True)
 
     def test_swebench_multi_condition_defers_image_cleanup_until_after_generation(self):
         lite_item = SimpleNamespace(
@@ -1350,6 +1422,64 @@ class WebSearchCliRegressionTest(unittest.TestCase):
         self.assertEqual([prediction.instance_id for prediction in predictions], ["django__django-1", "django__django-2"])
         self.assertEqual([prediction.patch for prediction in predictions], ["existing-patch", "patch-for-django__django-2"])
 
+    def test_swebench_paper_compliant_resume_rejects_non_compliant_rows(self):
+        lite_item = SimpleNamespace(
+            instance_id="django__django-1",
+            repo="django/django",
+            base_commit="abc123",
+            problem_statement="Fix it",
+            hints_text="",
+            metadata={},
+            raw_instance={},
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.object(self.bench, "load_swebench_lite", return_value=[lite_item]), \
+             patch.object(self.bench, "run_unified_swebench") as run_mock, \
+             patch.object(self.bench, "write_predictions_jsonl"), \
+             patch.object(self.bench, "_resolve_trace_dir", return_value=None):
+            output_path = Path(tmp_dir) / "out.jsonl"
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "run_id": "resume-run",
+                        "item_id": "django__django-1",
+                        "dataset": "lite",
+                        "condition": "codex",
+                        "name": None,
+                        "patch": "existing-patch",
+                        "metadata": {
+                            "paper_compliant": False,
+                            "hints_included": True,
+                            "paper_compliance_instruction": False,
+                            "web_search": False,
+                        },
+                    }
+                ) + "\n",
+                encoding="utf-8",
+            )
+            result = self.runner.invoke(
+                self.bench.cli,
+                [
+                    "swebench",
+                    "--dataset",
+                    "lite",
+                    "--condition",
+                    "codex",
+                    "--codex-model",
+                    "codex",
+                    "--run-id",
+                    "resume-run",
+                    "--paper-compliant",
+                    "--output",
+                    str(output_path),
+                ],
+            )
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Cannot resume a paper-compliant SWE-bench run", result.output)
+        run_mock.assert_not_called()
+
     def test_swebench_resume_is_scoped_by_condition(self):
         lite_item = SimpleNamespace(
             instance_id="django__django-1",
@@ -1549,6 +1679,7 @@ class WebSearchCliRegressionTest(unittest.TestCase):
         self.assertIn("--env-image-cache-repository TEXT", swebench_help.output)
         self.assertIn("--env-image-cache-read-only / --no-env-image-cache-read-only", swebench_help.output)
         self.assertIn("--prewarm-only", swebench_help.output)
+        self.assertIn("--paper-compliant / --no-paper-compliant", swebench_help.output)
         self.assertNotIn("--unified", featurebench_help.output)
         self.assertNotIn("--unified", exercism_help.output)
 
