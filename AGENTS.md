@@ -94,17 +94,32 @@ Software-benchmark container infra:
 | Benchmark | Items | What it tests | Run command |
 |-----------|-------|---------------|-------------|
 | Terminal-Bench old core | 80 | Shell tasks in Docker containers | `uv run python bench.py terminalbench --dataset old-core --condition all` |
-| Terminal-Bench 2.x pinned | ~94 | Current public/core shell tasks in Docker containers | `uv run python bench.py terminalbench --dataset 2.0 --condition all` |
+| Terminal-Bench 2.x pinned | ~94 | Local/core shell tasks in Docker containers | `uv run python bench.py terminalbench --dataset 2.0 --condition all` |
+| Harbor Terminal-Bench 2.0 | 89 | Public TB2 Spell/Codex submission path | `uv run python bench.py harbor-terminalbench --condition spell` |
 
-Requires Docker (Colima or Docker Desktop). Uses `tb` CLI (`uv tool install terminal-bench`).
-All three conditions use imported Docker agents under `terminal_bench/`, orchestrated through `bench.py terminalbench`.
-If `benchmarking/` is checked out as a standalone worktree instead of nested under the main Spell repo, export `SPELL_ROOT=/path/to/spell` before running `bench.py terminalbench`.
+Requires Docker (Colima or Docker Desktop). The legacy rows use `tb` CLI (`uv tool install terminal-bench`).
+The Harbor row uses Harbor CLI via `uv tool run --from harbor harbor` plus local installed-agent adapters: `harbor_spell_agent.py` for Spell and `harbor_codex_agent.py` for Codex, so fresh benchmark VMs do not need a separate manual Harbor install.
+Legacy `terminalbench` conditions use imported Docker agents under `terminal_bench/`, orchestrated through `bench.py terminalbench`.
+If `benchmarking/` is checked out as a standalone worktree instead of nested under the main Spell repo, export `SPELL_ROOT=/path/to/spell` before running either Terminal-Bench path.
 The default dataset remains old core (`terminal-bench-core==0.1.1`) for comparability with recent local runs. Dataset aliases resolve as follows:
 
 - `old-core`, `core-0.1.1`, `0.1.1`, and `1.1` -> `terminal-bench-core==0.1.1`
 - `2.0`, `head`, `current`, and `latest` -> `terminal-bench-core==head` using the bundled local registry entry pinned to upstream `dataset/terminal-bench-core/v0.2.x` commit `76de0a03069c2a1101d8e0845daedb5065da87ea`
 
 Raw `tb --dataset` strings still pass through without the bundled registry override, so use the registry string directly when you need upstream registry behavior. Note that the upstream default registry may treat raw `terminal-bench-core` as a moving head entry; prefer the aliases above for reproducible local CLI behavior.
+
+`bench.py terminalbench --dataset 2.0` is **not** a public leaderboard-compliant Terminal-Bench 2.0 run. It is the local scientific/regression harness: it uses `tb run`, a local registry path for the pinned 2.x task set, local timeout/cleanup knobs, and the test-patch-collision recovery wrapper.
+
+Public Terminal-Bench 2.0 Spell submission runs must use Harbor:
+
+- Submission mode: `uv run python bench.py harbor-terminalbench --condition spell --model openai-tc:gpt-5.4 --reasoning-effort medium -k 5`
+- Codex submission mode: `uv run python bench.py harbor-terminalbench --condition codex --codex-model gpt-5.4 --reasoning-effort medium -k 5`
+- Development Codex comparison: `uv run python bench.py harbor-terminalbench --condition codex --codex-model gpt-5.4 --reasoning-effort medium --dev-smoke -k 1`
+- Development smoke only: add `--dev-smoke` to allow `-k 1`, `--n`, `--task`, or task-name filters.
+
+Submission mode is guarded to use `uv tool run --from harbor harbor run -d terminal-bench@2.0`, require `k >= 5`, run the full dataset, and avoid timeout/resource/local-registry/recovery flags. Codex submission runs use the local `harbor_codex_agent.py` adapter rather than Harbor's built-in `codex` agent so web search is explicitly disabled and GPT-5.4 cost is computed per model call. `reasoning_output_tokens` is recorded as a sub-bucket of `output_tokens`, not added again for billing.
+
+Harbor Spell writes live cumulative usage snapshots to `/logs/agent/spell-usage.json`; this file is the source of truth for Spell token/cost accounting on success, error, and timeout rows. `spell-output.txt` may contain final-response metadata, but Harbor Spell must not use it as a cost/token fallback.
 
 Examples:
 ```bash

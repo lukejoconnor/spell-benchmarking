@@ -104,6 +104,11 @@ from src.terminalbench_runner import (
     terminalbench_records_from_run,
     terminalbench_run_dir,
 )
+from src.harbor_terminalbench_runner import (
+    HARBOR_TERMINALBENCH_DATASET,
+    HarborTerminalBenchComplianceError,
+    build_harbor_terminalbench_commands,
+)
 from src.swebench_pro_eval import (
     check_docker_manifest_access,
     convert_predictions_jsonl_to_scale_json,
@@ -2559,6 +2564,92 @@ def run_terminalbench(
         if cleanup and idx < len(commands) - 1:
             click.echo("  Pruning Docker before next condition...")
             prune_terminalbench_docker(env)
+
+
+@cli.command("harbor-terminalbench")
+@click.option("--condition", default="spell", show_default=True, type=click.Choice(["spell", "codex", "all"]))
+@click.option("--model", default="openai-tc:gpt-5.4", show_default=True, help="Spell provider:model")
+@click.option("--codex-model", default="gpt-5.4", show_default=True, help="Model for custom Harbor Codex agent")
+@click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="medium", show_default=True)
+@click.option("-k", "--trials", type=int, default=5, show_default=True, help="Trials per task")
+@click.option("--dataset", default=HARBOR_TERMINALBENCH_DATASET, show_default=True, help="Harbor dataset name@version")
+@click.option("--jobs-dir", type=click.Path(path_type=Path), default=None, help="Root directory for Harbor job artifacts")
+@click.option("--n-concurrent", type=int, default=4, show_default=True, help="Harbor concurrent trial count")
+@click.option("--task", default=None, help="Harbor registry task selector; dev mode only")
+@click.option("--include-task-name", multiple=True, help="Harbor task-name include glob; dev mode only")
+@click.option("--exclude-task-name", multiple=True, help="Harbor task-name exclude glob; dev mode only")
+@click.option("--n", "n_tasks", type=int, default=None, help="Limit to N tasks; dev mode only")
+@click.option("--budget", type=float, default=5.0, show_default=True, help="Spell budget in USD")
+@click.option("--dev-smoke", is_flag=True, default=False, help="Permit non-submission smoke settings such as k=1 or task filters")
+@click.option("--dry-run", is_flag=True, default=False)
+@click.option("--run-id", default=None)
+def run_harbor_terminalbench(
+    condition: str,
+    model: str,
+    codex_model: str,
+    reasoning_effort: str,
+    trials: int,
+    dataset: str,
+    jobs_dir: Path | None,
+    n_concurrent: int,
+    task: str | None,
+    include_task_name: tuple[str, ...],
+    exclude_task_name: tuple[str, ...],
+    n_tasks: int | None,
+    budget: float,
+    dev_smoke: bool,
+    dry_run: bool,
+    run_id: str | None,
+) -> None:
+    run_id = run_id or _run_id("harbor_terminalbench")
+    try:
+        commands = build_harbor_terminalbench_commands(
+            condition=condition,
+            run_id=run_id,
+            model=model,
+            codex_model=codex_model,
+            reasoning_effort=reasoning_effort,
+            trials=trials,
+            jobs_dir=jobs_dir,
+            dataset=dataset,
+            dev_smoke=dev_smoke,
+            n_concurrent=n_concurrent,
+            task=task,
+            include_task_names=include_task_name,
+            exclude_task_names=exclude_task_name,
+            n_tasks=n_tasks,
+            budget=budget,
+        )
+    except HarborTerminalBenchComplianceError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    mode = "dev" if dev_smoke else "submission"
+    click.echo(f"Run ID: {run_id}")
+    click.echo(f"Mode: {mode}")
+    click.echo(f"Dataset: {dataset}")
+    click.echo(f"Trials per task: {trials}")
+    click.echo("Compliance: " + ("non-submission dev run" if dev_smoke else "submission command guarded"))
+
+    rendered = [
+        {
+            "condition": item.condition,
+            "job_name": item.job_name,
+            "model": item.model,
+            "jobs_dir": str(item.jobs_dir),
+            "submission_compliant": item.submission_compliant,
+            "command": item.command,
+        }
+        for item in commands
+    ]
+    if dry_run:
+        click.echo("Dry run config:")
+        click.echo(json.dumps({"commands": rendered}, indent=2))
+        return
+
+    for item in commands:
+        click.echo(f"\n--- Running Harbor Terminal-Bench {item.condition} ---")
+        click.echo(f"Job dir: {item.jobs_dir}")
+        subprocess.run(item.command, check=True, cwd=BENCHMARK_ROOT)
 
 
 SAB_BENCHMARK_DIR = BENCHMARK_ROOT / "data" / "scienceagentbench" / "benchmark" / "benchmark"

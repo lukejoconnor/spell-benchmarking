@@ -10,6 +10,7 @@ if str(BENCHMARK_ROOT) not in sys.path:
     sys.path.insert(0, str(BENCHMARK_ROOT))
 
 from src.codex_usage import (
+    codex_cost_accounting_from_rollout,
     estimate_cost,
     merge_codex_usage,
     parse_codex_rollout,
@@ -19,16 +20,16 @@ from src.codex_usage import (
 
 
 class CodexUsageTests(unittest.TestCase):
-    def test_estimate_cost_includes_reasoning_at_output_rate(self) -> None:
+    def test_estimate_cost_does_not_add_reasoning_to_total_output_tokens(self) -> None:
         cost = estimate_cost(
             "gpt-5.4",
             1_000,
             200,
             cached_input_tokens=100,
-            reasoning_output_tokens=300,
+            reasoning_output_tokens=50,
         )
 
-        self.assertAlmostEqual(cost or 0.0, 0.009775, places=8)
+        self.assertAlmostEqual(cost or 0.0, 0.005275, places=8)
 
     def test_estimate_cost_without_reasoning_matches_legacy(self) -> None:
         cost = estimate_cost(
@@ -50,7 +51,7 @@ class CodexUsageTests(unittest.TestCase):
             reasoning_output_tokens=25_000,
         )
 
-        self.assertAlmostEqual(cost or 0.0, 4.095005, places=8)
+        self.assertAlmostEqual(cost or 0.0, 3.532505, places=8)
 
     def test_usage_from_payload_keeps_input_tokens_as_total_when_cached_subset_present(self) -> None:
         usage = usage_from_payload(
@@ -94,15 +95,17 @@ class CodexUsageTests(unittest.TestCase):
                 "input_tokens": 1_000,
                 "cached_input_tokens": 100,
                 "output_tokens": 200,
-                "reasoning_output_tokens": 300,
+                "reasoning_output_tokens": 50,
             },
             model="gpt-5.4",
         )
 
         self.assertIsNotNone(usage)
         assert usage is not None
-        self.assertEqual(usage.reasoning_output_tokens, 300)
-        self.assertAlmostEqual(usage.cost_usd or 0.0, 0.009775, places=8)
+        self.assertEqual(usage.reasoning_output_tokens, 50)
+        self.assertEqual(usage.visible_output_tokens, 150)
+        self.assertEqual(usage.total_output_tokens, 200)
+        self.assertAlmostEqual(usage.cost_usd or 0.0, 0.005275, places=8)
         self.assertEqual(usage.cost_source, "estimated")
 
     def test_parse_codex_rollout_picks_latest_non_null_info(self) -> None:
@@ -190,9 +193,113 @@ class CodexUsageTests(unittest.TestCase):
         assert usage is not None
         self.assertEqual(usage.input_tokens, 20_707)
         self.assertEqual(usage.cached_input_tokens, 10_624)
-        self.assertEqual(usage.output_tokens, 259)
+        self.assertEqual(usage.total_output_tokens, 259)
+        self.assertEqual(usage.output_tokens, 76)
         self.assertEqual(usage.reasoning_output_tokens, 183)
         self.assertEqual(usage.cost_source, "estimated")
+
+    def test_cost_accounting_prices_long_context_per_call(self) -> None:
+        rollout = "\n".join(
+            [
+                json.dumps({"type": "session_meta", "payload": {"id": "sess-1"}}),
+                json.dumps(
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "token_count",
+                            "info": {
+                                "total_token_usage": {
+                                    "input_tokens": 1_000,
+                                    "cached_input_tokens": 100,
+                                    "output_tokens": 200,
+                                    "reasoning_output_tokens": 50,
+                                },
+                                "last_token_usage": {
+                                    "input_tokens": 1_000,
+                                    "cached_input_tokens": 100,
+                                    "output_tokens": 200,
+                                    "reasoning_output_tokens": 50,
+                                },
+                            },
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "token_count",
+                            "info": {
+                                "total_token_usage": {
+                                    "input_tokens": 273_001,
+                                    "cached_input_tokens": 20_100,
+                                    "output_tokens": 100_200,
+                                    "reasoning_output_tokens": 25_050,
+                                },
+                                "last_token_usage": {
+                                    "input_tokens": 272_001,
+                                    "cached_input_tokens": 20_000,
+                                    "output_tokens": 100_000,
+                                    "reasoning_output_tokens": 25_000,
+                                },
+                            },
+                        },
+                    }
+                ),
+            ]
+        )
+
+        accounting = codex_cost_accounting_from_rollout(rollout, model="gpt-5.4")
+
+        self.assertIsNotNone(accounting)
+        assert accounting is not None
+        self.assertEqual([call["long_context_pricing_applied"] for call in accounting["calls"]], [False, True])
+        self.assertAlmostEqual(accounting["cost_usd"] or 0.0, 3.52528, places=8)
+        self.assertEqual(accounting["aggregate"]["output_tokens"], 100_200)
+
+    def test_cost_accounting_falls_back_to_cumulative_deltas(self) -> None:
+        rollout = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "token_count",
+                            "info": {
+                                "total_token_usage": {
+                                    "input_tokens": 1_000,
+                                    "cached_input_tokens": 100,
+                                    "output_tokens": 200,
+                                },
+                            },
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "token_count",
+                            "info": {
+                                "total_token_usage": {
+                                    "input_tokens": 1_400,
+                                    "cached_input_tokens": 125,
+                                    "output_tokens": 250,
+                                },
+                            },
+                        },
+                    }
+                ),
+            ]
+        )
+
+        accounting = codex_cost_accounting_from_rollout(rollout, model="gpt-5.4")
+
+        self.assertIsNotNone(accounting)
+        assert accounting is not None
+        self.assertEqual([call["source"] for call in accounting["calls"]], ["delta_total_token_usage", "delta_total_token_usage"])
+        self.assertEqual(accounting["calls"][1]["input_tokens"], 400)
+        self.assertTrue(accounting["warnings"])
 
     def test_merge_codex_usage_uses_rollout_estimate_when_stream_lacks_reported_cost(self) -> None:
         stream = usage_from_payload(
@@ -208,7 +315,7 @@ class CodexUsageTests(unittest.TestCase):
                 "input_tokens": 1_000,
                 "cached_input_tokens": 100,
                 "output_tokens": 200,
-                "reasoning_output_tokens": 350,
+                "reasoning_output_tokens": 50,
             },
             model="gpt-5.4",
         )
@@ -217,7 +324,7 @@ class CodexUsageTests(unittest.TestCase):
 
         self.assertIsNotNone(merged)
         assert merged is not None
-        self.assertEqual(merged.reasoning_output_tokens, 350)
+        self.assertEqual(merged.reasoning_output_tokens, 50)
         self.assertEqual(merged.cost_source, "estimated_with_reasoning")
 
     def test_merge_codex_usage_preserves_reported_stream_cost(self) -> None:
@@ -235,7 +342,7 @@ class CodexUsageTests(unittest.TestCase):
                 "input_tokens": 1_000,
                 "cached_input_tokens": 100,
                 "output_tokens": 200,
-                "reasoning_output_tokens": 350,
+                "reasoning_output_tokens": 50,
             },
             model="gpt-5.4",
         )
@@ -244,7 +351,7 @@ class CodexUsageTests(unittest.TestCase):
 
         self.assertIsNotNone(merged)
         assert merged is not None
-        self.assertEqual(merged.reasoning_output_tokens, 350)
+        self.assertEqual(merged.reasoning_output_tokens, 50)
         self.assertAlmostEqual(merged.cost_usd or 0.0, 0.01, places=8)
         self.assertEqual(merged.cost_source, "reported")
 
