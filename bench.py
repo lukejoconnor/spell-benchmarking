@@ -127,6 +127,15 @@ CONTEXT_DIR = BENCHMARK_ROOT / "data" / "contexts"
 SCALE_PRO_EVAL_REPO_DEFAULT = "data/swebench_pro_eval/SWE-bench_Pro-os"
 SCALE_PRO_OUTPUT_DIR_DEFAULT = "results/swebench_pro_eval"
 SWEBENCH_MIN_FREE_DISK_GB = 32
+SWEBENCH_PAPER_COMPLIANCE_INSTRUCTION = (
+    "Paper-compliance rule: Do not use web browsing or external internet resources to solve this task. "
+    "Do not search for this issue, repository, pull requests, commits, attached patches, mirrors, or "
+    "SWE-bench solutions. Do not fetch URLs from the problem statement or comments for implementation "
+    "guidance. Use only the repository files in {location}, the issue description above, and local "
+    "commands/tests you run in this environment. If a normal local validation command tries to install "
+    "dependencies, keep that use limited to dependency setup and never use the network to obtain "
+    "task-specific solution information."
+)
 
 
 @dataclass
@@ -396,13 +405,22 @@ def _format_optional_swebench_text(value: Any) -> str:
         return str(value).strip()
 
 
-def _format_swebench_prompt(item: SWEBenchItem, workspace: str | Path | None = None) -> str:
+def _swebench_hints_included(item: SWEBenchItem, *, paper_compliant: bool) -> bool:
+    return bool((getattr(item, "hints_text", "") or "").strip()) and not paper_compliant
+
+
+def _format_swebench_prompt(
+    item: SWEBenchItem,
+    workspace: str | Path | None = None,
+    *,
+    paper_compliant: bool = False,
+) -> str:
     location = str(workspace) if workspace else "/testbed"
 
     # Build PR description from item fields.
     pr_parts = [item.problem_statement.strip()]
     hints_text = (item.hints_text or "").strip()
-    if hints_text:
+    if _swebench_hints_included(item, paper_compliant=paper_compliant):
         pr_parts.extend(["", "## Hints", "", hints_text])
     requirements = _format_optional_swebench_text((item.metadata or {}).get("requirements"))
     if requirements:
@@ -412,7 +430,7 @@ def _format_swebench_prompt(item: SWEBenchItem, workspace: str | Path | None = N
         pr_parts.extend(["", "## Interface Contract", "", interface])
     pr_description = "\n".join(pr_parts)
 
-    return f"""\
+    prompt = f"""\
 <uploaded_files>
 {location}
 </uploaded_files>
@@ -442,6 +460,9 @@ TIPS:
 - When you need to find information about the codebase, use "grep" and "find" to search for relevant files and code with the bash tool
 - Use your bash tool to set up any necessary environment variables, such as those needed to run tests.
 """
+    if paper_compliant:
+        prompt = f"{prompt}{SWEBENCH_PAPER_COMPLIANCE_INSTRUCTION.format(location=location)}\n"
+    return prompt
 
 
 def _swebench_prompt_workspace(item: SWEBenchItem) -> Path:
@@ -735,6 +756,29 @@ def _matching_unified_rows(
         and row.get("name") == name
         and (dataset is None or row.get("dataset") == dataset)
     ]
+
+
+def _validate_swebench_paper_resume_rows(rows: list[dict[str, Any]]) -> None:
+    mismatches: list[str] = []
+    for row in _latest_rows_by_item(rows):
+        metadata = row.get("metadata") or {}
+        item_id = row.get("item_id") or "<unknown>"
+        if metadata.get("paper_compliant") is not True:
+            mismatches.append(f"{item_id}: metadata.paper_compliant is not true")
+        if metadata.get("hints_included") is not False:
+            mismatches.append(f"{item_id}: metadata.hints_included is not false")
+        if metadata.get("paper_compliance_instruction") is not True:
+            mismatches.append(f"{item_id}: metadata.paper_compliance_instruction is not true")
+        if metadata.get("web_search") is True:
+            mismatches.append(f"{item_id}: metadata.web_search is true")
+
+    if mismatches:
+        sample = "; ".join(mismatches[:3])
+        extra = "" if len(mismatches) <= 3 else f"; ... and {len(mismatches) - 3} more"
+        raise click.ClickException(
+            "Cannot resume a paper-compliant SWE-bench run from non-compliant existing rows: "
+            f"{sample}{extra}. Use a fresh --run-id or remove the stale rows."
+        )
 
 
 def _latest_rows_by_item(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1412,6 +1456,12 @@ def run_general(
 @click.option("--timeout", type=int, default=None, help="Per-item timeout seconds (default: from _DATASET_TIMEOUTS)")
 @click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default=None, help="Reasoning effort (default: provider default, i.e. no --effort flag for CC)")
 @click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
+@click.option(
+    "--paper-compliant/--no-paper-compliant",
+    default=False,
+    show_default=True,
+    help="Omit SWE-bench hints, add no-web/solution-lookup instructions, and disable exposed web tools where practical",
+)
 @click.option("--trace/--no-trace", default=True, show_default=True, help="Record execution traces")
 @click.option("--clean-eval/--no-clean-eval", default=False, show_default=True, help="Re-run patches in a fresh official eval container after generation")
 @click.option("--eval-predictions-dir", default="results/swebench", show_default=True)
@@ -1551,6 +1601,7 @@ def run_swebench(
     timeout: int | None,
     reasoning_effort: str | None,
     web_search: bool,
+    paper_compliant: bool,
     trace: bool,
     clean_eval: bool,
     eval_predictions_dir: str,
@@ -1587,6 +1638,13 @@ def run_swebench(
     run_id = run_id or _run_id("swebench")
     output_file = Path(output) if output else _default_output(run_id)
     conditions = _parse_swebench_conditions(condition)
+    if paper_compliant and web_search:
+        raise click.ClickException("--paper-compliant cannot be combined with --web-search")
+    if paper_compliant and (agent or agent_msg or agent_tc):
+        raise click.ClickException(
+            "--paper-compliant does not support custom Spell agent overrides; "
+            "use the default SWE-bench agent so exposed web/search tools stay disabled."
+        )
 
     # Resolve timeout from central map
     if timeout is None:
@@ -1670,6 +1728,12 @@ def run_swebench(
                     "budget": budget,
                     "depth": depth,
                     "web_search": web_search,
+                    "paper_compliant": paper_compliant,
+                    "hints_included": any(
+                        _swebench_hints_included(item, paper_compliant=paper_compliant)
+                        for item in items
+                    ),
+                    "paper_compliance_instruction": paper_compliant,
                     "trace": trace,
                     "keep_images": keep_images,
                     "agent": spell_resolution.agent_file if spell_resolution else None,
@@ -1763,8 +1827,13 @@ def run_swebench(
                 )
 
             def process(item) -> UnifiedRunRecord:
+                condition_web_search = web_search if cond == "codex" else False
                 try:
-                    prompt = _format_swebench_prompt(item, workspace=_swebench_prompt_workspace(item))
+                    prompt = _format_swebench_prompt(
+                        item,
+                        workspace=_swebench_prompt_workspace(item),
+                        paper_compliant=paper_compliant,
+                    )
                     request_trace_dir = _trace_dir_for_request(trace_dir, cond, item.instance_id, name=name)
 
                     req = RunRequest(
@@ -1787,7 +1856,7 @@ def run_swebench(
                         depth=depth,
                         max_tokens=max_tokens,
                         reasoning_effort=reasoning_effort,
-                        web_search=web_search if cond == "codex" else False,
+                        web_search=condition_web_search,
                         trace=trace,
                         trace_dir=request_trace_dir,
                     )
@@ -1812,6 +1881,7 @@ def run_swebench(
                         instance_image_tag=eval_instance_image_tag,
                         env_image_tag=eval_env_image_tag,
                         backend=backend,
+                        paper_compliant=paper_compliant,
                         **(
                             {"env_image_cache": env_image_cache}
                             if env_image_cache is not None
@@ -1820,6 +1890,10 @@ def run_swebench(
                     )
                     patch = resp.metadata.get("patch", "")
                     changed_files = resp.metadata.get("changed_files", [])
+                    hints_included = _swebench_hints_included(
+                        item,
+                        paper_compliant=paper_compliant,
+                    )
 
                     status = resp.status
                     if status == "ok":
@@ -1848,7 +1922,10 @@ def run_swebench(
                         metadata={
                             "repo": item.repo,
                             "base_commit": item.base_commit,
-                            "web_search": web_search,
+                            "paper_compliant": paper_compliant,
+                            "hints_included": hints_included,
+                            "paper_compliance_instruction": paper_compliant,
+                            "web_search": condition_web_search,
                             **(
                                 {
                                     "spell_mode": spell_resolution.spell_mode,
@@ -1903,6 +1980,13 @@ def run_swebench(
                         metadata={
                             "repo": item.repo,
                             "base_commit": item.base_commit,
+                            "paper_compliant": paper_compliant,
+                            "hints_included": _swebench_hints_included(
+                                item,
+                                paper_compliant=paper_compliant,
+                            ),
+                            "paper_compliance_instruction": paper_compliant,
+                            "web_search": condition_web_search,
                             **(
                                 {
                                     "spell_mode": spell_resolution.spell_mode,
@@ -1925,6 +2009,8 @@ def run_swebench(
                 dataset=dataset,
                 tolerate_invalid=True,
             )
+            if paper_compliant:
+                _validate_swebench_paper_resume_rows(existing_rows)
             completed_item_ids = {
                 item_id
                 for row in existing_rows
