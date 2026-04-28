@@ -108,6 +108,7 @@ from src.harbor_terminalbench_runner import (
     HARBOR_TERMINALBENCH_DATASET,
     HarborTerminalBenchComplianceError,
     build_harbor_terminalbench_commands,
+    write_default_timeout_summary,
 )
 from src.swebench_pro_eval import (
     check_docker_manifest_access,
@@ -2580,6 +2581,13 @@ def run_terminalbench(
 @click.option("--exclude-task-name", multiple=True, help="Harbor task-name exclude glob; dev mode only")
 @click.option("--n", "n_tasks", type=int, default=None, help="Limit to N tasks; dev mode only")
 @click.option("--budget", type=float, default=5.0, show_default=True, help="Spell budget in USD")
+@click.option(
+    "--agent-timeout-multiplier",
+    type=float,
+    default=1.0,
+    show_default=True,
+    help="Harbor agent timeout multiplier; dev-smoke only and non-submission when >1.",
+)
 @click.option("--dev-smoke", is_flag=True, default=False, help="Permit non-submission smoke settings such as k=1 or task filters")
 @click.option("--dry-run", is_flag=True, default=False)
 @click.option("--run-id", default=None)
@@ -2597,6 +2605,7 @@ def run_harbor_terminalbench(
     exclude_task_name: tuple[str, ...],
     n_tasks: int | None,
     budget: float,
+    agent_timeout_multiplier: float,
     dev_smoke: bool,
     dry_run: bool,
     run_id: str | None,
@@ -2619,6 +2628,7 @@ def run_harbor_terminalbench(
             exclude_task_names=exclude_task_name,
             n_tasks=n_tasks,
             budget=budget,
+            agent_timeout_multiplier=agent_timeout_multiplier,
         )
     except HarborTerminalBenchComplianceError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -2628,6 +2638,7 @@ def run_harbor_terminalbench(
     click.echo(f"Mode: {mode}")
     click.echo(f"Dataset: {dataset}")
     click.echo(f"Trials per task: {trials}")
+    click.echo(f"Agent timeout multiplier: {agent_timeout_multiplier}")
     click.echo("Compliance: " + ("non-submission dev run" if dev_smoke else "submission command guarded"))
 
     rendered = [
@@ -2637,19 +2648,35 @@ def run_harbor_terminalbench(
             "model": item.model,
             "jobs_dir": str(item.jobs_dir),
             "submission_compliant": item.submission_compliant,
+            "agent_timeout_multiplier": item.agent_timeout_multiplier,
             "command": item.command,
         }
         for item in commands
     ]
     if dry_run:
         click.echo("Dry run config:")
-        click.echo(json.dumps({"commands": rendered}, indent=2))
+        click.echo(
+            json.dumps(
+                {
+                    "mode": mode,
+                    "agent_timeout_multiplier": agent_timeout_multiplier,
+                    "commands": rendered,
+                },
+                indent=2,
+            )
+        )
         return
 
     for item in commands:
         click.echo(f"\n--- Running Harbor Terminal-Bench {item.condition} ---")
         click.echo(f"Job dir: {item.jobs_dir}")
         subprocess.run(item.command, check=True, cwd=BENCHMARK_ROOT)
+        if dev_smoke and item.agent_timeout_multiplier > 1.0:
+            summary_path = write_default_timeout_summary(
+                jobs_dir=item.jobs_dir,
+                agent_timeout_multiplier=item.agent_timeout_multiplier,
+            )
+            click.echo(f"Default-timeout diagnostic: {summary_path}")
 
 
 SAB_BENCHMARK_DIR = BENCHMARK_ROOT / "data" / "scienceagentbench" / "benchmark" / "benchmark"

@@ -116,10 +116,13 @@ Public Terminal-Bench 2.0 Spell submission runs must use Harbor:
 - Codex submission mode: `uv run python bench.py harbor-terminalbench --condition codex --codex-model gpt-5.4 --reasoning-effort medium -k 5`
 - Development Codex comparison: `uv run python bench.py harbor-terminalbench --condition codex --codex-model gpt-5.4 --reasoning-effort medium --dev-smoke -k 1`
 - Development smoke only: add `--dev-smoke` to allow `-k 1`, `--n`, `--task`, or task-name filters.
+- Timeout-expanded dev smoke only: add `--dev-smoke --agent-timeout-multiplier <N>` with `N > 1`. This is non-submission only.
 
 Submission mode is guarded to use `uv tool run --from harbor harbor run -d terminal-bench@2.0`, require `k >= 5`, run the full dataset, and avoid timeout/resource/local-registry/recovery flags. Codex submission runs use the local `harbor_codex_agent.py` adapter rather than Harbor's built-in `codex` agent so web search is explicitly disabled and GPT-5.4 cost is computed per model call. `reasoning_output_tokens` is recorded as a sub-bucket of `output_tokens`, not added again for billing.
 
 Harbor Spell writes live cumulative usage snapshots to `/logs/agent/spell-usage.json`; this file is the source of truth for Spell token/cost accounting on success, error, and timeout rows. `spell-output.txt` may contain final-response metadata, but Harbor Spell must not use it as a cost/token fallback.
+
+For timeout-expanded dev-smoke runs, the wrapper writes `default-timeout-summary.json` under each Harbor job directory. The `resolved_within_default_timeout` field is a post-hoc diagnostic for whether a resolved trial also finished within the default 900s TB2 agent budget; it is not leaderboard scoring and must not be included in submission artifacts.
 
 Examples:
 ```bash
