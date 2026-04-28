@@ -12,12 +12,14 @@ if str(BENCHMARK_ROOT) not in sys.path:
     sys.path.insert(0, str(BENCHMARK_ROOT))
 
 from src.harbor_terminalbench_runner import (
+    DEFAULT_TIMEOUT_SUMMARY_FILENAME,
     HARBOR_CODEX_AGENT_IMPORT_PATH,
     HARBOR_CLI_COMMAND,
     HARBOR_TERMINALBENCH_DATASET,
     HarborTerminalBenchComplianceError,
     assert_harbor_submission_command_compliant,
     build_harbor_terminalbench_commands,
+    write_default_timeout_summary,
 )
 from scripts.prepare_harbor_tb2_submission import main as prepare_submission_main
 from scripts.prepare_harbor_tb2_submission import validate_config
@@ -126,6 +128,37 @@ class HarborTerminalBenchRunnerTests(unittest.TestCase):
         self.assertTrue(all(not item.submission_compliant for item in commands))
         self.assertTrue(all("--n-tasks" in item.command for item in commands))
 
+    def test_submission_rejects_agent_timeout_multiplier(self) -> None:
+        with self.assertRaisesRegex(HarborTerminalBenchComplianceError, "agent-timeout-multiplier"):
+            build_harbor_terminalbench_commands(
+                condition="spell",
+                run_id="demo",
+                model="openai-tc:gpt-5.4",
+                codex_model="gpt-5.4",
+                reasoning_effort="medium",
+                trials=5,
+                agent_timeout_multiplier=2.0,
+            )
+
+    def test_dev_smoke_includes_agent_timeout_multiplier(self) -> None:
+        commands = build_harbor_terminalbench_commands(
+            condition="spell",
+            run_id="demo",
+            model="openai-tc:gpt-5.4",
+            codex_model="gpt-5.4",
+            reasoning_effort="medium",
+            trials=1,
+            jobs_dir=Path("jobs"),
+            dev_smoke=True,
+            agent_timeout_multiplier=2.5,
+        )
+
+        cmd = commands[0].command
+        self.assertFalse(commands[0].submission_compliant)
+        self.assertEqual(commands[0].agent_timeout_multiplier, 2.5)
+        self.assertIn("--agent-timeout-multiplier", cmd)
+        self.assertEqual(cmd[cmd.index("--agent-timeout-multiplier") + 1], "2.5")
+
     def test_command_guard_rejects_banned_submission_flag(self) -> None:
         cmd = [
             *HARBOR_CLI_COMMAND,
@@ -139,6 +172,79 @@ class HarborTerminalBenchRunnerTests(unittest.TestCase):
         ]
         with self.assertRaisesRegex(HarborTerminalBenchComplianceError, "non-compliant"):
             assert_harbor_submission_command_compliant(cmd)
+
+    def test_default_timeout_summary_annotates_synthetic_harbor_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            jobs_dir = Path(tmp) / "jobs"
+            jobs_dir.mkdir()
+            (jobs_dir / "result.json").write_text(
+                json.dumps({"stats": {"n_total_trials": 4}}),
+                encoding="utf-8",
+            )
+            result_dir = jobs_dir / "tasks" / "task-a"
+            result_dir.mkdir(parents=True)
+            (result_dir / "result.json").write_text(
+                json.dumps(
+                    {
+                        "trials": [
+                            {
+                                "task_id": "within",
+                                "trial_id": "trial-1",
+                                "verifier_result": {"rewards": {"reward": 1.0}},
+                                "agent_execution": {
+                                    "started_at": "2026-04-28T00:00:00+00:00",
+                                    "finished_at": "2026-04-28T00:15:00+00:00",
+                                },
+                            },
+                            {
+                                "task_id": "after",
+                                "trial_id": "trial-2",
+                                "is_resolved": True,
+                                "reward": 1.0,
+                                "agent_execution": {
+                                    "started_at": "2026-04-28T00:00:00+00:00",
+                                    "finished_at": "2026-04-28T00:15:01+00:00",
+                                },
+                            },
+                            {
+                                "task_id": "unresolved",
+                                "trial_id": "trial-3",
+                                "is_resolved": False,
+                                "reward": 0.0,
+                                "agent_execution": {
+                                    "started_at": "2026-04-28T00:00:00Z",
+                                    "finished_at": "2026-04-28T00:01:00Z",
+                                },
+                            },
+                            {
+                                "task_id": "missing-timestamps",
+                                "trial_id": "trial-4",
+                                "is_resolved": True,
+                                "reward": 1.0,
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            summary_path = write_default_timeout_summary(
+                jobs_dir=jobs_dir,
+                agent_timeout_multiplier=2.0,
+            )
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(summary_path.name, DEFAULT_TIMEOUT_SUMMARY_FILENAME)
+        self.assertEqual(summary["agent_timeout_multiplier"], 2.0)
+        self.assertEqual(summary["trial_count"], 4)
+        by_task = {item["task_id"]: item for item in summary["trials"]}
+        self.assertEqual(by_task["within"]["reward"], 1.0)
+        self.assertTrue(by_task["within"]["resolved_within_default_timeout"])
+        self.assertEqual(by_task["within"]["agent_execution_wall_seconds"], 900.0)
+        self.assertFalse(by_task["after"]["resolved_within_default_timeout"])
+        self.assertFalse(by_task["unresolved"]["resolved_within_default_timeout"])
+        self.assertIsNone(by_task["missing-timestamps"]["resolved_within_default_timeout"])
+        self.assertIn("missing_or_unparsable_agent_execution_timestamps", by_task["missing-timestamps"]["warnings"])
 
     def test_submission_config_validator_rejects_timeout_multiplier(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
