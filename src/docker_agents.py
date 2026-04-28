@@ -1606,6 +1606,7 @@ def spell_run_command(
     trace: bool = False,
     trace_dir: str | None = None,
     init: str | None = None,
+    usage_log_path: str | None = None,
 ) -> str:
     from .reasoning_effort import anthropic_thinking_budget, is_anthropic_provider
 
@@ -1621,6 +1622,7 @@ def spell_run_command(
         "thinking": thinking,
         "trace": trace,
         "trace_dir": trace_dir,
+        "usage_log_path": usage_log_path,
     }
     if init is not None:
         payload["init"] = init
@@ -1717,15 +1719,31 @@ def copy_spell_traces_to_host(
     return None
 
 
-def spell_parse_usage(stdout: str) -> UsageBreakdown | None:
-    parsed = spell_parse_benchmark_response(stdout)
-    if not parsed:
+def spell_usage_from_summary(summary: dict[str, Any] | None) -> UsageBreakdown | None:
+    if not isinstance(summary, dict):
         return None
-
-    usage = (parsed.get("usage") or {}).get("total", {})
+    usage = summary.get("total")
+    if not isinstance(usage, dict):
+        return None
 
     def _int(value: Any) -> int:
         return int(value) if isinstance(value, (int, float)) else 0
+
+    canonical_token_keys = (
+        "uncached_input_tokens",
+        "cached_input_tokens",
+        "cache_write_input_tokens",
+        "visible_output_tokens",
+        "reasoning_output_tokens",
+    )
+    legacy_token_keys = (
+        "input_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+        "output_tokens",
+    )
+    if not any(isinstance(usage.get(key), (int, float)) for key in canonical_token_keys + legacy_token_keys):
+        return None
 
     uncached_input_tokens = _int(usage.get("uncached_input_tokens", 0))
     cached = _int(usage.get("cached_input_tokens", 0))
@@ -1750,6 +1768,26 @@ def spell_parse_usage(stdout: str) -> UsageBreakdown | None:
         reasoning_output_tokens=reasoning_output_tokens,
         cost_usd=cost_usd,
     )
+
+
+def spell_parse_usage(stdout: str) -> UsageBreakdown | None:
+    parsed = spell_parse_benchmark_response(stdout)
+    if not parsed:
+        return None
+    return spell_usage_from_summary(parsed.get("usage"))
+
+
+def spell_parse_usage_log(path: Path) -> UsageBreakdown | None:
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    usage = parsed.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    return spell_usage_from_summary(usage)
 
 
 def _install_agent_runtime(

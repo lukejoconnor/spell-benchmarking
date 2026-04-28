@@ -9,6 +9,7 @@ HARBOR_TERMINALBENCH_DATASET = "terminal-bench@2.0"
 HARBOR_TERMINALBENCH_CONDITIONS = ("spell", "codex")
 HARBOR_TERMINALBENCH_RESULTS_DIR = Path("results") / "harbor-terminal-bench"
 HARBOR_SPELL_AGENT_IMPORT_PATH = "harbor_spell_agent:HarborSpellAgent"
+HARBOR_CLI_COMMAND = ("uv", "tool", "run", "--from", "harbor", "harbor")
 
 BANNED_SUBMISSION_FLAGS = frozenset(
     {
@@ -145,7 +146,7 @@ def build_harbor_terminalbench_commands(
         condition_jobs_dir = root / selected
         job_name = f"{selected}-{run_id}"
         cmd = [
-            "harbor",
+            *HARBOR_CLI_COMMAND,
             "run",
             "-d",
             dataset,

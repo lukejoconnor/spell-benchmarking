@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shlex
 from pathlib import Path
 from typing import Any
@@ -11,7 +12,7 @@ from src.docker_agents import (
     spell_env_vars,
     spell_install_script,
     spell_parse_benchmark_response,
-    spell_parse_usage,
+    spell_parse_usage_log,
     spell_run_command,
 )
 
@@ -57,6 +58,7 @@ class HarborSpellAgent(BaseInstalledAgent):
     """Installed Harbor agent that uploads a Harbor-safe Spell runtime bundle."""
 
     _OUTPUT_FILENAME = "spell-output.txt"
+    _USAGE_FILENAME = "spell-usage.json"
 
     def __init__(
         self,
@@ -127,6 +129,7 @@ class HarborSpellAgent(BaseInstalledAgent):
             init = build_spell_init(rendered_instruction, self.trailing)
 
         output_path = Path(EnvironmentPaths.agent_dir) / self._OUTPUT_FILENAME
+        usage_log_path = Path(EnvironmentPaths.agent_dir) / self._USAGE_FILENAME
         trace_dir = str(Path(EnvironmentPaths.agent_dir) / "spell-trace") if self.trace else None
         command = spell_run_command(
             prompt=rendered_instruction,
@@ -137,6 +140,7 @@ class HarborSpellAgent(BaseInstalledAgent):
             reasoning_effort=self.reasoning_effort,
             trace=self.trace,
             trace_dir=trace_dir,
+            usage_log_path=str(usage_log_path),
         )
         env = spell_env_vars(self.model_name, sh_timeout=self.sh_timeout)
         result = await environment.exec(
@@ -147,13 +151,15 @@ class HarborSpellAgent(BaseInstalledAgent):
             ),
             env=env,
         )
-        self._populate_context_from_text(context, result.stdout)
         if result.return_code != 0:
             raise NonZeroAgentExitCodeError(
                 f"Spell exited {result.return_code}; see {self._OUTPUT_FILENAME}"
             )
 
     def populate_context_post_run(self, context: AgentContext) -> None:
+        usage_path = self.logs_dir / self._USAGE_FILENAME
+        self._populate_context_from_usage_log(context, usage_path)
+
         output_path = self.logs_dir / self._OUTPUT_FILENAME
         if output_path.exists():
             self._populate_context_from_text(
@@ -161,15 +167,28 @@ class HarborSpellAgent(BaseInstalledAgent):
                 output_path.read_text(encoding="utf-8", errors="replace"),
             )
 
-    def _populate_context_from_text(self, context: AgentContext, stdout: str) -> None:
-        parsed = spell_parse_benchmark_response(stdout)
-        usage = spell_parse_usage(stdout)
+    def _populate_context_from_usage_log(self, context: AgentContext, path: Path) -> None:
+        usage = spell_parse_usage_log(path)
+        metadata = self._base_metadata(context)
+        metadata["spell_usage_log_present"] = path.exists()
+        if path.exists():
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                raw = None
+            if isinstance(raw, dict):
+                records = raw.get("records")
+                if isinstance(records, list):
+                    metadata["spell_usage_log_records"] = len(records)
         if usage is not None:
             context.n_input_tokens = usage.total_input_tokens
             context.n_cache_tokens = usage.cached_input_tokens
             context.n_output_tokens = usage.total_output_tokens
             context.cost_usd = usage.cost_usd
+            metadata["spell_accounting_source"] = "usage_log"
+        context.metadata = metadata
 
+    def _base_metadata(self, context: AgentContext) -> dict[str, Any]:
         metadata = dict(context.metadata or {})
         metadata.update(
             {
@@ -180,6 +199,11 @@ class HarborSpellAgent(BaseInstalledAgent):
                 "trace": self.trace,
             }
         )
+        return metadata
+
+    def _populate_context_from_text(self, context: AgentContext, stdout: str) -> None:
+        parsed = spell_parse_benchmark_response(stdout)
+        metadata = self._base_metadata(context)
         if parsed is not None:
             metadata["spell_ok"] = parsed.get("ok")
             if parsed.get("error"):
