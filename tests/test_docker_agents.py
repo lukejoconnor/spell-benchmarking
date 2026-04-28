@@ -150,6 +150,18 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertEqual(usage.total_output_tokens, 12)
         self.assertAlmostEqual(usage.cost_usd or 0.0, 0.123)
 
+    def test_spell_parse_usage_log_rejects_empty_total(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "spell-usage.json"
+            path.write_text(
+                json.dumps({"schema": "spell.usage-snapshot.v1", "usage": {"total": {}}}),
+                encoding="utf-8",
+            )
+
+            usage = spell_parse_usage_log(path)
+
+        self.assertIsNone(usage)
+
     def test_normalize_spell_trailing_preserves_backslash_bang_inside_strings(self) -> None:
         trailing = "'(do (think \"literal \\\\! stays\") (!describe io))"
 

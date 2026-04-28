@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import sys
@@ -18,6 +19,27 @@ from src.docker_agents import (
     HARBOR_SPELL_BUNDLE_PATHS,
     spell_build_harbor_bundle,
 )
+
+
+class _ExecResult:
+    def __init__(self, stdout: str = "", return_code: int = 0) -> None:
+        self.stdout = stdout
+        self.stderr = ""
+        self.return_code = return_code
+
+
+class _FakeEnvironment:
+    async def exec(self, *args, **kwargs):
+        return _ExecResult(
+            stdout=json.dumps(
+                {
+                    "ok": True,
+                    "result": "done",
+                    "usage": {"total": {"input_tokens": 100, "output_tokens": 10, "cost": 0.456}},
+                }
+            ),
+            return_code=0,
+        )
 
 
 class HarborSpellAgentTests(unittest.TestCase):
@@ -52,6 +74,19 @@ class HarborSpellAgentTests(unittest.TestCase):
 
     def test_harbor_bundle_path_allowlist_is_minimal(self) -> None:
         self.assertEqual(HARBOR_SPELL_BUNDLE_PATHS, ("deps.edn", "src", "config", "data/pricing.edn"))
+
+    def test_run_leaves_context_empty_for_harbor_post_run_hook(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = AgentContext()
+            agent = HarborSpellAgent(logs_dir=Path(tmp), model_name="openai-tc:gpt-5.4")
+
+            asyncio.run(agent.run("Solve it", _FakeEnvironment(), context))
+
+        self.assertIsNone(context.n_input_tokens)
+        self.assertIsNone(context.n_cache_tokens)
+        self.assertIsNone(context.n_output_tokens)
+        self.assertIsNone(context.cost_usd)
+        self.assertIsNone(context.metadata)
 
     def test_post_run_accounting_comes_from_usage_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

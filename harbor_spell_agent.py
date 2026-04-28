@@ -151,7 +151,6 @@ class HarborSpellAgent(BaseInstalledAgent):
             ),
             env=env,
         )
-        self._populate_context_from_text(context, result.stdout)
         if result.return_code != 0:
             raise NonZeroAgentExitCodeError(
                 f"Spell exited {result.return_code}; see {self._OUTPUT_FILENAME}"

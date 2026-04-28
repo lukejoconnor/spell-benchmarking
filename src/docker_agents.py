@@ -1720,10 +1720,30 @@ def copy_spell_traces_to_host(
 
 
 def spell_usage_from_summary(summary: dict[str, Any] | None) -> UsageBreakdown | None:
-    usage = (summary or {}).get("total", {})
+    if not isinstance(summary, dict):
+        return None
+    usage = summary.get("total")
+    if not isinstance(usage, dict):
+        return None
 
     def _int(value: Any) -> int:
         return int(value) if isinstance(value, (int, float)) else 0
+
+    canonical_token_keys = (
+        "uncached_input_tokens",
+        "cached_input_tokens",
+        "cache_write_input_tokens",
+        "visible_output_tokens",
+        "reasoning_output_tokens",
+    )
+    legacy_token_keys = (
+        "input_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+        "output_tokens",
+    )
+    if not any(isinstance(usage.get(key), (int, float)) for key in canonical_token_keys + legacy_token_keys):
+        return None
 
     uncached_input_tokens = _int(usage.get("uncached_input_tokens", 0))
     cached = _int(usage.get("cached_input_tokens", 0))
