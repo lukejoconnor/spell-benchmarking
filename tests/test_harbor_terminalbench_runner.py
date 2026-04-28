@@ -13,6 +13,7 @@ if str(BENCHMARK_ROOT) not in sys.path:
 
 from src.harbor_terminalbench_runner import (
     HARBOR_CODEX_AGENT_IMPORT_PATH,
+    HARBOR_CLI_COMMAND,
     HARBOR_TERMINALBENCH_DATASET,
     HarborTerminalBenchComplianceError,
     assert_harbor_submission_command_compliant,
@@ -36,7 +37,8 @@ class HarborTerminalBenchRunnerTests(unittest.TestCase):
 
         self.assertEqual(len(commands), 1)
         cmd = commands[0].command
-        self.assertEqual(cmd[:4], ["harbor", "run", "-d", HARBOR_TERMINALBENCH_DATASET])
+        self.assertEqual(tuple(cmd[: len(HARBOR_CLI_COMMAND)]), HARBOR_CLI_COMMAND)
+        self.assertEqual(cmd[len(HARBOR_CLI_COMMAND) : len(HARBOR_CLI_COMMAND) + 3], ["run", "-d", HARBOR_TERMINALBENCH_DATASET])
         self.assertIn("--agent-import-path", cmd)
         self.assertIn("harbor_spell_agent:HarborSpellAgent", cmd)
         self.assertIn("--agent-kwarg", cmd)
@@ -126,7 +128,7 @@ class HarborTerminalBenchRunnerTests(unittest.TestCase):
 
     def test_command_guard_rejects_banned_submission_flag(self) -> None:
         cmd = [
-            "harbor",
+            *HARBOR_CLI_COMMAND,
             "run",
             "-d",
             HARBOR_TERMINALBENCH_DATASET,

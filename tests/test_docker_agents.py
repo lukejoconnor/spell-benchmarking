@@ -57,6 +57,8 @@ from src.docker_agents import (
     run_install_script,
     resolve_spell_model,
     spell_env_vars,
+    spell_parse_usage_log,
+    spell_run_command,
     swe_agent_install_script,
 )
 
@@ -105,6 +107,60 @@ class DockerAgentsTests(unittest.TestCase):
 
         self.assertIn("'(!describe io)", init)
         self.assertNotIn("\\!describe", init)
+
+    def test_spell_run_command_passes_usage_log_path(self) -> None:
+        cmd = spell_run_command(
+            prompt="Solve it",
+            model_name="openai-tc:gpt-5.4",
+            usage_log_path="/logs/agent/spell-usage.json",
+        )
+
+        payload_text = cmd.split("<<'SPELL_PAYLOAD'\n", 1)[1].split("\nSPELL_PAYLOAD", 1)[0]
+        payload = json.loads(payload_text)
+        self.assertEqual(payload["usage_log_path"], "/logs/agent/spell-usage.json")
+
+    def test_spell_parse_usage_log_reads_live_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "spell-usage.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema": "spell.usage-snapshot.v1",
+                        "usage": {
+                            "total": {
+                                "uncached_input_tokens": 100,
+                                "cached_input_tokens": 25,
+                                "cache_write_input_tokens": 5,
+                                "visible_output_tokens": 10,
+                                "reasoning_output_tokens": 2,
+                                "cost": 0.123,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            usage = spell_parse_usage_log(path)
+
+        self.assertIsNotNone(usage)
+        assert usage is not None
+        self.assertEqual(usage.total_input_tokens, 130)
+        self.assertEqual(usage.cached_input_tokens, 25)
+        self.assertEqual(usage.total_output_tokens, 12)
+        self.assertAlmostEqual(usage.cost_usd or 0.0, 0.123)
+
+    def test_spell_parse_usage_log_rejects_empty_total(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "spell-usage.json"
+            path.write_text(
+                json.dumps({"schema": "spell.usage-snapshot.v1", "usage": {"total": {}}}),
+                encoding="utf-8",
+            )
+
+            usage = spell_parse_usage_log(path)
+
+        self.assertIsNone(usage)
 
     def test_normalize_spell_trailing_preserves_backslash_bang_inside_strings(self) -> None:
         trailing = "'(do (think \"literal \\\\! stays\") (!describe io))"

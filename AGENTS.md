@@ -98,7 +98,7 @@ Software-benchmark container infra:
 | Harbor Terminal-Bench 2.0 | 89 | Public TB2 Spell/Codex submission path | `uv run python bench.py harbor-terminalbench --condition spell` |
 
 Requires Docker (Colima or Docker Desktop). The legacy rows use `tb` CLI (`uv tool install terminal-bench`).
-The Harbor row uses Harbor CLI (`uv tool install harbor`) plus local installed-agent adapters: `harbor_spell_agent.py` for Spell and `harbor_codex_agent.py` for Codex.
+The Harbor row uses Harbor CLI via `uv tool run --from harbor harbor` plus local installed-agent adapters: `harbor_spell_agent.py` for Spell and `harbor_codex_agent.py` for Codex, so fresh benchmark VMs do not need a separate manual Harbor install.
 Legacy `terminalbench` conditions use imported Docker agents under `terminal_bench/`, orchestrated through `bench.py terminalbench`.
 If `benchmarking/` is checked out as a standalone worktree instead of nested under the main Spell repo, export `SPELL_ROOT=/path/to/spell` before running either Terminal-Bench path.
 The default dataset remains old core (`terminal-bench-core==0.1.1`) for comparability with recent local runs. Dataset aliases resolve as follows:
@@ -117,7 +117,9 @@ Public Terminal-Bench 2.0 Spell submission runs must use Harbor:
 - Development Codex comparison: `uv run python bench.py harbor-terminalbench --condition codex --codex-model gpt-5.4 --reasoning-effort medium --dev-smoke -k 1`
 - Development smoke only: add `--dev-smoke` to allow `-k 1`, `--n`, `--task`, or task-name filters.
 
-Submission mode is guarded to use `harbor run -d terminal-bench@2.0`, require `k >= 5`, run the full dataset, and avoid timeout/resource/local-registry/recovery flags. Codex submission runs use the local `harbor_codex_agent.py` adapter rather than Harbor's built-in `codex` agent so web search is explicitly disabled and GPT-5.4 cost is computed per model call. `reasoning_output_tokens` is recorded as a sub-bucket of `output_tokens`, not added again for billing.
+Submission mode is guarded to use `uv tool run --from harbor harbor run -d terminal-bench@2.0`, require `k >= 5`, run the full dataset, and avoid timeout/resource/local-registry/recovery flags. Codex submission runs use the local `harbor_codex_agent.py` adapter rather than Harbor's built-in `codex` agent so web search is explicitly disabled and GPT-5.4 cost is computed per model call. `reasoning_output_tokens` is recorded as a sub-bucket of `output_tokens`, not added again for billing.
+
+Harbor Spell writes live cumulative usage snapshots to `/logs/agent/spell-usage.json`; this file is the source of truth for Spell token/cost accounting on success, error, and timeout rows. `spell-output.txt` may contain final-response metadata, but Harbor Spell must not use it as a cost/token fallback.
 
 Examples:
 ```bash
