@@ -2569,7 +2569,7 @@ def run_terminalbench(
 @cli.command("harbor-terminalbench")
 @click.option("--condition", default="spell", show_default=True, type=click.Choice(["spell", "codex", "all"]))
 @click.option("--model", default="openai-tc:gpt-5.4", show_default=True, help="Spell provider:model")
-@click.option("--codex-model", default="gpt-5.4", show_default=True, help="Model for Harbor's built-in Codex agent")
+@click.option("--codex-model", default="gpt-5.4", show_default=True, help="Model for custom Harbor Codex agent")
 @click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="medium", show_default=True)
 @click.option("-k", "--trials", type=int, default=5, show_default=True, help="Trials per task")
 @click.option("--dataset", default=HARBOR_TERMINALBENCH_DATASET, show_default=True, help="Harbor dataset name@version")

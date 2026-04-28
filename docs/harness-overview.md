@@ -48,7 +48,7 @@ Three modes exist for software benchmarks (SWE-bench, FeatureBench, Exercism):
 
 Terminal-Bench local/regression runs use `bench.py terminalbench`. That subcommand wraps legacy `tb run`, normalizes per-task `results.json` into `UnifiedRunRecord`s, and copies Spell traces out of per-task `agent-logs/spell-trace/` directories into the standard `traces/<run-id>/spell/...` layout. Its `--dataset 2.0` alias is not public leaderboard-compliant.
 
-Public Terminal-Bench 2.0 Spell runs use `bench.py harbor-terminalbench`, which shells out to `harbor run -d terminal-bench@2.0`. Submission mode requires `k >= 5`, forbids task filters, rejects the built-in Harbor Codex comparator, and does not expose timeout/resource/local-registry/recovery knobs. `--dev-smoke` is explicitly non-submission and permits `k=1`, `--n`, task selectors, and Harbor's built-in Codex comparator for development comparisons.
+Public Terminal-Bench 2.0 runs use `bench.py harbor-terminalbench`, which shells out to `harbor run -d terminal-bench@2.0`. Submission mode requires `k >= 5`, forbids task filters, and does not expose timeout/resource/local-registry/recovery knobs. Codex uses `harbor_codex_agent.py` instead of Harbor's built-in adapter so web search is explicitly disabled and GPT-5.4 cost is computed from a per-call ledger with the >272K-token long-context threshold applied per model call. `--dev-smoke` is explicitly non-submission and permits `k=1`, `--n`, and task selectors for development comparisons.
 
 In unified mode, `bench.py` still constructs the `RunRequest` (including `init`) identically — the unified runners just receive the pre-built init string.
 

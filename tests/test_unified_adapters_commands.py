@@ -257,13 +257,13 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
                                             "input_tokens": 1_000,
                                             "cached_input_tokens": 100,
                                             "output_tokens": 200,
-                                            "reasoning_output_tokens": 350,
+                                            "reasoning_output_tokens": 50,
                                         },
                                         "last_token_usage": {
                                             "input_tokens": 1_000,
                                             "cached_input_tokens": 100,
                                             "output_tokens": 200,
-                                            "reasoning_output_tokens": 350,
+                                            "reasoning_output_tokens": 50,
                                         },
                                         "model_context_window": 258_400,
                                     },
@@ -280,12 +280,12 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
 
             self.assertEqual(response.status, "ok")
             self.assertAlmostEqual(response.cost_usd or 0.0, 0.01, places=8)
-            self.assertEqual(response.metadata["reasoning_output_tokens"], 350)
+            self.assertEqual(response.metadata["reasoning_output_tokens"], 50)
             self.assertEqual(response.metadata["rollout_status"], "ok")
             self.assertEqual(response.metadata["cost_source"], "reported")
             self.assertEqual(response.metadata["raw"]["events"][0]["type"], "thread.started")
             self.assertEqual(response.metadata["raw"]["non_json_lines"], ["non-json-line"])
-            self.assertEqual(response.metadata["raw"]["rollout_token_count"]["total_token_usage"]["reasoning_output_tokens"], 350)
+            self.assertEqual(response.metadata["raw"]["rollout_token_count"]["total_token_usage"]["reasoning_output_tokens"], 50)
             self.assertEqual(response.metadata["raw"]["rollout_path"], str(rollout_path))
 
     @patch("src.unified_adapters.subprocess.run")
