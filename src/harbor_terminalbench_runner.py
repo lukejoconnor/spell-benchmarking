@@ -9,6 +9,7 @@ HARBOR_TERMINALBENCH_DATASET = "terminal-bench@2.0"
 HARBOR_TERMINALBENCH_CONDITIONS = ("spell", "codex")
 HARBOR_TERMINALBENCH_RESULTS_DIR = Path("results") / "harbor-terminal-bench"
 HARBOR_SPELL_AGENT_IMPORT_PATH = "harbor_spell_agent:HarborSpellAgent"
+HARBOR_CODEX_AGENT_IMPORT_PATH = "harbor_codex_agent:HarborCodexAgent"
 HARBOR_CLI_COMMAND = ("uv", "tool", "run", "--from", "harbor", "harbor")
 
 BANNED_SUBMISSION_FLAGS = frozenset(
@@ -83,11 +84,6 @@ def assert_harbor_submission_request_compliant(
             f"Harbor Terminal-Bench submissions must use {HARBOR_TERMINALBENCH_DATASET}, got {dataset!r}"
         )
     selected_conditions = parse_harbor_terminalbench_conditions(condition)
-    if "codex" in selected_conditions:
-        raise HarborTerminalBenchComplianceError(
-            "Harbor's built-in Codex agent is currently allowed only for --dev-smoke comparisons; "
-            "submission-mode Codex needs a Stage 2 adapter that explicitly disables web search."
-        )
     if trials < 5:
         raise HarborTerminalBenchComplianceError(
             "Harbor Terminal-Bench submissions require k >= 5. Use --dev-smoke for k=1 smoke runs."
@@ -177,8 +173,8 @@ def build_harbor_terminalbench_commands(
             selected_model = normalize_harbor_codex_model(codex_model)
             cmd.extend(
                 [
-                    "-a",
-                    "codex",
+                    "--agent-import-path",
+                    HARBOR_CODEX_AGENT_IMPORT_PATH,
                     "-m",
                     selected_model,
                     "--agent-kwarg",

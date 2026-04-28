@@ -1020,13 +1020,13 @@ EOF
                                     "input_tokens": 1_000,
                                     "cached_input_tokens": 100,
                                     "output_tokens": 200,
-                                    "reasoning_output_tokens": 350,
+                                    "reasoning_output_tokens": 50,
                                 },
                                 "last_token_usage": {
                                     "input_tokens": 1_000,
                                     "cached_input_tokens": 100,
                                     "output_tokens": 200,
-                                    "reasoning_output_tokens": 350,
+                                    "reasoning_output_tokens": 50,
                                 },
                                 "model_context_window": 258_400,
                             },
@@ -1086,10 +1086,10 @@ EOF
         self.assertIsInstance(result, AgentRunResult)
         self.assertIsNotNone(result.usage)
         assert result.usage is not None
-        self.assertEqual(result.usage.reasoning_output_tokens, 350)
+        self.assertEqual(result.usage.reasoning_output_tokens, 50)
         self.assertEqual(result.metadata["thread_id"], "thread-1")
         self.assertEqual(result.metadata["rollout_status"], "ok")
-        self.assertEqual(result.metadata["rollout_token_count"]["total_token_usage"]["reasoning_output_tokens"], 350)
+        self.assertEqual(result.metadata["rollout_token_count"]["total_token_usage"]["reasoning_output_tokens"], 50)
         self.assertEqual(result.metadata["cost_source"], "estimated_with_reasoning")
         self.assertEqual(
             result.raw["rollout_path"],

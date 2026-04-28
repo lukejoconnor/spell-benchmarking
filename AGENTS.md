@@ -95,10 +95,10 @@ Software-benchmark container infra:
 |-----------|-------|---------------|-------------|
 | Terminal-Bench old core | 80 | Shell tasks in Docker containers | `uv run python bench.py terminalbench --dataset old-core --condition all` |
 | Terminal-Bench 2.x pinned | ~94 | Local/core shell tasks in Docker containers | `uv run python bench.py terminalbench --dataset 2.0 --condition all` |
-| Harbor Terminal-Bench 2.0 | 89 | Public TB2 Spell submission path | `uv run python bench.py harbor-terminalbench --condition spell` |
+| Harbor Terminal-Bench 2.0 | 89 | Public TB2 Spell/Codex submission path | `uv run python bench.py harbor-terminalbench --condition spell` |
 
 Requires Docker (Colima or Docker Desktop). The legacy rows use `tb` CLI (`uv tool install terminal-bench`).
-The Harbor row uses Harbor CLI via `uv tool run --from harbor harbor` and the `harbor_spell_agent.py` adapter, so fresh benchmark VMs do not need a separate manual Harbor install.
+The Harbor row uses Harbor CLI via `uv tool run --from harbor harbor` plus local installed-agent adapters: `harbor_spell_agent.py` for Spell and `harbor_codex_agent.py` for Codex, so fresh benchmark VMs do not need a separate manual Harbor install.
 Legacy `terminalbench` conditions use imported Docker agents under `terminal_bench/`, orchestrated through `bench.py terminalbench`.
 If `benchmarking/` is checked out as a standalone worktree instead of nested under the main Spell repo, export `SPELL_ROOT=/path/to/spell` before running either Terminal-Bench path.
 The default dataset remains old core (`terminal-bench-core==0.1.1`) for comparability with recent local runs. Dataset aliases resolve as follows:
@@ -113,10 +113,11 @@ Raw `tb --dataset` strings still pass through without the bundled registry overr
 Public Terminal-Bench 2.0 Spell submission runs must use Harbor:
 
 - Submission mode: `uv run python bench.py harbor-terminalbench --condition spell --model openai-tc:gpt-5.4 --reasoning-effort medium -k 5`
+- Codex submission mode: `uv run python bench.py harbor-terminalbench --condition codex --codex-model gpt-5.4 --reasoning-effort medium -k 5`
 - Development Codex comparison: `uv run python bench.py harbor-terminalbench --condition codex --codex-model gpt-5.4 --reasoning-effort medium --dev-smoke -k 1`
-- Development smoke only: add `--dev-smoke` to allow `-k 1`, `--n`, `--task`, task-name filters, or the built-in Harbor Codex comparator.
+- Development smoke only: add `--dev-smoke` to allow `-k 1`, `--n`, `--task`, or task-name filters.
 
-Submission mode is guarded to use `uv tool run --from harbor harbor run -d terminal-bench@2.0`, require `k >= 5`, run the full dataset, and avoid timeout/resource/local-registry/recovery flags. Stage-1 Codex comparisons intentionally use Harbor's built-in `codex` agent with `--agent-kwarg reasoning_effort=medium` only in non-submission `--dev-smoke` mode because the built-in adapter does not expose the local harness's explicit `web_search="disabled"` guard. A submission-grade Codex comparison needs a Stage-2 adapter or upstream Harbor support for that guarantee.
+Submission mode is guarded to use `uv tool run --from harbor harbor run -d terminal-bench@2.0`, require `k >= 5`, run the full dataset, and avoid timeout/resource/local-registry/recovery flags. Codex submission runs use the local `harbor_codex_agent.py` adapter rather than Harbor's built-in `codex` agent so web search is explicitly disabled and GPT-5.4 cost is computed per model call. `reasoning_output_tokens` is recorded as a sub-bucket of `output_tokens`, not added again for billing.
 
 Harbor Spell writes live cumulative usage snapshots to `/logs/agent/spell-usage.json`; this file is the source of truth for Spell token/cost accounting on success, error, and timeout rows. `spell-output.txt` may contain final-response metadata, but Harbor Spell must not use it as a cost/token fallback.
 

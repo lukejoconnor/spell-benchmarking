@@ -12,6 +12,7 @@ if str(BENCHMARK_ROOT) not in sys.path:
     sys.path.insert(0, str(BENCHMARK_ROOT))
 
 from src.harbor_terminalbench_runner import (
+    HARBOR_CODEX_AGENT_IMPORT_PATH,
     HARBOR_CLI_COMMAND,
     HARBOR_TERMINALBENCH_DATASET,
     HarborTerminalBenchComplianceError,
@@ -48,19 +49,26 @@ class HarborTerminalBenchRunnerTests(unittest.TestCase):
         self.assertNotIn("--task", cmd)
         self.assertTrue(commands[0].submission_compliant)
 
-    def test_submission_rejects_builtin_codex_until_web_disabled_adapter_exists(self) -> None:
-        with self.assertRaisesRegex(HarborTerminalBenchComplianceError, "Stage 2 adapter"):
-            build_harbor_terminalbench_commands(
-                condition="codex",
-                run_id="demo",
-                model="openai-tc:gpt-5.4",
-                codex_model="gpt-5.4",
-                reasoning_effort="medium",
-                trials=5,
-                jobs_dir=Path("jobs"),
-            )
+    def test_submission_codex_uses_custom_adapter(self) -> None:
+        commands = build_harbor_terminalbench_commands(
+            condition="codex",
+            run_id="demo",
+            model="openai-tc:gpt-5.4",
+            codex_model="gpt-5.4",
+            reasoning_effort="medium",
+            trials=5,
+            jobs_dir=Path("jobs"),
+        )
 
-    def test_dev_codex_uses_harbor_builtin_with_medium_effort(self) -> None:
+        cmd = commands[0].command
+        self.assertNotIn("-a", cmd)
+        self.assertIn("--agent-import-path", cmd)
+        self.assertIn(HARBOR_CODEX_AGENT_IMPORT_PATH, cmd)
+        self.assertEqual(cmd[cmd.index("-m") + 1], "openai/gpt-5.4")
+        self.assertIn("reasoning_effort=medium", cmd)
+        self.assertTrue(commands[0].submission_compliant)
+
+    def test_dev_codex_also_uses_custom_adapter_with_medium_effort(self) -> None:
         commands = build_harbor_terminalbench_commands(
             condition="codex",
             run_id="demo",
@@ -73,8 +81,8 @@ class HarborTerminalBenchRunnerTests(unittest.TestCase):
         )
 
         cmd = commands[0].command
-        self.assertIn("-a", cmd)
-        self.assertEqual(cmd[cmd.index("-a") + 1], "codex")
+        self.assertNotIn("-a", cmd)
+        self.assertIn(HARBOR_CODEX_AGENT_IMPORT_PATH, cmd)
         self.assertEqual(cmd[cmd.index("-m") + 1], "openai/gpt-5.4")
         self.assertIn("reasoning_effort=medium", cmd)
 
