@@ -69,6 +69,8 @@ SWE-bench harness defaults and workflow:
 - `bench.py swebench` now defaults to `--condition all` (`spell`, `claude_code`, `codex`, `swe_agent`) and always runs same-container evaluation after generation.
 - Use `--name <label>` to tag a run variant across JSONL records, traces, and SWE-bench prediction filenames.
 - Use `--trailing <expr>` on Spell runs to override the default trailing policy directly instead of relying on preset variants.
+- Use `--paper-compliant` for paper-facing SWE-bench Lite/Verified/mini reruns. This omits `hints_text`, appends the no-web/solution-lookup instruction, disables exposed web/search tools where practical, and records compliance metadata. It is not strict leaderboard compliance because generation containers are not network-isolated.
+- After paper-compliant runs, `uv run python scripts/check_swebench_paper_compliance.py <unified-jsonl> --run-id <run-id> --trace-root traces/<run-id>` performs metadata checks plus best-effort warning scans for obvious web or solution-lookup traces.
 - `bench.py swebench` uses `src/swebench_container.py` to start official instance images, then runs agents through the shared `src/docker_agents.py` runtime layer.
 - Use `--clean-eval` to rerun generated patches in a fresh official evaluation container.
 - Clean eval runs conditions in series with staged cleanup:

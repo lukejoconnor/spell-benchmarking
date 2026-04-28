@@ -43,6 +43,7 @@ def run_unified_swebench(
     env_image_tag: str = "latest",
     env_image_cache: SWEBenchEnvImageCacheConfig | None = None,
     backend: str = "docker",
+    paper_compliant: bool = False,
 ) -> RunResponse:
     eval_log_path: str | None = None
     if backend == "singularity":
@@ -76,6 +77,7 @@ def run_unified_swebench(
             trace=trace,
             trace_dir=trace_dir,
             init=init,
+            paper_compliant=paper_compliant,
         )
         base_ref = container.initial_commit or "HEAD"
         patch = container.diff(base_ref)
