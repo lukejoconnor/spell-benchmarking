@@ -251,12 +251,31 @@ def _is_resolved(trial: dict[str, Any]) -> bool:
         value = trial.get(key)
         if isinstance(value, bool):
             return value
-    reward = trial.get("reward")
+    reward = _trial_reward(trial)
     if isinstance(reward, bool):
         return reward
     if isinstance(reward, (int, float)):
         return reward > 0
     return False
+
+
+def _trial_reward(trial: dict[str, Any]) -> Any:
+    reward = trial.get("reward")
+    if reward is not None:
+        return reward
+
+    verifier_result = trial.get("verifier_result")
+    if isinstance(verifier_result, dict):
+        rewards = verifier_result.get("rewards")
+        if isinstance(rewards, dict) and rewards.get("reward") is not None:
+            return rewards.get("reward")
+        if verifier_result.get("reward") is not None:
+            return verifier_result.get("reward")
+
+    rewards = trial.get("rewards")
+    if isinstance(rewards, dict):
+        return rewards.get("reward")
+    return None
 
 
 def _trial_identifier(trial: dict[str, Any], fallback: str) -> str:
@@ -280,14 +299,24 @@ def _task_identifier(trial: dict[str, Any], result_path: Path) -> str | None:
 
 def _trial_records_from_result(result: Any) -> list[dict[str, Any]]:
     if isinstance(result, list):
-        return [item for item in result if isinstance(item, dict)]
+        return [item for item in result if isinstance(item, dict) and _looks_like_trial_result(item)]
     if not isinstance(result, dict):
         return []
     for key in ("trials", "results", "attempts", "runs"):
         value = result.get(key)
         if isinstance(value, list):
-            return [item for item in value if isinstance(item, dict)]
-    return [result]
+            return [item for item in value if isinstance(item, dict) and _looks_like_trial_result(item)]
+    if _looks_like_trial_result(result):
+        return [result]
+    return []
+
+
+def _looks_like_trial_result(value: dict[str, Any]) -> bool:
+    if isinstance(value.get("agent_execution"), dict):
+        return True
+    if isinstance(value.get("verifier_result"), dict):
+        return True
+    return any(key in value for key in ("is_resolved", "resolved", "reward"))
 
 
 def _agent_execution_window(trial: dict[str, Any]) -> tuple[Any, Any]:
@@ -334,7 +363,7 @@ def _annotate_default_timeout_trial(
         "task_id": _task_identifier(trial, result_path),
         "trial_id": _trial_identifier(trial, fallback_trial_id),
         "resolved": resolved,
-        "reward": trial.get("reward"),
+        "reward": _trial_reward(trial),
         "agent_execution_wall_seconds": wall_seconds,
         "default_agent_timeout_seconds": default_timeout_seconds,
         "resolved_within_default_timeout": resolved_within_default_timeout,

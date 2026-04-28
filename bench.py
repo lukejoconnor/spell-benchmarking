@@ -2672,8 +2672,9 @@ def run_harbor_terminalbench(
         click.echo(f"Job dir: {item.jobs_dir}")
         subprocess.run(item.command, check=True, cwd=BENCHMARK_ROOT)
         if dev_smoke and item.agent_timeout_multiplier > 1.0:
+            job_dir = item.jobs_dir / item.job_name
             summary_path = write_default_timeout_summary(
-                jobs_dir=item.jobs_dir,
+                jobs_dir=job_dir if job_dir.exists() else item.jobs_dir,
                 agent_timeout_multiplier=item.agent_timeout_multiplier,
             )
             click.echo(f"Default-timeout diagnostic: {summary_path}")

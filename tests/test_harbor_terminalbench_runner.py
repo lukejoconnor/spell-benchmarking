@@ -176,6 +176,11 @@ class HarborTerminalBenchRunnerTests(unittest.TestCase):
     def test_default_timeout_summary_annotates_synthetic_harbor_results(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             jobs_dir = Path(tmp) / "jobs"
+            jobs_dir.mkdir()
+            (jobs_dir / "result.json").write_text(
+                json.dumps({"stats": {"n_total_trials": 4}}),
+                encoding="utf-8",
+            )
             result_dir = jobs_dir / "tasks" / "task-a"
             result_dir.mkdir(parents=True)
             (result_dir / "result.json").write_text(
@@ -185,8 +190,7 @@ class HarborTerminalBenchRunnerTests(unittest.TestCase):
                             {
                                 "task_id": "within",
                                 "trial_id": "trial-1",
-                                "is_resolved": True,
-                                "reward": 1.0,
+                                "verifier_result": {"rewards": {"reward": 1.0}},
                                 "agent_execution": {
                                     "started_at": "2026-04-28T00:00:00+00:00",
                                     "finished_at": "2026-04-28T00:15:00+00:00",
@@ -234,6 +238,7 @@ class HarborTerminalBenchRunnerTests(unittest.TestCase):
         self.assertEqual(summary["agent_timeout_multiplier"], 2.0)
         self.assertEqual(summary["trial_count"], 4)
         by_task = {item["task_id"]: item for item in summary["trials"]}
+        self.assertEqual(by_task["within"]["reward"], 1.0)
         self.assertTrue(by_task["within"]["resolved_within_default_timeout"])
         self.assertEqual(by_task["within"]["agent_execution_wall_seconds"], 900.0)
         self.assertFalse(by_task["after"]["resolved_within_default_timeout"])
