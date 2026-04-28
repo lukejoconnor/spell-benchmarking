@@ -20,6 +20,17 @@ class HarborCodexAgentTests(unittest.TestCase):
 
         self.assertEqual(agent._codex_web_disabled_flag(), "-c 'web_search=\"disabled\"'")
 
+    def test_run_preserves_harbor_prompt_template_decorator(self) -> None:
+        source = Path(BENCHMARK_ROOT / "harbor_codex_agent.py").read_text(encoding="utf-8")
+
+        self.assertIn("@with_prompt_template", source)
+
+    def test_auth_json_is_not_uploaded_to_agent_logs_dir(self) -> None:
+        source = Path(BENCHMARK_ROOT / "harbor_codex_agent.py").read_text(encoding="utf-8")
+
+        self.assertIn('auth_target = "/tmp/codex-secrets/auth.json"', source)
+        self.assertNotIn('EnvironmentPaths.agent_dir / "auth.json"', source)
+
 
 if __name__ == "__main__":
     unittest.main()

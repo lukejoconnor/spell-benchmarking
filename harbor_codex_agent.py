@@ -10,6 +10,7 @@ from typing import Any
 from src.codex_usage import codex_cost_accounting_from_rollout, normalize_codex_model
 
 try:  # pragma: no cover - exercised by Harbor at runtime.
+    from harbor.agents.installed.base import with_prompt_template
     from harbor.agents.installed.codex import Codex as _HarborCodex
     from harbor.environments.base import BaseEnvironment
     from harbor.models.agent.context import AgentContext
@@ -33,6 +34,9 @@ except ModuleNotFoundError:  # pragma: no cover - keeps unit tests light.
 
     def format_trajectory_json(value: dict[str, Any]) -> str:  # type: ignore[no-redef]
         return json.dumps(value, indent=2, sort_keys=True)
+
+    def with_prompt_template(fn: Any) -> Any:  # type: ignore[no-redef]
+        return fn
 
 
 class HarborCodexAgent(_HarborCodex):  # type: ignore[misc, valid-type]
@@ -59,6 +63,7 @@ class HarborCodexAgent(_HarborCodex):  # type: ignore[misc, valid-type]
     def _codex_web_disabled_flag(self) -> str:
         return "-c " + shlex.quote('web_search="disabled"')
 
+    @with_prompt_template
     async def run(
         self,
         instruction: str,
@@ -78,16 +83,22 @@ class HarborCodexAgent(_HarborCodex):  # type: ignore[misc, valid-type]
         env: dict[str, str] = {
             "CODEX_HOME": EnvironmentPaths.agent_dir.as_posix(),
         }
+        setup_command = ""
 
         if auth_json_path:
             self.logger.debug("Codex auth: using auth.json from %s", auth_json_path)
-            auth_target = (EnvironmentPaths.agent_dir / "auth.json").as_posix()
+            auth_target = "/tmp/codex-secrets/auth.json"
+            await self.exec_as_agent(environment, command="mkdir -p /tmp/codex-secrets", env=env)
             await environment.upload_file(auth_json_path, auth_target)
             if environment.default_user is not None:
                 await self.exec_as_root(
                     environment,
                     command=f"chown {environment.default_user} {auth_target}",
                 )
+            setup_command += (
+                "mkdir -p /tmp/codex-secrets\n"
+                f'ln -sf {shlex.quote(auth_target)} "$CODEX_HOME/auth.json"\n'
+            )
         else:
             self.logger.debug("Codex auth: using OPENAI_API_KEY")
             env["OPENAI_API_KEY"] = self._get_env("OPENAI_API_KEY") or ""
@@ -103,7 +114,6 @@ class HarborCodexAgent(_HarborCodex):  # type: ignore[misc, valid-type]
                 "TOML"
             )
 
-        setup_command = ""
         if not auth_json_path:
             setup_command += (
                 "mkdir -p /tmp/codex-secrets\n"
