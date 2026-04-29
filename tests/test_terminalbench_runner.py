@@ -77,6 +77,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             budget=7.5,
             cleanup=False,
             reasoning_effort="medium",
+            test_timeout_sec=120,
             agent_file="config/agents/io-tc.agent.edn",
             trailing="'(!describe io)",
             trace=False,
@@ -85,6 +86,8 @@ class TerminalBenchRunnerTests(unittest.TestCase):
         rendered = " ".join(cmd)
         self.assertIn("--agent-import-path spell_agent:SpellAgent", rendered)
         self.assertIn("--no-cleanup", rendered)
+        self.assertIn("--global-agent-timeout-sec 3600", rendered)
+        self.assertIn("--global-test-timeout-sec 120", rendered)
         self.assertIn("-t hello-world", rendered)
         self.assertIn("-t csv-to-parquet", rendered)
         self.assertIn("--n-tasks 2", rendered)
@@ -106,6 +109,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             budget=7.5,
             cleanup=True,
             reasoning_effort="high",
+            test_timeout_sec=None,
             agent_file=None,
             trailing=None,
             trace=False,
@@ -126,6 +130,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             budget=7.5,
             cleanup=True,
             reasoning_effort="high",
+            test_timeout_sec=None,
             agent_file=None,
             trailing=None,
             trace=False,
@@ -146,6 +151,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             budget=7.5,
             cleanup=False,
             reasoning_effort="medium",
+            test_timeout_sec=None,
             agent_file=None,
             trailing=None,
             trace=False,
@@ -161,6 +167,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             budget=7.5,
             cleanup=False,
             reasoning_effort="medium",
+            test_timeout_sec=None,
             agent_file=None,
             trailing=None,
             trace=False,
@@ -181,6 +188,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             budget=7.5,
             cleanup=False,
             reasoning_effort="medium",
+            test_timeout_sec=None,
             agent_file=None,
             trailing=None,
             trace=False,

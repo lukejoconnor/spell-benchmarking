@@ -156,6 +156,7 @@ def build_terminalbench_command(
     cleanup: bool,
     reasoning_effort: str,
     agent_timeout_sec: int = 3600,
+    test_timeout_sec: int | None = None,
     agent_file: str | None,
     trailing: str | None,
     trace: bool,
@@ -189,6 +190,8 @@ def build_terminalbench_command(
         cmd.append("--no-cleanup")
 
     cmd.extend(["--global-agent-timeout-sec", str(agent_timeout_sec)])
+    if test_timeout_sec is not None:
+        cmd.extend(["--global-test-timeout-sec", str(test_timeout_sec)])
 
     for task_id in task_ids:
         cmd.extend(["-t", task_id])

@@ -2513,6 +2513,12 @@ def run_featurebench(
     show_default=True,
     help="Per-task wall-clock cap passed to the tb harness and condition agents.",
 )
+@click.option(
+    "--test-timeout-sec",
+    type=int,
+    default=None,
+    help="Optional evaluator/test timeout passed to tb run as --global-test-timeout-sec.",
+)
 @click.option("--name", default=None, help="Label for this run variant (flows into output directories and JSONL records)")
 @click.option("--trailing", default=None, help="Custom Spell trailing expression (default: '(!extend))")
 @click.option("--dry-run", is_flag=True, default=False)
@@ -2534,6 +2540,7 @@ def run_terminalbench(
     trace: bool,
     reasoning_effort: str,
     agent_timeout_sec: int,
+    test_timeout_sec: int | None,
     name: str | None,
     trailing: str | None,
     dry_run: bool,
@@ -2579,6 +2586,7 @@ def run_terminalbench(
             cleanup=cleanup,
             reasoning_effort=reasoning_effort,
             agent_timeout_sec=agent_timeout_sec,
+            test_timeout_sec=test_timeout_sec,
             agent_file=agent,
             trailing=trailing,
             trace=trace,
