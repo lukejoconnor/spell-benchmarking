@@ -110,7 +110,7 @@ The default dataset remains old core (`terminal-bench-core==0.1.1`) for comparab
 
 Raw `tb --dataset` strings still pass through without the bundled registry override, so use the registry string directly when you need upstream registry behavior. Note that the upstream default registry may treat raw `terminal-bench-core` as a moving head entry; prefer the aliases above for reproducible local CLI behavior.
 
-`bench.py terminalbench --dataset 2.0` is **not** a public leaderboard-compliant Terminal-Bench 2.0 run. It is the local scientific/regression harness: it uses `tb run`, a local registry path for the pinned 2.x task set, local timeout/cleanup knobs, and the test-patch-collision recovery wrapper.
+`bench.py terminalbench --dataset 2.0` is **not** a public leaderboard-compliant Terminal-Bench 2.0 run. It is the local scientific/regression harness: it uses `tb run`, a local registry path for the pinned 2.x task set, local timeout/cleanup knobs, and the test-patch-collision recovery wrapper. Use `--agent-timeout-sec` for the agent wall-clock cap and `--test-timeout-sec` for the evaluator/test timeout (`tb run --global-test-timeout-sec`).
 
 Public Terminal-Bench 2.0 Spell submission runs must use Harbor:
 
@@ -142,6 +142,7 @@ uv run python bench.py terminalbench \
 uv run python bench.py terminalbench \
   --condition spell \
   --dataset old-core \
+  --test-timeout-sec 120 \
   -t hello-world \
   --dry-run
 

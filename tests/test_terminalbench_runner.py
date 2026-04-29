@@ -7,9 +7,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from click.testing import CliRunner
+
 BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 if str(BENCHMARK_ROOT) not in sys.path:
     sys.path.insert(0, str(BENCHMARK_ROOT))
+for parent in BENCHMARK_ROOT.parents:
+    if (parent / "spell_benchmark_client.py").exists():
+        if str(parent) not in sys.path:
+            sys.path.insert(0, str(parent))
+        break
 
 from src.terminalbench_runner import (
     TERMINALBENCH_DATASET,
@@ -77,6 +84,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             budget=7.5,
             cleanup=False,
             reasoning_effort="medium",
+            test_timeout_sec=120,
             agent_file="config/agents/io-tc.agent.edn",
             trailing="'(!describe io)",
             trace=False,
@@ -85,6 +93,8 @@ class TerminalBenchRunnerTests(unittest.TestCase):
         rendered = " ".join(cmd)
         self.assertIn("--agent-import-path spell_agent:SpellAgent", rendered)
         self.assertIn("--no-cleanup", rendered)
+        self.assertIn("--global-agent-timeout-sec 3600", rendered)
+        self.assertIn("--global-test-timeout-sec 120", rendered)
         self.assertIn("-t hello-world", rendered)
         self.assertIn("-t csv-to-parquet", rendered)
         self.assertIn("--n-tasks 2", rendered)
@@ -106,6 +116,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             budget=7.5,
             cleanup=True,
             reasoning_effort="high",
+            test_timeout_sec=None,
             agent_file=None,
             trailing=None,
             trace=False,
@@ -126,6 +137,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             budget=7.5,
             cleanup=True,
             reasoning_effort="high",
+            test_timeout_sec=None,
             agent_file=None,
             trailing=None,
             trace=False,
@@ -146,6 +158,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             budget=7.5,
             cleanup=False,
             reasoning_effort="medium",
+            test_timeout_sec=None,
             agent_file=None,
             trailing=None,
             trace=False,
@@ -161,6 +174,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             budget=7.5,
             cleanup=False,
             reasoning_effort="medium",
+            test_timeout_sec=None,
             agent_file=None,
             trailing=None,
             trace=False,
@@ -168,6 +182,55 @@ class TerminalBenchRunnerTests(unittest.TestCase):
 
         self.assertIn("-k reasoning_effort=medium", " ".join(claude_cmd))
         self.assertIn("-k reasoning_effort=medium", " ".join(codex_cmd))
+
+    def test_terminalbench_dry_run_threads_test_timeout_cli_option(self) -> None:
+        import bench
+
+        result = CliRunner().invoke(
+            bench.cli,
+            [
+                "terminalbench",
+                "--condition",
+                "spell",
+                "--dataset",
+                "old-core",
+                "-t",
+                "hello-world",
+                "--run-id",
+                "terminalbench_demo",
+                "--test-timeout-sec",
+                "120",
+                "--dry-run",
+            ],
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("--global-agent-timeout-sec", result.output)
+        self.assertIn("--global-test-timeout-sec", result.output)
+        self.assertIn("120", result.output)
+
+    def test_terminalbench_dry_run_omits_test_timeout_by_default(self) -> None:
+        import bench
+
+        result = CliRunner().invoke(
+            bench.cli,
+            [
+                "terminalbench",
+                "--condition",
+                "spell",
+                "--dataset",
+                "old-core",
+                "-t",
+                "hello-world",
+                "--run-id",
+                "terminalbench_demo",
+                "--dry-run",
+            ],
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("--global-agent-timeout-sec", result.output)
+        self.assertNotIn("--global-test-timeout-sec", result.output)
 
     def test_build_terminalbench_command_includes_supported_anthropic_spell_effort(self) -> None:
         cmd = build_terminalbench_command(
@@ -181,6 +244,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             budget=7.5,
             cleanup=False,
             reasoning_effort="medium",
+            test_timeout_sec=None,
             agent_file=None,
             trailing=None,
             trace=False,
