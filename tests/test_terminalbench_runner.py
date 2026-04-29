@@ -7,9 +7,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from click.testing import CliRunner
+
 BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 if str(BENCHMARK_ROOT) not in sys.path:
     sys.path.insert(0, str(BENCHMARK_ROOT))
+for parent in BENCHMARK_ROOT.parents:
+    if (parent / "spell_benchmark_client.py").exists():
+        if str(parent) not in sys.path:
+            sys.path.insert(0, str(parent))
+        break
 
 from src.terminalbench_runner import (
     TERMINALBENCH_DATASET,
@@ -175,6 +182,55 @@ class TerminalBenchRunnerTests(unittest.TestCase):
 
         self.assertIn("-k reasoning_effort=medium", " ".join(claude_cmd))
         self.assertIn("-k reasoning_effort=medium", " ".join(codex_cmd))
+
+    def test_terminalbench_dry_run_threads_test_timeout_cli_option(self) -> None:
+        import bench
+
+        result = CliRunner().invoke(
+            bench.cli,
+            [
+                "terminalbench",
+                "--condition",
+                "spell",
+                "--dataset",
+                "old-core",
+                "-t",
+                "hello-world",
+                "--run-id",
+                "terminalbench_demo",
+                "--test-timeout-sec",
+                "120",
+                "--dry-run",
+            ],
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("--global-agent-timeout-sec", result.output)
+        self.assertIn("--global-test-timeout-sec", result.output)
+        self.assertIn("120", result.output)
+
+    def test_terminalbench_dry_run_omits_test_timeout_by_default(self) -> None:
+        import bench
+
+        result = CliRunner().invoke(
+            bench.cli,
+            [
+                "terminalbench",
+                "--condition",
+                "spell",
+                "--dataset",
+                "old-core",
+                "-t",
+                "hello-world",
+                "--run-id",
+                "terminalbench_demo",
+                "--dry-run",
+            ],
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("--global-agent-timeout-sec", result.output)
+        self.assertNotIn("--global-test-timeout-sec", result.output)
 
     def test_build_terminalbench_command_includes_supported_anthropic_spell_effort(self) -> None:
         cmd = build_terminalbench_command(
