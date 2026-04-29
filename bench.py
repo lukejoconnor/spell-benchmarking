@@ -105,9 +105,12 @@ from src.terminalbench_runner import (
     terminalbench_run_dir,
 )
 from src.harbor_terminalbench_runner import (
+    HARBOR_CLAUDE_CODE_DEFAULT_MODEL,
     HARBOR_TERMINALBENCH_DATASET,
     HarborTerminalBenchComplianceError,
     build_harbor_terminalbench_commands,
+    harbor_claude_code_auth_env_preview,
+    harbor_claude_code_env,
     write_default_timeout_summary,
 )
 from src.swebench_pro_eval import (
@@ -2568,9 +2571,10 @@ def run_terminalbench(
 
 
 @cli.command("harbor-terminalbench")
-@click.option("--condition", default="spell", show_default=True, type=click.Choice(["spell", "codex", "all"]))
+@click.option("--condition", default="spell", show_default=True, type=click.Choice(["spell", "codex", "claude_code", "all"]))
 @click.option("--model", default="openai-tc:gpt-5.4", show_default=True, help="Spell provider:model")
 @click.option("--codex-model", default="gpt-5.4", show_default=True, help="Model for custom Harbor Codex agent")
+@click.option("--claude-model", default=HARBOR_CLAUDE_CODE_DEFAULT_MODEL, show_default=True, help="Model for Harbor Claude Code")
 @click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="medium", show_default=True)
 @click.option("-k", "--trials", type=int, default=5, show_default=True, help="Trials per task")
 @click.option("--dataset", default=HARBOR_TERMINALBENCH_DATASET, show_default=True, help="Harbor dataset name@version")
@@ -2595,6 +2599,7 @@ def run_harbor_terminalbench(
     condition: str,
     model: str,
     codex_model: str,
+    claude_model: str,
     reasoning_effort: str,
     trials: int,
     dataset: str,
@@ -2617,6 +2622,7 @@ def run_harbor_terminalbench(
             run_id=run_id,
             model=model,
             codex_model=codex_model,
+            claude_model=claude_model,
             reasoning_effort=reasoning_effort,
             trials=trials,
             jobs_dir=jobs_dir,
@@ -2649,6 +2655,7 @@ def run_harbor_terminalbench(
             "jobs_dir": str(item.jobs_dir),
             "submission_compliant": item.submission_compliant,
             "agent_timeout_multiplier": item.agent_timeout_multiplier,
+            "auth_env_policy": item.auth_env_policy,
             "command": item.command,
         }
         for item in commands
@@ -2660,6 +2667,11 @@ def run_harbor_terminalbench(
                 {
                     "mode": mode,
                     "agent_timeout_multiplier": agent_timeout_multiplier,
+                    "auth_env": {
+                        "claude_code": harbor_claude_code_auth_env_preview()
+                        if any(item.condition == "claude_code" for item in commands)
+                        else None
+                    },
                     "commands": rendered,
                 },
                 indent=2,
@@ -2667,10 +2679,18 @@ def run_harbor_terminalbench(
         )
         return
 
+    claude_code_env = None
+    if any(item.condition == "claude_code" for item in commands):
+        try:
+            claude_code_env = harbor_claude_code_env()
+        except HarborTerminalBenchComplianceError as exc:
+            raise click.ClickException(str(exc)) from exc
+
     for item in commands:
         click.echo(f"\n--- Running Harbor Terminal-Bench {item.condition} ---")
         click.echo(f"Job dir: {item.jobs_dir}")
-        subprocess.run(item.command, check=True, cwd=BENCHMARK_ROOT)
+        env = claude_code_env if item.condition == "claude_code" else None
+        subprocess.run(item.command, check=True, cwd=BENCHMARK_ROOT, env=env)
         if dev_smoke and item.agent_timeout_multiplier > 1.0:
             job_dir = item.jobs_dir / item.job_name
             summary_path = write_default_timeout_summary(

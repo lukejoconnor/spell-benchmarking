@@ -3,19 +3,32 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 HARBOR_TERMINALBENCH_DATASET = "terminal-bench@2.0"
-HARBOR_TERMINALBENCH_CONDITIONS = ("spell", "codex")
+HARBOR_TERMINALBENCH_CONDITIONS = ("spell", "codex", "claude_code")
 HARBOR_TERMINALBENCH_RESULTS_DIR = Path("results") / "harbor-terminal-bench"
 HARBOR_SPELL_AGENT_IMPORT_PATH = "harbor_spell_agent:HarborSpellAgent"
 HARBOR_CODEX_AGENT_IMPORT_PATH = "harbor_codex_agent:HarborCodexAgent"
+HARBOR_CLAUDE_CODE_AGENT = "claude-code"
+HARBOR_CLAUDE_CODE_DEFAULT_MODEL = "anthropic/claude-opus-4-6"
 HARBOR_CLI_COMMAND = ("uv", "tool", "run", "--from", "harbor", "harbor")
 DEFAULT_AGENT_TIMEOUT_SECONDS = 900
 DEFAULT_TIMEOUT_SUMMARY_FILENAME = "default-timeout-summary.json"
+CLAUDE_CODE_OAUTH_ENV_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
+HARBOR_CLAUDE_CODE_STRIPPED_ENV_VARS = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_JSON_B64",
+    "CLAUDECODE",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "AWS_BEARER_TOKEN_BEDROCK",
+)
 
 BANNED_SUBMISSION_FLAGS = frozenset(
     {
@@ -55,6 +68,7 @@ class HarborTerminalBenchCommand:
     command: list[str]
     submission_compliant: bool
     agent_timeout_multiplier: float
+    auth_env_policy: str | None = None
 
 
 def parse_harbor_terminalbench_conditions(value: str) -> list[str]:
@@ -73,6 +87,39 @@ def normalize_harbor_codex_model(model: str) -> str:
     if "/" in model:
         return model
     return f"openai/{model}"
+
+
+def normalize_harbor_claude_model(model: str) -> str:
+    if "/" in model:
+        return model
+    return f"anthropic/{model}"
+
+
+def harbor_claude_code_env(source: dict[str, str] | None = None) -> dict[str, str]:
+    source_env = os.environ if source is None else source
+    oauth_token = source_env.get(CLAUDE_CODE_OAUTH_ENV_VAR)
+    if not oauth_token:
+        raise HarborTerminalBenchComplianceError(
+            "CLAUDE_CODE_OAUTH_TOKEN is required for Harbor Claude Code runs. "
+            "Run `claude setup-token` and export/store that token; the Harbor Claude Code path "
+            "does not accept ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or legacy Claude JSON auth."
+        )
+
+    env = {
+        key: value
+        for key, value in source_env.items()
+        if key not in HARBOR_CLAUDE_CODE_STRIPPED_ENV_VARS
+    }
+    env[CLAUDE_CODE_OAUTH_ENV_VAR] = oauth_token
+    return env
+
+
+def harbor_claude_code_auth_env_preview(source: dict[str, str] | None = None) -> dict[str, Any]:
+    source_env = os.environ if source is None else source
+    return {
+        CLAUDE_CODE_OAUTH_ENV_VAR: "present" if source_env.get(CLAUDE_CODE_OAUTH_ENV_VAR) else "missing",
+        "stripped": list(HARBOR_CLAUDE_CODE_STRIPPED_ENV_VARS),
+    }
 
 
 def assert_harbor_submission_request_compliant(
@@ -124,6 +171,7 @@ def build_harbor_terminalbench_commands(
     model: str,
     codex_model: str,
     reasoning_effort: str,
+    claude_model: str = HARBOR_CLAUDE_CODE_DEFAULT_MODEL,
     trials: int,
     jobs_dir: Path | None = None,
     dataset: str = HARBOR_TERMINALBENCH_DATASET,
@@ -193,7 +241,7 @@ def build_harbor_terminalbench_commands(
             )
             if budget is not None:
                 cmd.extend(["--agent-kwarg", f"budget={budget}"])
-        else:
+        elif selected == "codex":
             selected_model = normalize_harbor_codex_model(codex_model)
             cmd.extend(
                 [
@@ -205,6 +253,20 @@ def build_harbor_terminalbench_commands(
                     f"reasoning_effort={reasoning_effort}",
                 ]
             )
+        else:
+            selected_model = normalize_harbor_claude_model(claude_model)
+            cmd.extend(
+                [
+                    "-a",
+                    HARBOR_CLAUDE_CODE_AGENT,
+                    "-m",
+                    selected_model,
+                    "--agent-kwarg",
+                    f"reasoning_effort={reasoning_effort}",
+                ]
+            )
+            if budget is not None:
+                cmd.extend(["--agent-kwarg", f"max_budget_usd={budget}"])
 
         if task:
             cmd.extend(["--task", task])
@@ -229,6 +291,7 @@ def build_harbor_terminalbench_commands(
                 command=cmd,
                 submission_compliant=submission_compliant,
                 agent_timeout_multiplier=float(agent_timeout_multiplier or 1.0),
+                auth_env_policy="claude_code_oauth_only" if selected == "claude_code" else None,
             )
         )
     return commands

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import importlib
 import json
+import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -12,17 +15,46 @@ if str(BENCHMARK_ROOT) not in sys.path:
     sys.path.insert(0, str(BENCHMARK_ROOT))
 
 from src.harbor_terminalbench_runner import (
+    CLAUDE_CODE_OAUTH_ENV_VAR,
     DEFAULT_TIMEOUT_SUMMARY_FILENAME,
+    HARBOR_CLAUDE_CODE_AGENT,
+    HARBOR_CLAUDE_CODE_STRIPPED_ENV_VARS,
     HARBOR_CODEX_AGENT_IMPORT_PATH,
     HARBOR_CLI_COMMAND,
     HARBOR_TERMINALBENCH_DATASET,
     HarborTerminalBenchComplianceError,
     assert_harbor_submission_command_compliant,
     build_harbor_terminalbench_commands,
+    harbor_claude_code_auth_env_preview,
+    harbor_claude_code_env,
     write_default_timeout_summary,
 )
 from scripts.prepare_harbor_tb2_submission import main as prepare_submission_main
 from scripts.prepare_harbor_tb2_submission import validate_config
+
+
+def _import_bench_with_stubbed_client():
+    existing = sys.modules.get("bench")
+    if existing is not None:
+        return existing
+
+    stub = types.ModuleType("spell_benchmark_client")
+
+    class _DummyClient:  # pragma: no cover - import wiring only
+        def __init__(self, *args, **kwargs):
+            pass
+
+    stub.SpellBenchmarkClient = _DummyClient
+    prior_client = sys.modules.get("spell_benchmark_client")
+    sys.modules["spell_benchmark_client"] = stub
+    try:
+        return importlib.import_module("bench")
+    finally:
+        if prior_client is None:
+            sys.modules.pop("spell_benchmark_client", None)
+        else:
+            sys.modules["spell_benchmark_client"] = prior_client
+        sys.modules.pop("src.unified_adapters", None)
 
 
 class HarborTerminalBenchRunnerTests(unittest.TestCase):
@@ -88,6 +120,149 @@ class HarborTerminalBenchRunnerTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("-m") + 1], "openai/gpt-5.4")
         self.assertIn("reasoning_effort=medium", cmd)
 
+    def test_submission_claude_code_uses_harbor_builtin_agent_and_oauth_policy(self) -> None:
+        commands = build_harbor_terminalbench_commands(
+            condition="claude_code",
+            run_id="demo",
+            model="openai-tc:gpt-5.4",
+            codex_model="gpt-5.4",
+            claude_model="claude-opus-4-6",
+            reasoning_effort="medium",
+            trials=5,
+            jobs_dir=Path("jobs"),
+        )
+
+        cmd = commands[0].command
+        self.assertNotIn("--agent-import-path", cmd)
+        self.assertIn("-a", cmd)
+        self.assertEqual(cmd[cmd.index("-a") + 1], HARBOR_CLAUDE_CODE_AGENT)
+        self.assertEqual(cmd[cmd.index("-m") + 1], "anthropic/claude-opus-4-6")
+        self.assertIn("reasoning_effort=medium", cmd)
+        self.assertIn("max_budget_usd=5.0", cmd)
+        self.assertEqual(commands[0].auth_env_policy, "claude_code_oauth_only")
+        self.assertTrue(commands[0].submission_compliant)
+
+    def test_harbor_claude_code_env_preserves_oauth_and_strips_api_auth(self) -> None:
+        source = {
+            "PATH": "/bin",
+            CLAUDE_CODE_OAUTH_ENV_VAR: "oauth-token",
+            "ANTHROPIC_API_KEY": "sk-should-not-forward",
+            "ANTHROPIC_AUTH_TOKEN": "anthropic-token",
+            "ANTHROPIC_BASE_URL": "https://api.example.invalid",
+            "CLAUDE_JSON_B64": "legacy-json",
+            "CLAUDECODE": "legacy",
+            "CLAUDE_CODE_USE_BEDROCK": "1",
+            "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
+        }
+
+        env = harbor_claude_code_env(source)
+
+        self.assertEqual(env[CLAUDE_CODE_OAUTH_ENV_VAR], "oauth-token")
+        self.assertEqual(env["PATH"], "/bin")
+        for key in HARBOR_CLAUDE_CODE_STRIPPED_ENV_VARS:
+            self.assertNotIn(key, env)
+
+    def test_harbor_claude_code_env_requires_oauth_token(self) -> None:
+        with self.assertRaisesRegex(HarborTerminalBenchComplianceError, "CLAUDE_CODE_OAUTH_TOKEN is required"):
+            harbor_claude_code_env({"ANTHROPIC_API_KEY": "sk-should-not-forward"})
+
+    def test_harbor_claude_code_auth_preview_does_not_leak_token(self) -> None:
+        preview = harbor_claude_code_auth_env_preview({CLAUDE_CODE_OAUTH_ENV_VAR: "oauth-secret"})
+
+        self.assertEqual(preview[CLAUDE_CODE_OAUTH_ENV_VAR], "present")
+        self.assertNotIn("oauth-secret", json.dumps(preview))
+        self.assertIn("ANTHROPIC_API_KEY", preview["stripped"])
+
+    def test_cli_harbor_claude_code_dry_run_does_not_require_or_leak_oauth(self) -> None:
+        bench = _import_bench_with_stubbed_client()
+        from click.testing import CliRunner
+
+        with (
+            patch.dict(os.environ, {CLAUDE_CODE_OAUTH_ENV_VAR: "oauth-secret"}, clear=True),
+            patch.object(bench.subprocess, "run") as run_mock,
+        ):
+            result = CliRunner().invoke(
+                bench.cli,
+                [
+                    "harbor-terminalbench",
+                    "--condition",
+                    "claude_code",
+                    "--dev-smoke",
+                    "-k",
+                    "1",
+                    "--n",
+                    "1",
+                    "--dry-run",
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        run_mock.assert_not_called()
+        self.assertIn('"CLAUDE_CODE_OAUTH_TOKEN": "present"', result.output)
+        self.assertIn('"auth_env_policy": "claude_code_oauth_only"', result.output)
+        self.assertNotIn("oauth-secret", result.output)
+
+    def test_cli_harbor_claude_code_run_passes_sanitized_env_to_subprocess(self) -> None:
+        bench = _import_bench_with_stubbed_client()
+        from click.testing import CliRunner
+
+        source_env = {
+            "PATH": "/bin",
+            CLAUDE_CODE_OAUTH_ENV_VAR: "oauth-secret",
+            "ANTHROPIC_API_KEY": "sk-should-not-forward",
+            "ANTHROPIC_AUTH_TOKEN": "anthropic-token",
+        }
+        with (
+            patch.dict(os.environ, source_env, clear=True),
+            patch.object(bench.subprocess, "run") as run_mock,
+        ):
+            result = CliRunner().invoke(
+                bench.cli,
+                [
+                    "harbor-terminalbench",
+                    "--condition",
+                    "claude_code",
+                    "--dev-smoke",
+                    "-k",
+                    "1",
+                    "--n",
+                    "1",
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        run_mock.assert_called_once()
+        env = run_mock.call_args.kwargs["env"]
+        self.assertEqual(env[CLAUDE_CODE_OAUTH_ENV_VAR], "oauth-secret")
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+        self.assertNotIn("ANTHROPIC_AUTH_TOKEN", env)
+
+    def test_cli_harbor_all_preflights_missing_claude_oauth_before_subprocess(self) -> None:
+        bench = _import_bench_with_stubbed_client()
+        from click.testing import CliRunner
+
+        with (
+            patch.dict(os.environ, {"PATH": "/bin"}, clear=True),
+            patch.object(bench.subprocess, "run") as run_mock,
+        ):
+            result = CliRunner().invoke(
+                bench.cli,
+                [
+                    "harbor-terminalbench",
+                    "--condition",
+                    "all",
+                    "--dev-smoke",
+                    "-k",
+                    "1",
+                    "--n",
+                    "1",
+                ],
+            )
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("CLAUDE_CODE_OAUTH_TOKEN is required", result.output)
+        run_mock.assert_not_called()
+
     def test_submission_rejects_k_less_than_five(self) -> None:
         with self.assertRaisesRegex(HarborTerminalBenchComplianceError, "k >= 5"):
             build_harbor_terminalbench_commands(
@@ -124,7 +299,7 @@ class HarborTerminalBenchRunnerTests(unittest.TestCase):
             n_tasks=1,
         )
 
-        self.assertEqual([item.condition for item in commands], ["spell", "codex"])
+        self.assertEqual([item.condition for item in commands], ["spell", "codex", "claude_code"])
         self.assertTrue(all(not item.submission_compliant for item in commands))
         self.assertTrue(all("--n-tasks" in item.command for item in commands))
 
