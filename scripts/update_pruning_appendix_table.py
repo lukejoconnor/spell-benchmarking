@@ -64,7 +64,7 @@ def render_table(rows: list[dict[str, str]]) -> str:
             BEGIN,
             r"\begin{table}[h]",
             r"\centering",
-            r"\caption{\textbf{Context pruning token accounting.} Mean token counts per traced Spell turn for the GPT-5.4 paper runs. Tokens pruned per turn counts source forms removed by \lstinline[language=spell]|prune| or \lstinline[language=spell]|rethink|, including generated \lstinline[language=spell]|!peek| pruning. Cumulative tokens pruned is the mean number of previously pruned tokens absent from each turn's prompt.}",
+            r"\caption{\textbf{Context pruning token accounting.} Mean token counts per traced Spell turn for the GPT-5.4 paper runs. Completion length counts the full traced completion source for the turn, including prefix and response. Tokens pruned per turn counts source forms removed by \lstinline[language=spell]|prune| or \lstinline[language=spell]|rethink|, including generated \lstinline[language=spell]|!peek| pruning. Cumulative tokens pruned is the mean number of previously pruned tokens absent from each turn's prompt.}",
             r"\label{tab:pruning-token-summary}",
             r"\begin{tabular}{lrrr}",
             r"\toprule",

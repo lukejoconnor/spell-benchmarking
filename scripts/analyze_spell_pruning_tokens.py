@@ -2,8 +2,9 @@
 """Token-level pruning accounting for paper Spell traces.
 
 This script uses Spell's Clojure trace walker to identify the exact source
-forms removed by `prune`/`rethink`, then tokenizes the removed forms and turn
-responses with `o200k_base`.
+forms removed by `prune`/`rethink`, then tokenizes the removed forms and each
+turn's full traced completion source with `o200k_base`. In this analysis,
+completion means prefix plus response, not just the response suffix.
 
 Default run specs cover the six GPT-5.4 paper Spell rows:
 SWE-bench Lite and Terminal-Bench 1.1, each at low/medium/high effort.
@@ -124,12 +125,21 @@ CLOJURE_EXTRACTOR = r"""
             [clojure.java.io :as io]
             [spell.trace-tool :as tt]))
 
-(defn trace-turns [trace]
+(defn completion-source [dir node]
+  (if-let [file (:file node)]
+    (let [source-file (io/file dir file)]
+      (if (.exists source-file)
+        (slurp source-file)
+        (pr-str (:program node))))
+    (pr-str (:program node))))
+
+(defn trace-turns [dir trace]
   (->> (:nodes trace)
        (filter :program)
        (sort-by :id)
        (mapv (fn [node]
                {:node_id (:id node)
+                :completion (completion-source dir node)
                 :response (or (:response node) "")
                 :file (:file node)}))))
 
@@ -137,7 +147,7 @@ CLOJURE_EXTRACTOR = r"""
   (let [{:keys [trace]} (tt/load-trace dir)
         details (vec (tt/trace-pruning-accounting trace))]
     {:trace_dir dir
-     :turns (trace-turns trace)
+     :turns (trace-turns dir trace)
      :details (mapv (fn [detail]
                       {:node_id (:node-id detail)
                        :trigger (name (:trigger detail))
@@ -300,8 +310,10 @@ def trace_token_metrics(meta: dict, extracted: dict) -> dict:
     cumulative = 0
     cumulative_saved = 0
     completion_tokens = 0
+    response_tokens = 0
     for turn in turns:
-        completion_tokens += count_tokens(turn["response"])
+        completion_tokens += count_tokens(turn["completion"])
+        response_tokens += count_tokens(turn["response"])
         cumulative_saved += cumulative
         cumulative += emitted_by_node.get(int(turn["node_id"]), 0)
 
@@ -311,6 +323,7 @@ def trace_token_metrics(meta: dict, extracted: dict) -> dict:
         **meta,
         "turns": turn_count,
         "completion_tokens": completion_tokens,
+        "response_tokens": response_tokens,
         "tokens_pruned_once": total_pruned,
         "peek_tokens_pruned_once": peek_tokens,
         "explicit_tokens_pruned_once": explicit_tokens,
@@ -319,6 +332,7 @@ def trace_token_metrics(meta: dict, extracted: dict) -> dict:
         "cumulative_tokens_pruned": cumulative_saved,
         "mean_tokens_pruned_per_turn": total_pruned / turn_count if turn_count else 0.0,
         "mean_completion_tokens": completion_tokens / turn_count if turn_count else 0.0,
+        "mean_response_tokens": response_tokens / turn_count if turn_count else 0.0,
         "mean_cumulative_tokens_pruned": cumulative_saved / turn_count if turn_count else 0.0,
     }
 
@@ -335,6 +349,7 @@ def summarize(trace_metrics: list[dict]) -> list[dict]:
     ):
         turns = sum(int(row["turns"]) for row in rows)
         completion = sum(int(row["completion_tokens"]) for row in rows)
+        response = sum(int(row["response_tokens"]) for row in rows)
         pruned = sum(int(row["tokens_pruned_once"]) for row in rows)
         cumulative = sum(int(row["cumulative_tokens_pruned"]) for row in rows)
         out.append(
@@ -345,9 +360,11 @@ def summarize(trace_metrics: list[dict]) -> list[dict]:
                 "turns": turns,
                 "tokens_pruned_once": pruned,
                 "completion_tokens": completion,
+                "response_tokens": response,
                 "cumulative_tokens_pruned": cumulative,
                 "mean_tokens_pruned_per_turn": pruned / turns if turns else 0.0,
                 "mean_completion_tokens": completion / turns if turns else 0.0,
+                "mean_response_tokens": response / turns if turns else 0.0,
                 "mean_cumulative_tokens_pruned": cumulative / turns if turns else 0.0,
             }
         )
@@ -357,7 +374,7 @@ def summarize(trace_metrics: list[dict]) -> list[dict]:
 def write_tsv(path: Path, rows: list[dict], fieldnames: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter="\t")
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter="\t", lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -391,6 +408,7 @@ def main() -> None:
         "item",
         "turns",
         "completion_tokens",
+        "response_tokens",
         "tokens_pruned_once",
         "peek_tokens_pruned_once",
         "explicit_tokens_pruned_once",
@@ -399,6 +417,7 @@ def main() -> None:
         "cumulative_tokens_pruned",
         "mean_tokens_pruned_per_turn",
         "mean_completion_tokens",
+        "mean_response_tokens",
         "mean_cumulative_tokens_pruned",
         "trace_dir",
         "jsonl_path",
@@ -410,9 +429,11 @@ def main() -> None:
         "turns",
         "tokens_pruned_once",
         "completion_tokens",
+        "response_tokens",
         "cumulative_tokens_pruned",
         "mean_tokens_pruned_per_turn",
         "mean_completion_tokens",
+        "mean_response_tokens",
         "mean_cumulative_tokens_pruned",
     ]
     write_tsv(args.output_dir / "pruning_trace_metrics.tsv", metrics, trace_fields)
