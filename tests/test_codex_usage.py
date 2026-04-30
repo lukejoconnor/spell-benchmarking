@@ -41,7 +41,7 @@ class CodexUsageTests(unittest.TestCase):
 
         self.assertAlmostEqual(cost or 0.0, 0.02012225, places=8)
 
-    def test_estimate_cost_uses_long_context_pricing_above_threshold(self) -> None:
+    def test_estimate_cost_uses_base_pricing_above_former_long_context_threshold(self) -> None:
         cost = estimate_cost(
             "gpt-5.4",
             272_001,
@@ -51,7 +51,7 @@ class CodexUsageTests(unittest.TestCase):
             reasoning_output_tokens=25_000,
         )
 
-        self.assertAlmostEqual(cost or 0.0, 3.532505, places=8)
+        self.assertAlmostEqual(cost or 0.0, 2.1412525, places=8)
 
     def test_usage_from_payload_keeps_input_tokens_as_total_when_cached_subset_present(self) -> None:
         usage = usage_from_payload(
@@ -198,7 +198,7 @@ class CodexUsageTests(unittest.TestCase):
         self.assertEqual(usage.reasoning_output_tokens, 183)
         self.assertEqual(usage.cost_source, "estimated")
 
-    def test_cost_accounting_prices_long_context_per_call(self) -> None:
+    def test_cost_accounting_uses_base_pricing_for_each_call(self) -> None:
         rollout = "\n".join(
             [
                 json.dumps({"type": "session_meta", "payload": {"id": "sess-1"}}),
@@ -253,8 +253,8 @@ class CodexUsageTests(unittest.TestCase):
 
         self.assertIsNotNone(accounting)
         assert accounting is not None
-        self.assertEqual([call["long_context_pricing_applied"] for call in accounting["calls"]], [False, True])
-        self.assertAlmostEqual(accounting["cost_usd"] or 0.0, 3.52528, places=8)
+        self.assertNotIn("long_context_pricing_applied", accounting["calls"][0])
+        self.assertAlmostEqual(accounting["cost_usd"] or 0.0, 2.1402775, places=8)
         self.assertEqual(accounting["aggregate"]["output_tokens"], 100_200)
 
     def test_cost_accounting_falls_back_to_cumulative_deltas(self) -> None:

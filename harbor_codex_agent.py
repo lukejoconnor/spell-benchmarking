@@ -44,8 +44,8 @@ class HarborCodexAgent(_HarborCodex):  # type: ignore[misc, valid-type]
 
     Harbor's built-in Codex adapter records only aggregate token totals and does
     not compute cost. This adapter keeps Harbor's normal trajectory conversion
-    shape, explicitly disables Codex web search, and adds per-model-call cost
-    accounting so GPT-5.4 long-context pricing is applied at the right boundary.
+    shape, explicitly disables Codex web search, and computes cost from the
+    saved rollout token ledger using the shared base pricing table.
     """
 
     _OUTPUT_FILENAME = "codex.txt"

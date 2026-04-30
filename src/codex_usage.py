@@ -6,9 +6,6 @@ import json
 from typing import Any
 
 from .usage_accounting import (
-    GPT54_LONG_CONTEXT_INPUT_MULTIPLIER,
-    GPT54_LONG_CONTEXT_INPUT_THRESHOLD,
-    GPT54_LONG_CONTEXT_OUTPUT_MULTIPLIER,
     UsageBreakdown,
     estimate_cost as estimate_usage_cost,
     lookup_pricing,
@@ -316,11 +313,6 @@ def codex_cost_accounting_from_rollout(
             warnings.append(f"call {idx}: token usage payload could not be normalized")
             continue
 
-        long_context = (
-            normalized_model.startswith("gpt-5.4")
-            and not normalized_model.startswith("gpt-5.4-mini")
-            and usage.total_input_tokens > GPT54_LONG_CONTEXT_INPUT_THRESHOLD
-        )
         calls.append(
             {
                 "index": idx,
@@ -332,7 +324,6 @@ def codex_cost_accounting_from_rollout(
                 "output_tokens": usage.total_output_tokens,
                 "visible_output_tokens": usage.visible_output_tokens,
                 "reasoning_output_tokens": usage.reasoning_output_tokens,
-                "long_context_pricing_applied": long_context,
                 "cost_usd": usage.cost_usd,
             }
         )
@@ -368,10 +359,7 @@ def codex_cost_accounting_from_rollout(
         },
         "pricing": {
             "rates_per_million": pricing,
-            "long_context_input_threshold": GPT54_LONG_CONTEXT_INPUT_THRESHOLD,
-            "long_context_input_multiplier": GPT54_LONG_CONTEXT_INPUT_MULTIPLIER,
-            "long_context_output_multiplier": GPT54_LONG_CONTEXT_OUTPUT_MULTIPLIER,
-            "source": "OpenAI GPT-5.4 model docs and API pricing, checked 2026-04-28",
+            "source": "shared benchmark base pricing table",
         },
         "warnings": warnings,
     }
