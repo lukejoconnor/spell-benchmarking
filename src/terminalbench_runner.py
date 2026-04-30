@@ -217,7 +217,7 @@ def build_terminalbench_command(
         if trailing is not None:
             agent_kwargs["trailing"] = trailing
     elif condition == "claude_code":
-        agent_kwargs = {"max_budget_usd": budget}
+        agent_kwargs = {"max_budget_usd": budget, "agent_timeout": agent_timeout_sec}
         if effective_effort is not None:
             agent_kwargs["reasoning_effort"] = effective_effort
     elif condition == "codex":

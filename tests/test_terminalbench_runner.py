@@ -146,7 +146,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--dataset") + 1], TERMINALBENCH_HEAD_DATASET)
         self.assertNotIn("--local-registry-path", cmd)
 
-    def test_build_terminalbench_command_threads_claude_and_codex_effort(self) -> None:
+    def test_build_terminalbench_command_threads_claude_timeout_and_effort(self) -> None:
         claude_cmd = build_terminalbench_command(
             condition="claude_code",
             run_id="claude_demo",
@@ -158,11 +158,19 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             budget=7.5,
             cleanup=False,
             reasoning_effort="medium",
+            agent_timeout_sec=2400,
             test_timeout_sec=None,
             agent_file=None,
             trailing=None,
             trace=False,
         )
+
+        rendered = " ".join(claude_cmd)
+        self.assertIn("--global-agent-timeout-sec 2400", rendered)
+        self.assertIn("-k agent_timeout=2400", rendered)
+        self.assertIn("-k reasoning_effort=medium", rendered)
+
+    def test_build_terminalbench_command_threads_codex_effort(self) -> None:
         codex_cmd = build_terminalbench_command(
             condition="codex",
             run_id="codex_demo",
@@ -180,7 +188,6 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             trace=False,
         )
 
-        self.assertIn("-k reasoning_effort=medium", " ".join(claude_cmd))
         self.assertIn("-k reasoning_effort=medium", " ".join(codex_cmd))
 
     def test_terminalbench_dry_run_threads_test_timeout_cli_option(self) -> None:
