@@ -31,7 +31,12 @@ from .codex_usage import (
     usage_from_events,
     usage_from_rollout,
 )
-from .usage_accounting import UsageBreakdown, claude_code_usage_from_result, usage_from_totals
+from .usage_accounting import (
+    UsageBreakdown,
+    claude_code_usage_from_events,
+    claude_code_usage_from_text,
+    usage_from_totals,
+)
 
 BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 
@@ -430,27 +435,6 @@ class ClaudeCodeAdapter:
                 error_type="auth_error",
             )
 
-        cmd = [
-            "claude",
-            "--setting-sources",
-            "",
-            "-p",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--dangerously-skip-permissions",
-            "--model",
-            model,
-            "--max-budget-usd",
-            str(req.budget if req.budget is not None else self.budget),
-        ]
-        if req.reasoning_effort:
-            cmd.extend(["--effort", req.reasoning_effort])
-        cmd.append(req.prompt)
-
-        if add_dir := req.metadata.get("add_dir"):
-            cmd[1:1] = ["--add-dir", str(add_dir)]
-
         env = {
             k: v
             for k, v in os.environ.items()
@@ -458,17 +442,103 @@ class ClaudeCodeAdapter:
         }
         env["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
         start = time.time()
+        debug_text = None
+        session_text = None
         try:
             with tempfile.TemporaryDirectory(prefix="spell-claude-code-home-") as isolated_home:
                 env["HOME"] = isolated_home
-                proc = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=req.timeout,
-                    cwd=str(req.workspace) if req.workspace else None,
-                    env=env,
-                )
+                debug_file = Path(isolated_home) / "claude-debug.log"
+                cmd = [
+                    "claude",
+                    "--setting-sources",
+                    "",
+                    "--debug-file",
+                    str(debug_file),
+                    "-p",
+                    "--output-format",
+                    "stream-json",
+                    "--verbose",
+                    "--dangerously-skip-permissions",
+                    "--model",
+                    model,
+                    "--max-budget-usd",
+                    str(req.budget if req.budget is not None else self.budget),
+                ]
+                if req.reasoning_effort:
+                    cmd.extend(["--effort", req.reasoning_effort])
+                cmd.append(req.prompt)
+
+                if add_dir := req.metadata.get("add_dir"):
+                    cmd[1:1] = ["--add-dir", str(add_dir)]
+
+                try:
+                    proc = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=req.timeout,
+                        cwd=str(req.workspace) if req.workspace else None,
+                        env=env,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    stdout = (exc.stdout or "").decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+                    stderr = (exc.stderr or "").decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+                    if debug_file.exists():
+                        debug_text = debug_file.read_text(encoding="utf-8", errors="replace")
+                    tmp_events, _ = _parse_jsonl_events(stdout.strip())
+                    tmp_session_id = None
+                    for event in tmp_events:
+                        candidate_session_id = event.get("session_id") or event.get("sessionId")
+                        if isinstance(candidate_session_id, str) and candidate_session_id:
+                            tmp_session_id = candidate_session_id
+                            break
+                    if tmp_session_id:
+                        session_matches = list((Path(isolated_home) / ".claude" / "projects").rglob(f"{tmp_session_id}.jsonl"))
+                        if session_matches:
+                            session_text = session_matches[0].read_text(encoding="utf-8", errors="replace")
+                    response_usage = _best_claude_usage_from_ledgers(
+                        debug_text=debug_text,
+                        session_text=session_text,
+                        model=model,
+                    )
+                    if response_usage is None:
+                        response_usage = claude_code_usage_from_events(
+                            tmp_events,
+                            model=model,
+                            assistant_cost_source="estimated_partial",
+                        )
+                    return RunResponse(
+                        status="timeout",
+                        response_text="",
+                        usage=response_usage,
+                        cost_usd=response_usage.cost_usd if response_usage else None,
+                        latency_ms=(time.time() - start) * 1000,
+                        error_message=f"Timeout ({req.timeout}s)",
+                        error_type="timeout",
+                        metadata={
+                            "session_id": tmp_session_id,
+                            "cost_source": response_usage.cost_source if response_usage else None,
+                            "claude_usage_ledger_sources": [
+                                source
+                                for source, text in (("debug", debug_text), ("ledger", session_text))
+                                if text
+                            ],
+                            "stderr": stderr[:4000],
+                        },
+                    )
+                if debug_file.exists():
+                    debug_text = debug_file.read_text(encoding="utf-8", errors="replace")
+                tmp_events, _ = _parse_jsonl_events((proc.stdout or "").strip())
+                tmp_session_id = None
+                for event in tmp_events:
+                    candidate_session_id = event.get("session_id") or event.get("sessionId")
+                    if isinstance(candidate_session_id, str) and candidate_session_id:
+                        tmp_session_id = candidate_session_id
+                        break
+                if tmp_session_id:
+                    session_matches = list((Path(isolated_home) / ".claude" / "projects").rglob(f"{tmp_session_id}.jsonl"))
+                    if session_matches:
+                        session_text = session_matches[0].read_text(encoding="utf-8", errors="replace")
         except subprocess.TimeoutExpired:
             return RunResponse(
                 status="timeout",
@@ -491,11 +561,35 @@ class ClaudeCodeAdapter:
                 result_event = event
                 break
 
-        response_usage = claude_code_usage_from_result(result_event, model=model)
+        session_id = result_event.get("session_id") if isinstance(result_event, dict) else None
+        if session_id is None:
+            for event in events:
+                candidate_session_id = event.get("session_id") or event.get("sessionId")
+                if isinstance(candidate_session_id, str) and candidate_session_id:
+                    session_id = candidate_session_id
+                    break
+        if session_id and session_text is None:
+            session_matches = list((Path(env["HOME"]) / ".claude" / "projects").rglob(f"{session_id}.jsonl"))
+            if session_matches:
+                session_text = session_matches[0].read_text(encoding="utf-8", errors="replace")
+
+        if result_event:
+            response_usage = claude_code_usage_from_events(events, model=model)
+        else:
+            response_usage = _best_claude_usage_from_ledgers(
+                debug_text=debug_text,
+                session_text=session_text,
+                model=model,
+            )
+            if response_usage is None:
+                response_usage = claude_code_usage_from_events(
+                    events,
+                    model=model,
+                    assistant_cost_source="estimated_partial",
+                )
         cost_usd = response_usage.cost_usd if response_usage else None
         response_text = str(result_event.get("result", "")) if isinstance(result_event, dict) else ""
         num_turns = result_event.get("num_turns") if isinstance(result_event, dict) else None
-        session_id = result_event.get("session_id") if isinstance(result_event, dict) else None
 
         trace_file: Path | None = None
         if req.trace_dir is not None:
@@ -516,6 +610,11 @@ class ClaudeCodeAdapter:
             "num_turns": num_turns,
             "session_id": session_id,
             "cost_source": response_usage.cost_source if response_usage else None,
+            "claude_usage_ledger_sources": [
+                source
+                for source, text in (("debug", debug_text), ("ledger", session_text))
+                if text
+            ],
             "stderr": stderr[:4000],
             "trace_file": str(trace_file) if trace_file else None,
         }
@@ -538,7 +637,7 @@ class ClaudeCodeAdapter:
         return RunResponse(
             status="error",
             response_text=response_text,
-            usage=response_usage if result_event else None,
+            usage=response_usage,
             cost_usd=cost_usd,
             latency_ms=latency_ms,
             error_message=error_message,
@@ -563,6 +662,34 @@ def _parse_jsonl_events(stdout: str) -> tuple[list[dict[str, Any]], list[str]]:
         except json.JSONDecodeError:
             non_json_lines.append(stripped)
     return events, non_json_lines
+
+
+def _best_claude_usage_from_ledgers(
+    *,
+    debug_text: str | None,
+    session_text: str | None,
+    model: str | None,
+) -> UsageBreakdown | None:
+    usages: list[UsageBreakdown] = []
+    if debug_text:
+        usage = claude_code_usage_from_text(
+            debug_text,
+            model=model,
+            assistant_cost_source="estimated_debug",
+        )
+        if usage is not None:
+            usages.append(usage)
+    if session_text:
+        usage = claude_code_usage_from_text(
+            session_text,
+            model=model,
+            assistant_cost_source="estimated_ledger",
+        )
+        if usage is not None:
+            usages.append(usage)
+    if not usages:
+        return None
+    return max(usages, key=lambda usage: (usage.total_output_tokens, usage.total_input_tokens))
 
 
 def _extract_codex_error(events: list[dict[str, Any]], stderr: str, return_code: int) -> str:

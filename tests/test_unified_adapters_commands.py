@@ -1,10 +1,15 @@
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
+if str(BENCHMARK_ROOT) not in sys.path:
+    sys.path.insert(0, str(BENCHMARK_ROOT))
 
 from src.unified_adapters import (
     CODEX_NO_CUSTOM_SCRIPT,
@@ -101,6 +106,90 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         self.assertEqual(response.error_type, "auth_error")
         self.assertIn("CLAUDE_CODE_OAUTH_TOKEN is required", response.error_message or "")
         run_mock.assert_not_called()
+
+    @patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-token"}, clear=False)
+    @patch("src.unified_adapters.subprocess.run")
+    def test_claude_adapter_preserves_partial_stdout_usage_without_result_event(self, run_mock):
+        assistant_event = {
+            "type": "assistant",
+            "message": {
+                "id": "msg-1",
+                "role": "assistant",
+                "usage": {
+                    "input_tokens": 100_000,
+                    "cache_creation_input_tokens": 50_000,
+                    "cache_read_input_tokens": 25_000,
+                    "output_tokens": 10_000,
+                },
+            },
+        }
+        run_mock.return_value = SimpleNamespace(
+            returncode=1,
+            stdout="\n".join([json.dumps(assistant_event), json.dumps(assistant_event)]),
+            stderr="",
+        )
+
+        adapter = ClaudeCodeAdapter(model="claude-sonnet-4-6", budget=1.0)
+        response = adapter.run(_request("claude_code", "claude_code:claude-sonnet-4-6"))
+
+        self.assertEqual(response.status, "error")
+        self.assertIn("No result event found", response.error_message or "")
+        self.assertEqual(response.tokens_in, 175_000)
+        self.assertEqual(response.tokens_out, 10_000)
+        self.assertEqual(response.cached_input_tokens, 75_000)
+        self.assertIsNotNone(response.usage)
+        assert response.usage is not None
+        self.assertEqual(response.usage.cached_input_tokens, 25_000)
+        self.assertEqual(response.usage.cache_write_input_tokens, 50_000)
+        self.assertAlmostEqual(response.cost_usd or 0.0, 0.645, places=6)
+        self.assertEqual(response.metadata.get("cost_source"), "estimated_partial")
+
+    @patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-token"}, clear=False)
+    @patch("src.unified_adapters.subprocess.run")
+    def test_claude_adapter_prefers_debug_usage_without_result_event(self, run_mock):
+        partial_event = {
+            "type": "assistant",
+            "message": {
+                "id": "msg-1",
+                "role": "assistant",
+                "usage": {
+                    "input_tokens": 100_000,
+                    "cache_creation_input_tokens": 50_000,
+                    "cache_read_input_tokens": 25_000,
+                    "output_tokens": 42,
+                },
+            },
+        }
+        debug_event = {
+            "type": "assistant",
+            "message": {
+                "id": "msg-1",
+                "role": "assistant",
+                "usage": {
+                    "input_tokens": 100_000,
+                    "cache_creation_input_tokens": 50_000,
+                    "cache_read_input_tokens": 25_000,
+                    "output_tokens": 10_000,
+                },
+            },
+        }
+
+        def fake_run(cmd, **_kwargs):
+            debug_path = Path(cmd[cmd.index("--debug-file") + 1])
+            debug_path.write_text(json.dumps(debug_event), encoding="utf-8")
+            return SimpleNamespace(returncode=1, stdout=json.dumps(partial_event), stderr="")
+
+        run_mock.side_effect = fake_run
+
+        adapter = ClaudeCodeAdapter(model="claude-sonnet-4-6", budget=1.0)
+        response = adapter.run(_request("claude_code", "claude_code:claude-sonnet-4-6"))
+
+        self.assertEqual(response.status, "error")
+        self.assertEqual(response.tokens_in, 175_000)
+        self.assertEqual(response.tokens_out, 10_000)
+        self.assertAlmostEqual(response.cost_usd or 0.0, 0.645, places=6)
+        self.assertEqual(response.metadata.get("cost_source"), "estimated_debug")
+        self.assertEqual(response.metadata.get("claude_usage_ledger_sources"), ["debug"])
 
     @patch("src.unified_adapters.subprocess.run")
     def test_codex_adapter_uses_no_custom_wrapper(self, run_mock):
