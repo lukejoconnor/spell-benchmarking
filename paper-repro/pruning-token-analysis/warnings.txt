@@ -1,0 +1,16 @@
+swe_lite_high: missing trace for pytest-dev__pytest-7168
+swe_lite_high: missing trace for pytest-dev__pytest-7220
+terminal_bench_low: missing trace for cron-broken-network
+terminal_bench_low: missing trace for intrusion-detection
+terminal_bench_low: missing trace for qemu-startup
+terminal_bench_low: missing trace for train-fasttext
+terminal_bench_med: missing trace for cron-broken-network
+terminal_bench_med: missing trace for get-bitcoin-nodes
+terminal_bench_med: missing trace for intrusion-detection
+terminal_bench_med: missing trace for play-zork
+terminal_bench_high: missing trace for cron-broken-network
+terminal_bench_high: missing trace for extract-moves-from-video
+terminal_bench_high: missing trace for intrusion-detection
+terminal_bench_high: missing trace for qemu-alpine-ssh
+terminal_bench_high: missing trace for train-fasttext
+swe_lite_med: sphinx-doc__sphinx-8595: EOF while reading string

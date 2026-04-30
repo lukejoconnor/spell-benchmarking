@@ -1,0 +1,19 @@
+% BEGIN GENERATED PRUNING TOKEN TABLE
+\begin{table}[h]
+\centering
+\caption{\textbf{Context pruning token accounting.} Mean token counts per traced Spell turn for the GPT-5.4 paper runs. Tokens pruned per turn counts source forms removed by \lstinline[language=spell]|prune| or \lstinline[language=spell]|rethink|, including generated \lstinline[language=spell]|!peek| pruning. Cumulative tokens pruned is the mean number of previously pruned tokens absent from each turn's prompt.}
+\label{tab:pruning-token-summary}
+\begin{tabular}{lrrr}
+\toprule
+Condition & Mean pruned / turn & Mean completion & Mean cumulative pruned \\
+\midrule
+SWE-bench Lite low & 507 & 283 & 2,891 \\
+SWE-bench Lite medium & 1,198 & 279 & 12,124 \\
+SWE-bench Lite high & 1,730 & 304 & 13,282 \\
+Terminal-Bench 1.1 low & 369 & 394 & 3,350 \\
+Terminal-Bench 1.1 medium & 883 & 477 & 7,664 \\
+Terminal-Bench 1.1 high & 748 & 584 & 3,342 \\
+\bottomrule
+\end{tabular}
+\end{table}
+% END GENERATED PRUNING TOKEN TABLE
