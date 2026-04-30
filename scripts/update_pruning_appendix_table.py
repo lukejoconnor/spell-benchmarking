@@ -67,9 +67,12 @@ def render_table(rows: list[dict[str, str]]) -> str:
     return "\n".join(
         [
             BEGIN,
+            r"\paragraph{Context pruning accounting.}",
+            r"Table~\ref{tab:pruning-token-summary} was computed from saved \Spell{} trace directories using the stack-based trace walker. For each parsed program node, the walker traverses the Clojure AST while maintaining the stack of child source forms for the current parent. When it encounters \lstinline[language=spell]|prune| or \lstinline[language=spell]|rethink|, it pops the last $k$ sibling forms from that stack and records the removed source forms. Generated \lstinline[language=spell]|!peek| pruning appears in the following trace node, so those removals are attributed back to the turn that emitted the corresponding \lstinline[language=spell]|!peek|. All source strings are tokenized with the \texttt{o200k\_base} tokenizer. For turn $t$, $D_t$ is the number of tokens pruned by removals attributed to that turn, $A_t=\sum_{i<t} D_i$ is the cumulative amount already absent from the prompt, and $C_t$ is the full traced completion source for the turn, including prefix and response. The table reports means over all successfully parsed traced turns; missing or malformed traces are skipped by the reproduction script and recorded in its warnings file.",
+            "",
             r"\begin{table}[h]",
             r"\centering",
-            r"\caption{\textbf{Context pruning token accounting.} Mean turn count is the number of traced Spell turns per item. The token columns are means per traced Spell turn for the GPT-5.4 paper runs. Completion length counts the full traced completion source for the turn, including prefix and response. Tokens pruned per turn counts source forms removed by \lstinline[language=spell]|prune| or \lstinline[language=spell]|rethink|, including generated \lstinline[language=spell]|!peek| pruning. Cumulative tokens pruned is the mean number of previously pruned tokens absent from each turn's prompt.}",
+            r"\caption{\textbf{Context pruning token accounting.} Mean turn count is the number of traced \Spell{} turns per item. Token columns are means per traced turn for the GPT-5.4 paper runs.}",
             r"\label{tab:pruning-token-summary}",
             r"\begin{tabular}{lrrrr}",
             r"\toprule",
