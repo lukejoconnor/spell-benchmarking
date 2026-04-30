@@ -218,6 +218,28 @@ def _usage_int(value: Any) -> int:
     return int(value) if isinstance(value, (int, float)) else 0
 
 
+def parse_json_dict_events(text: str) -> list[dict[str, Any]]:
+    decoder = json.JSONDecoder()
+    events: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        candidates = [stripped]
+        brace_idx = stripped.find("{")
+        if brace_idx > 0:
+            candidates.append(stripped[brace_idx:])
+        for candidate in candidates:
+            try:
+                obj, _idx = decoder.raw_decode(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict):
+                events.append(obj)
+                break
+    return events
+
+
 def _normalize_claude_model(model: str | None) -> str | None:
     if not model:
         return None
@@ -296,6 +318,95 @@ def claude_code_usage_from_result(
         reasoning_output_tokens=usage.reasoning_output_tokens if usage else 0,
         cost_usd=reported_cost,
         cost_source="reported" if reported_cost is not None else None,
+    )
+
+
+def _claude_message_usage_payload(event: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
+    message = event.get("message")
+    if isinstance(message, dict):
+        usage_payload = message.get("usage")
+        message_id = message.get("id")
+        role = message.get("role")
+    else:
+        usage_payload = event.get("usage")
+        message_id = event.get("id") or event.get("message_id")
+        role = event.get("role")
+
+    event_type = event.get("type")
+    if role not in (None, "assistant") and event_type not in {"assistant", "assistant_message"}:
+        return None, None
+    if not isinstance(usage_payload, dict):
+        return None, None
+    return str(message_id) if message_id is not None else None, usage_payload
+
+
+def claude_code_usage_from_events(
+    events: list[dict[str, Any]],
+    *,
+    model: str | None = None,
+    assistant_cost_source: str | None = "estimated_partial",
+) -> UsageBreakdown | None:
+    for event in reversed(events):
+        if event.get("type") == "result":
+            return claude_code_usage_from_result(event, model=model)
+
+    usage_by_message_id: dict[str, dict[str, Any]] = {}
+    unkeyed_usage: list[dict[str, Any]] = []
+    for event in events:
+        message_id, usage_payload = _claude_message_usage_payload(event)
+        if usage_payload is None:
+            continue
+        if message_id is None:
+            unkeyed_usage.append(usage_payload)
+        else:
+            usage_by_message_id[message_id] = usage_payload
+
+    usage_payloads = [*usage_by_message_id.values(), *unkeyed_usage]
+    if not usage_payloads:
+        return None
+
+    cache_write_input_tokens = sum(
+        _usage_int(payload.get("cache_creation_input_tokens")) for payload in usage_payloads
+    )
+    cached_input_tokens = sum(
+        _usage_int(payload.get("cache_read_input_tokens")) for payload in usage_payloads
+    )
+    usage = usage_from_totals(
+        total_input_tokens=(
+            sum(_usage_int(payload.get("input_tokens")) for payload in usage_payloads)
+            + cache_write_input_tokens
+            + cached_input_tokens
+        ),
+        total_output_tokens=sum(_usage_int(payload.get("output_tokens")) for payload in usage_payloads),
+        cached_input_tokens=cached_input_tokens,
+        cache_write_input_tokens=cache_write_input_tokens,
+    )
+    estimated_cost = estimate_cost(_normalize_claude_model(model), usage)
+    if usage is None:
+        return None
+    return UsageBreakdown(
+        uncached_input_tokens=usage.uncached_input_tokens,
+        cached_input_tokens=usage.cached_input_tokens,
+        cache_write_input_tokens=usage.cache_write_input_tokens,
+        visible_output_tokens=usage.visible_output_tokens,
+        reasoning_output_tokens=usage.reasoning_output_tokens,
+        cost_usd=estimated_cost,
+        cost_source=assistant_cost_source if estimated_cost is not None else None,
+    )
+
+
+def claude_code_usage_from_text(
+    text: str | None,
+    *,
+    model: str | None = None,
+    assistant_cost_source: str | None = "estimated_partial",
+) -> UsageBreakdown | None:
+    if not text:
+        return None
+    return claude_code_usage_from_events(
+        parse_json_dict_events(text),
+        model=model,
+        assistant_cost_source=assistant_cost_source,
     )
 
 

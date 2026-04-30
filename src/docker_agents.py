@@ -35,7 +35,11 @@ from .codex_usage import (
     usage_from_events,
     usage_from_rollout,
 )
-from .usage_accounting import UsageBreakdown, claude_code_usage_from_result
+from .usage_accounting import (
+    UsageBreakdown,
+    claude_code_usage_from_events,
+    claude_code_usage_from_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +111,7 @@ CLAUDE_RUNTIME_ROOT = "/tmp/bench-agent-runtime/claude"
 CLAUDE_RUNTIME_NVM_DIR = f"{CLAUDE_RUNTIME_ROOT}/nvm"
 CLAUDE_RUNTIME_NPM_PREFIX = f"{CLAUDE_RUNTIME_ROOT}/npm-global"
 CLAUDE_RUNTIME_NPM_CACHE = f"{CLAUDE_RUNTIME_ROOT}/npm-cache"
+CLAUDE_DEBUG_LOG_PATH = f"{CLAUDE_RUNTIME_ROOT}/debug.log"
 NODE_BINARY_VERSION = "v22.22.2"
 MIN_NODE_MAJOR_VERSION = 18
 CLAUDE_CLI_MISSING_MARKER = "Claude Code CLI not available after installation"
@@ -1037,10 +1042,13 @@ def cc_run_command(
     reasoning_effort: str | None = None,
     allowed_tools: list[str] | None = None,
     setting_sources: str = "",
+    debug_log_path: str | None = CLAUDE_DEBUG_LOG_PATH,
 ) -> str:
     claude_parts = ["claude"]
     claude_parts.extend(["--setting-sources", shlex.quote(setting_sources)])
     claude_parts.extend(["--verbose", "--output-format", "stream-json"])
+    if debug_log_path:
+        claude_parts.extend(["--debug-file", shlex.quote(debug_log_path)])
     if budget is not None:
         claude_parts.extend(["--max-budget-usd", str(budget)])
     if model:
@@ -1054,6 +1062,8 @@ def cc_run_command(
         [
             "set -euo pipefail",
             _claude_runtime_shell_setup(),
+            f"mkdir -p {shlex.quote(CLAUDE_RUNTIME_ROOT)}",
+            f"rm -f {shlex.quote(debug_log_path)}" if debug_log_path else ":",
             f'command -v claude >/dev/null 2>&1 || {{ echo "{CLAUDE_CLI_MISSING_MARKER}" >&2; exit 1; }}',
             " ".join(claude_parts),
         ]
@@ -1065,14 +1075,76 @@ def cc_missing_cli_error(output: ExecOutput) -> bool:
     return CLAUDE_CLI_MISSING_MARKER in text
 
 
-def cc_parse_usage(stdout: str, *, model: str | None = None) -> UsageBreakdown | None:
+def extract_claude_session_id(events: list[dict[str, Any]]) -> str | None:
+    for event in events:
+        session_id = event.get("session_id") or event.get("sessionId")
+        if isinstance(session_id, str) and session_id:
+            return session_id
+    return None
+
+
+def cc_parse_usage(
+    stdout: str,
+    *,
+    model: str | None = None,
+    ledger_texts: list[tuple[str, str]] | None = None,
+) -> UsageBreakdown | None:
     events = parse_jsonl_events(stdout)
-    result_event = None
-    for event in reversed(events):
-        if event.get("type") == "result":
-            result_event = event
-            break
-    return claude_code_usage_from_result(result_event, model=model)
+    if any(event.get("type") == "result" for event in events):
+        return claude_code_usage_from_events(events, model=model)
+
+    ledger_usages: list[UsageBreakdown] = []
+    for source, text in ledger_texts or []:
+        usage = claude_code_usage_from_text(
+            text,
+            model=model,
+            assistant_cost_source=f"estimated_{source}",
+        )
+        if usage is not None:
+            ledger_usages.append(usage)
+    if ledger_usages:
+        return max(ledger_usages, key=lambda usage: (usage.total_output_tokens, usage.total_input_tokens))
+
+    return claude_code_usage_from_events(events, model=model, assistant_cost_source="estimated_partial")
+
+
+def _read_claude_usage_ledgers_from_exec(
+    exec_fn: Callable[..., ExecOutput],
+    session_id: str | None,
+) -> list[tuple[str, str]]:
+    ledgers: list[tuple[str, str]] = []
+
+    debug_result = exec_fn(
+        f"test -s {shlex.quote(CLAUDE_DEBUG_LOG_PATH)} && cat {shlex.quote(CLAUDE_DEBUG_LOG_PATH)}",
+        timeout=60,
+        workdir="/",
+    )
+    if debug_result.exit_code == 0 and debug_result.stdout:
+        ledgers.append(("debug", debug_result.stdout))
+
+    if session_id:
+        session_name = f"{session_id}.jsonl"
+        find_cmd = (
+            "for base in \"$HOME/.claude/projects\" /root/.claude/projects; do "
+            "[ -d \"$base\" ] || continue; "
+            f"find \"$base\" -type f -name {shlex.quote(session_name)} 2>/dev/null; "
+            "done | head -1"
+        )
+        find_result = exec_fn(find_cmd, timeout=30, workdir="/")
+        session_path = find_result.stdout.strip() if find_result.exit_code == 0 else ""
+        if session_path:
+            cat_result = exec_fn(f"cat {shlex.quote(session_path)}", timeout=60, workdir="/")
+            if cat_result.exit_code == 0 and cat_result.stdout:
+                ledgers.append(("ledger", cat_result.stdout))
+
+    return ledgers
+
+
+def _read_claude_usage_ledgers_from_container(
+    container: DockerWorkspaceContainer,
+    session_id: str | None,
+) -> list[tuple[str, str]]:
+    return _read_claude_usage_ledgers_from_exec(container.exec_run, session_id)
 
 
 def _load_codex_auth_b64() -> str | None:
@@ -1868,13 +1940,23 @@ def run_agent_in_container(
             timeout=timeout,
             env=env,
         )
-        usage = cc_parse_usage(output.stdout, model=resolved_model)
+        events = parse_jsonl_events(output.stdout)
+        session_id = extract_claude_session_id(events)
         missing_cli = cc_missing_cli_error(output)
+        has_result_event = any(event.get("type") == "result" for event in events)
+        ledger_texts = []
+        if not missing_cli and not has_result_event:
+            ledger_texts = _read_claude_usage_ledgers_from_container(container, session_id)
+        usage = cc_parse_usage(output.stdout, model=resolved_model, ledger_texts=ledger_texts)
         return AgentRunResult(
             output=output,
             usage=usage,
             error_message=output.stderr[:2000] if output.exit_code != 0 else None,
             error_type=("install_error" if missing_cli else "cli_error") if output.exit_code != 0 else None,
+            metadata={
+                "claude_session_id": session_id,
+                "claude_usage_ledger_sources": [source for source, _text in ledger_texts],
+            },
         )
 
     if condition == "codex":

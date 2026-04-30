@@ -7,8 +7,10 @@ result event for token usage and cost.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -25,6 +27,9 @@ try:
         cc_install_script,
         cc_parse_usage,
         cc_run_command,
+        extract_claude_session_id,
+        parse_jsonl_events,
+        _read_claude_usage_ledgers_from_exec,
     )
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -34,6 +39,9 @@ except ImportError:
         cc_install_script,
         cc_parse_usage,
         cc_run_command,
+        extract_claude_session_id,
+        parse_jsonl_events,
+        _read_claude_usage_ledgers_from_exec,
     )
 
 logger = logging.getLogger(__name__)
@@ -98,8 +106,36 @@ class ClaudeCodeAgent(DockerExecAgent):
         {"type": "result", "cost_usd": X, "total_cost_usd": Y,
          "usage": {"input_tokens": N, "output_tokens": M}}
         """
-        del container, workdir
-        usage = cc_parse_usage(stdout, model=self._resolve_model())
+        del workdir
+        ledger_texts = None
+        if container is not None:
+            events = parse_jsonl_events(stdout)
+            session_id = extract_claude_session_id(events)
+            ledger_texts = _read_claude_usage_ledgers_from_exec(
+                lambda cmd, **kwargs: self._container_exec(container, cmd, **kwargs),
+                session_id,
+            )
+            ledger_usage = cc_parse_usage("", model=self._resolve_model(), ledger_texts=ledger_texts)
+            if ledger_usage:
+                payload = {
+                    "total_input_tokens": ledger_usage.total_input_tokens,
+                    "cached_input_tokens": ledger_usage.cached_input_tokens,
+                    "cache_write_input_tokens": ledger_usage.cache_write_input_tokens,
+                    "visible_output_tokens": ledger_usage.visible_output_tokens,
+                    "reasoning_output_tokens": ledger_usage.reasoning_output_tokens,
+                    "total_output_tokens": ledger_usage.total_output_tokens,
+                    "cost_usd": ledger_usage.cost_usd,
+                    "cost_source": ledger_usage.cost_source,
+                }
+                self._container_exec(
+                    container,
+                    "mkdir -p /logs/agent && "
+                    f"printf %s {shlex.quote(json.dumps(payload, sort_keys=True))} "
+                    "> /logs/agent/claude-usage-ledger.json",
+                    timeout=30,
+                    workdir="/",
+                )
+        usage = cc_parse_usage(stdout, model=self._resolve_model(), ledger_texts=ledger_texts)
         if not usage:
             logger.warning("No result event found in Claude Code output")
         return usage

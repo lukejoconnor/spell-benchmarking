@@ -16,6 +16,7 @@ if str(BENCHMARK_ROOT) not in sys.path:
 
 from src.docker_agents import (
     CLAUDE_CLI_MISSING_MARKER,
+    CLAUDE_DEBUG_LOG_PATH,
     CC_PAPER_COMPLIANT_ALLOWED_TOOLS,
     CLAUDE_RUNTIME_NPM_PREFIX,
     CLAUDE_RUNTIME_ROOT,
@@ -223,7 +224,75 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertEqual(usage.cached_input_tokens, 25_000)
         self.assertEqual(usage.cache_write_input_tokens, 50_000)
         self.assertAlmostEqual(usage.cost_usd or 0.0, 0.645, places=6)
-        self.assertEqual(usage.cost_source, "estimated")
+
+    def test_cc_parse_usage_recovers_assistant_usage_without_result_event(self) -> None:
+        assistant_event = {
+            "type": "assistant",
+            "message": {
+                "id": "msg-1",
+                "role": "assistant",
+                "usage": {
+                    "input_tokens": 100_000,
+                    "cache_creation_input_tokens": 50_000,
+                    "cache_read_input_tokens": 25_000,
+                    "output_tokens": 10_000,
+                },
+            },
+        }
+
+        usage = cc_parse_usage(
+            "\n".join([json.dumps(assistant_event), json.dumps(assistant_event)]),
+            model="claude-sonnet-4-6",
+        )
+
+        self.assertIsNotNone(usage)
+        assert usage is not None
+        self.assertEqual(usage.total_input_tokens, 175_000)
+        self.assertEqual(usage.cached_input_tokens, 25_000)
+        self.assertEqual(usage.cache_write_input_tokens, 50_000)
+        self.assertAlmostEqual(usage.cost_usd or 0.0, 0.645, places=6)
+        self.assertEqual(usage.cost_source, "estimated_partial")
+
+    def test_cc_parse_usage_prefers_ledger_over_partial_stdout_without_result_event(self) -> None:
+        partial_event = {
+            "type": "assistant",
+            "message": {
+                "id": "msg-1",
+                "role": "assistant",
+                "usage": {
+                    "input_tokens": 100_000,
+                    "cache_creation_input_tokens": 50_000,
+                    "cache_read_input_tokens": 25_000,
+                    "output_tokens": 42,
+                },
+            },
+        }
+        ledger_event = {
+            "type": "assistant",
+            "message": {
+                "id": "msg-1",
+                "role": "assistant",
+                "usage": {
+                    "input_tokens": 100_000,
+                    "cache_creation_input_tokens": 50_000,
+                    "cache_read_input_tokens": 25_000,
+                    "output_tokens": 10_000,
+                },
+            },
+        }
+
+        usage = cc_parse_usage(
+            json.dumps(partial_event),
+            model="claude-sonnet-4-6",
+            ledger_texts=[("ledger", json.dumps(ledger_event))],
+        )
+
+        self.assertIsNotNone(usage)
+        assert usage is not None
+        self.assertEqual(usage.total_input_tokens, 175_000)
+        self.assertEqual(usage.visible_output_tokens, 10_000)
+        self.assertAlmostEqual(usage.cost_usd or 0.0, 0.645, places=6)
+        self.assertEqual(usage.cost_source, "estimated_ledger")
 
     def test_codex_install_script_uses_tmp_runtime_paths(self) -> None:
         script = codex_install_script(version="latest")
@@ -273,6 +342,7 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertIn("command -v claude >/dev/null 2>&1", cmd)
         self.assertIn(CLAUDE_CLI_MISSING_MARKER, cmd)
         self.assertIn("--setting-sources", cmd)
+        self.assertIn("--debug-file", cmd)
         self.assertIn("--output-format stream-json", cmd)
         self.assertIn("--max-budget-usd 1.25", cmd)
         self.assertIn("--model anthropic/claude-opus-4-6", cmd)
@@ -1164,6 +1234,55 @@ EOF
         self.assertEqual(len(commands), 1)
         self.assertIn("--allowedTools", commands[0])
         self.assertNotIn("WebFetch", commands[0])
+
+    @patch.dict("os.environ", {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-token"}, clear=False)
+    @patch("src.docker_agents._install_agent_runtime", return_value=True)
+    def test_claude_run_in_container_reads_debug_usage_without_result(self, _install_runtime) -> None:
+        partial_event = {
+            "type": "system",
+            "session_id": "sess-1",
+        }
+        debug_event = {
+            "type": "assistant",
+            "message": {
+                "id": "msg-1",
+                "role": "assistant",
+                "usage": {
+                    "input_tokens": 100_000,
+                    "cache_creation_input_tokens": 50_000,
+                    "cache_read_input_tokens": 25_000,
+                    "output_tokens": 10_000,
+                },
+            },
+        }
+
+        class FakeContainer:
+            container_workdir = "/workspace"
+
+            def exec_run(self, cmd: str, **kwargs):
+                del kwargs
+                if "claude" in cmd and "command -v claude" in cmd:
+                    return ExecOutput(exit_code=1, stdout=json.dumps(partial_event), stderr="timeout", timed_out=True)
+                if CLAUDE_DEBUG_LOG_PATH in cmd:
+                    return ExecOutput(exit_code=0, stdout=json.dumps(debug_event), stderr="")
+                if "find \"$base\"" in cmd:
+                    return ExecOutput(exit_code=1, stdout="", stderr="")
+                raise AssertionError(f"Unexpected command: {cmd}")
+
+        result = run_agent_in_container(
+            FakeContainer(),
+            condition="claude_code",
+            prompt="Return 42.",
+            timeout=30,
+            model_spec="anthropic/claude-sonnet-4-6",
+        )
+
+        self.assertIsNotNone(result.usage)
+        assert result.usage is not None
+        self.assertEqual(result.usage.total_input_tokens, 175_000)
+        self.assertEqual(result.usage.visible_output_tokens, 10_000)
+        self.assertEqual(result.usage.cost_source, "estimated_debug")
+        self.assertEqual(result.metadata["claude_usage_ledger_sources"], ["debug"])
 
 
 class SpellRunTimeoutClassificationTest(unittest.TestCase):

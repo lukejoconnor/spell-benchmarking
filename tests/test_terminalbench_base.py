@@ -318,6 +318,56 @@ class TerminalBenchBaseTests(unittest.TestCase):
         finally:
             _restore_modules(prior)
 
+    def test_claude_agent_parse_usage_writes_sanitized_ledger_sidecar(self) -> None:
+        module, prior = _load_cc_agent_module()
+        try:
+            agent = module.ClaudeCodeAgent(model_name="anthropic/claude-sonnet-4-6")
+            stdout = json.dumps({"type": "system", "session_id": "sess-1"})
+            debug_event = {
+                "type": "assistant",
+                "message": {
+                    "id": "msg-1",
+                    "role": "assistant",
+                    "usage": {
+                        "input_tokens": 100_000,
+                        "cache_creation_input_tokens": 50_000,
+                        "cache_read_input_tokens": 25_000,
+                        "output_tokens": 10_000,
+                    },
+                },
+            }
+            calls: list[str] = []
+
+            def fake_exec(container, cmd: str, **kwargs):
+                del container, kwargs
+                calls.append(cmd)
+                if "debug.log" in cmd:
+                    return types.SimpleNamespace(
+                        exit_code=0,
+                        stdout=json.dumps(debug_event),
+                        stderr="",
+                    )
+                if "find \"$base\"" in cmd:
+                    return types.SimpleNamespace(exit_code=1, stdout="", stderr="")
+                if "claude-usage-ledger.json" in cmd:
+                    return types.SimpleNamespace(exit_code=0, stdout="", stderr="")
+                raise AssertionError(f"Unexpected command: {cmd}")
+
+            with patch.object(agent, "_container_exec", side_effect=fake_exec):
+                usage = agent._parse_usage(stdout, container=object())
+
+            self.assertIsNotNone(usage)
+            assert usage is not None
+            self.assertEqual(usage.total_input_tokens, 175_000)
+            self.assertEqual(usage.visible_output_tokens, 10_000)
+            self.assertEqual(usage.cost_source, "estimated_debug")
+            sidecar_cmd = next(cmd for cmd in calls if "claude-usage-ledger.json" in cmd)
+            self.assertIn('"total_input_tokens": 175000', sidecar_cmd)
+            self.assertIn('"visible_output_tokens": 10000', sidecar_cmd)
+            self.assertIn('"cost_source": "estimated_debug"', sidecar_cmd)
+        finally:
+            _restore_modules(prior)
+
     @patch.dict(
         os.environ,
         {
