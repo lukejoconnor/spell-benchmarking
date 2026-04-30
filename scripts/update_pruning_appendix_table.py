@@ -43,6 +43,10 @@ def token_count(value: str) -> str:
     return f"{float(value):,.0f}"
 
 
+def one_decimal(value: str) -> str:
+    return f"{float(value):.1f}"
+
+
 def render_table(rows: list[dict[str, str]]) -> str:
     ordered = sorted(rows, key=lambda row: ORDER[(row["benchmark"], row["effort"])])
     body = []
@@ -52,6 +56,7 @@ def render_table(rows: list[dict[str, str]]) -> str:
             " & ".join(
                 [
                     label,
+                    one_decimal(row["mean_turn_count"]),
                     token_count(row["mean_tokens_pruned_per_turn"]),
                     token_count(row["mean_completion_tokens"]),
                     token_count(row["mean_cumulative_tokens_pruned"]),
@@ -64,11 +69,11 @@ def render_table(rows: list[dict[str, str]]) -> str:
             BEGIN,
             r"\begin{table}[h]",
             r"\centering",
-            r"\caption{\textbf{Context pruning token accounting.} Mean token counts per traced Spell turn for the GPT-5.4 paper runs. Completion length counts the full traced completion source for the turn, including prefix and response. Tokens pruned per turn counts source forms removed by \lstinline[language=spell]|prune| or \lstinline[language=spell]|rethink|, including generated \lstinline[language=spell]|!peek| pruning. Cumulative tokens pruned is the mean number of previously pruned tokens absent from each turn's prompt.}",
+            r"\caption{\textbf{Context pruning token accounting.} Mean turn count is the number of traced Spell turns per item. The token columns are means per traced Spell turn for the GPT-5.4 paper runs. Completion length counts the full traced completion source for the turn, including prefix and response. Tokens pruned per turn counts source forms removed by \lstinline[language=spell]|prune| or \lstinline[language=spell]|rethink|, including generated \lstinline[language=spell]|!peek| pruning. Cumulative tokens pruned is the mean number of previously pruned tokens absent from each turn's prompt.}",
             r"\label{tab:pruning-token-summary}",
-            r"\begin{tabular}{lrrr}",
+            r"\begin{tabular}{lrrrr}",
             r"\toprule",
-            r"Condition & Mean pruned / turn & Mean completion & Mean cumulative pruned \\",
+            r"Condition & Mean turns & Mean pruned / turn & Mean completion & Mean cumulative pruned \\",
             r"\midrule",
             *body,
             r"\bottomrule",
