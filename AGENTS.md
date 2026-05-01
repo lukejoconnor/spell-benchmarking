@@ -26,6 +26,10 @@ Not: `50% (13/26)`.
 
 Maintain a neutral, skeptical stance. Present unfavorable and inconclusive results without spin. Don't emphasize results that favor Spell or soft-pedal unfavorable comparisons.
 
+## Manuscript Preparation
+
+The current project phase is final preparation for a NeurIPS submission. Paper-facing benchmarking work should happen on the `paper` branch of this repository. Analyses that support manuscript numbers, figures, or tables should be reproducible from scripts committed in this repository on `paper`; do not rely on ad hoc manual transformations or notebook-only calculations for final reported results.
+
 ## Implemented Benchmarks
 
 ### Math / Reasoning (Python harness)
