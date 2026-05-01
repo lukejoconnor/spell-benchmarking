@@ -18,6 +18,11 @@ ANTHROPIC_THINKING_BUDGET: dict[str, int | None] = {
 }
 
 ANTHROPIC_PROVIDER_PREFIXES = {"anthropic-pf", "anthropic-tc"}
+FIREWORKS_QWEN_HIGH_REASONING_BUDGET = "32000"
+FIREWORKS_REASONING_MODEL_MARKERS = {
+    "glm-5p1",
+    "qwen3p6-plus",
+}
 
 
 def is_anthropic_provider(model_spec: str | None) -> bool:
@@ -31,11 +36,38 @@ def anthropic_thinking_budget(reasoning_effort: str | None) -> int | None:
     return ANTHROPIC_THINKING_BUDGET.get(reasoning_effort)
 
 
+def fireworks_reasoning_effort(model_spec: str | None, reasoning_effort: str | None) -> str | None:
+    """Resolve benchmark effort levels to Fireworks /completions reasoning_effort values."""
+    if not reasoning_effort:
+        return None
+    if _provider_prefix(model_spec) != "fireworks":
+        return reasoning_effort
+    model = _model_name(model_spec)
+    if not _fireworks_supports_reasoning(model):
+        return None
+    if model and "qwen3p6-plus" in model and reasoning_effort == "high":
+        return FIREWORKS_QWEN_HIGH_REASONING_BUDGET
+    return reasoning_effort
+
+
+def _fireworks_supports_reasoning(model: str | None) -> bool:
+    if not model:
+        return False
+    return any(marker in model for marker in FIREWORKS_REASONING_MODEL_MARKERS)
+
+
 def _provider_prefix(model_spec: str | None) -> str | None:
     if not model_spec or ":" not in model_spec:
         return None
     provider, _ = model_spec.split(":", 1)
     return provider or None
+
+
+def _model_name(model_spec: str | None) -> str | None:
+    if not model_spec or ":" not in model_spec:
+        return model_spec
+    _, model = model_spec.split(":", 1)
+    return model or None
 
 
 def supports_reasoning_effort(condition: str, model_spec: str | None) -> bool:
@@ -44,7 +76,11 @@ def supports_reasoning_effort(condition: str, model_spec: str | None) -> bool:
     if condition == "swe_agent":
         return False
     if condition in {"one_shot", "spell"}:
-        return _provider_prefix(model_spec) in SUPPORTED_SPELL_PROVIDER_PREFIXES
+        provider = _provider_prefix(model_spec)
+        if provider in SUPPORTED_SPELL_PROVIDER_PREFIXES:
+            return True
+        if provider == "fireworks":
+            return _fireworks_supports_reasoning(_model_name(model_spec))
     return False
 
 
@@ -57,4 +93,4 @@ def effective_reasoning_effort(
         return None
     if not supports_reasoning_effort(condition, model_spec):
         return None
-    return reasoning_effort
+    return fireworks_reasoning_effort(model_spec, reasoning_effort)

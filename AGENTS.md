@@ -192,13 +192,14 @@ Terminal-Bench scoring caveat:
 
 Condition semantics:
 - `one_shot`: single LLM call (text-only). Use any provider/model via `--model` (including Codex-backed single-call models).
-  - `reasoning_effort` currently applies to `openai-tc`, `codex-tc`, `anthropic-pf`, and `anthropic-tc`.
+  - `reasoning_effort` currently applies to `openai-tc`, `codex-tc`, `anthropic-pf`, `anthropic-tc`, and the Fireworks thinking models `glm-5p1` and `qwen3p6-plus`.
 - `codex`: Codex CLI harness (agent loop). Default model is `codex` via `--codex-model codex`.
   - In the harness adapter, `codex` resolves to `gpt-5-codex` for stable Codex CLI compatibility.
 - `claude_code`: Claude Code CLI harness. `--reasoning-effort` maps to the CLI's `--effort` flag.
 - `swe_agent`: mini-swe-agent comparator. It does not currently expose a benchmark-wired reasoning-effort control, so records should leave this field empty.
 - `spell` (including SWE-bench workspaces): adapter injects local `-Sdeps` so `spell.benchmark-api` resolves even when `cwd` is a cloned repo workspace.
-  - `reasoning_effort` currently applies to `openai-tc`, `codex-tc`, `anthropic-pf`, and `anthropic-tc`.
+  - `reasoning_effort` currently applies to `openai-tc`, `codex-tc`, `anthropic-pf`, `anthropic-tc`, and the Fireworks thinking models `glm-5p1` and `qwen3p6-plus`.
+  - For `fireworks:qwen3p6-plus`, benchmark `high` is resolved to Fireworks `reasoning_effort=32000` because the documented Qwen control is an integer reasoning token limit.
 
 Spell `--model` specs (provider prefix + model name from `.provider.edn`):
 

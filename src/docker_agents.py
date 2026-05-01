@@ -1681,9 +1681,14 @@ def spell_run_command(
     init: str | None = None,
     usage_log_path: str | None = None,
 ) -> str:
-    from .reasoning_effort import anthropic_thinking_budget, is_anthropic_provider
+    from .reasoning_effort import (
+        anthropic_thinking_budget,
+        fireworks_reasoning_effort,
+        is_anthropic_provider,
+    )
 
     thinking = anthropic_thinking_budget(reasoning_effort) if is_anthropic_provider(model_name) else None
+    resolved_reasoning_effort = fireworks_reasoning_effort(model_name, reasoning_effort)
     payload: dict[str, Any] = {
         "mode": "spell",
         "model": model_name,
@@ -1691,7 +1696,7 @@ def spell_run_command(
         "agent": _resolve_agent_for_container(agent_file),
         "depth": depth,
         "max_tokens": max_tokens,
-        "reasoning_effort": reasoning_effort,
+        "reasoning_effort": resolved_reasoning_effort,
         "thinking": thinking,
         "trace": trace,
         "trace_dir": trace_dir,
