@@ -90,7 +90,7 @@ uv run python benchmarking/bench.py swebench [OPTIONS]
 | `--depth` | 50 | Max LLM recursion depth |
 | `--max-tokens` | unlimited | Max output tokens per LLM call |
 | `--timeout` | 1800 | Per-item timeout in seconds (30 min) |
-| `--reasoning-effort` | `high` | `low`, `medium`, or `high`; currently forwarded for `codex` and `claude_code`, and for Spell only on OpenAI/Codex-family providers |
+| `--reasoning-effort` | `high` | `low`, `medium`, or `high`; recorded only when the selected runner/provider actually supports it |
 | `--keep-images / --no-keep-images` | off | Keep per-item SWE-bench instance images after generation |
 | `--clean-eval / --no-clean-eval` | off | Re-run patches in a fresh official eval container after generation |
 | `--eval-max-workers` | 4 | Max concurrent evaluation workers |
@@ -163,7 +163,7 @@ uv run python benchmarking/bench.py featurebench [OPTIONS]
 | `--depth` | 50 | Max LLM recursion depth |
 | `--max-tokens` | unlimited | Max output tokens per LLM call |
 | `--timeout` | 1800 | Per-item timeout in seconds (30 min) |
-| `--reasoning-effort` | `high` | `low`, `medium`, or `high`; currently forwarded for `codex` and `claude_code`, and for Spell only on OpenAI/Codex-family providers |
+| `--reasoning-effort` | `high` | `low`, `medium`, or `high`; recorded only when the selected runner/provider actually supports it |
 | `--workspace-root` | `/tmp/fb_ws` | Directory for cloned workspaces |
 | `--skip-install` | off | Skip dependency installation |
 | `--skip-tests` | off | Skip test verification |
@@ -244,7 +244,7 @@ Selected via `--split` and `--task-ids`. Tasks are loaded from the FeatureBench 
 `--reasoning-effort` is support-matrix driven rather than purely condition-driven:
 - `codex`: forwarded and recorded.
 - `claude_code`: forwarded via `claude --effort` and recorded.
-- `spell` / `one_shot`: forwarded and recorded for `openai-tc`, `codex-tc`, `anthropic-pf`, and `anthropic-tc`.
+- `spell` / `one_shot`: forwarded and recorded for `openai-tc`, `codex-tc`, `anthropic-pf`, `anthropic-tc`, and the Fireworks thinking models `glm-5p1` and `qwen3p6-plus`. For `fireworks:qwen3p6-plus`, `high` resolves to Fireworks `reasoning_effort=32000`.
 - `swe_agent`: not currently benchmark-wired, so records leave the field empty.
 
 ## One-Off Files
@@ -265,6 +265,7 @@ The `--model` flag uses a `provider:model` format that determines both the trans
 | `anthropic-pf` | Anthropic prefill | `io-pf.agent.edn` | `anthropic-pf:claude-opus-4-5-20251101` |
 | `anthropic-tc` | Anthropic tool-call | `io-tc.agent.edn` | `anthropic-tc:claude-opus-4-5-20251101` |
 | `codex-tc` | Codex tool-call | `io-tc.agent.edn` | `codex-tc:gpt-5.3-codex` |
+| `fireworks` | Fireworks completions prefill | `io-pf.agent.edn` | `fireworks:glm-5p1` |
 | `openai-tc` | OpenAI tool-call | `io-tc.agent.edn` | `openai-tc:gpt-5.4` |
 
 ### Model Aliases

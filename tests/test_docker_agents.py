@@ -121,6 +121,42 @@ class DockerAgentsTests(unittest.TestCase):
         payload = json.loads(payload_text)
         self.assertEqual(payload["usage_log_path"], "/logs/agent/spell-usage.json")
 
+    def test_spell_run_command_threads_fireworks_reasoning_effort(self) -> None:
+        cmd = spell_run_command(
+            prompt="Solve it",
+            model_name="fireworks:glm-5p1",
+            reasoning_effort="high",
+        )
+
+        payload_text = cmd.split("<<'SPELL_PAYLOAD'\n", 1)[1].split("\nSPELL_PAYLOAD", 1)[0]
+        payload = json.loads(payload_text)
+        self.assertEqual(payload["reasoning_effort"], "high")
+        self.assertNotIn("thinking", payload)
+
+    def test_spell_run_command_maps_qwen_high_to_fireworks_budget(self) -> None:
+        cmd = spell_run_command(
+            prompt="Solve it",
+            model_name="fireworks:qwen3p6-plus",
+            reasoning_effort="high",
+        )
+
+        payload_text = cmd.split("<<'SPELL_PAYLOAD'\n", 1)[1].split("\nSPELL_PAYLOAD", 1)[0]
+        payload = json.loads(payload_text)
+        self.assertEqual(payload["reasoning_effort"], "32000")
+        self.assertNotIn("thinking", payload)
+
+    def test_spell_run_command_drops_unsupported_fireworks_reasoning_effort(self) -> None:
+        cmd = spell_run_command(
+            prompt="Solve it",
+            model_name="fireworks:kimi-k2p6",
+            reasoning_effort="high",
+        )
+
+        payload_text = cmd.split("<<'SPELL_PAYLOAD'\n", 1)[1].split("\nSPELL_PAYLOAD", 1)[0]
+        payload = json.loads(payload_text)
+        self.assertNotIn("reasoning_effort", payload)
+        self.assertNotIn("thinking", payload)
+
     def test_spell_parse_usage_log_reads_live_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "spell-usage.json"
