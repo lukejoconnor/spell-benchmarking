@@ -106,7 +106,7 @@ dispatch_cc() {
 cmd_pilot() {
   # 2-item smoke: head of shard1, spell + claude_code, medium effort.
   local pilot_items
-  pilot_items="$(head -n 2 "$SHARD_DIR/shard1.txt" | paste -sd,)"
+  pilot_items="$(head -n 2 "$SHARD_DIR/shard1.txt" | paste -sd, -)"
 
   for cond in spell claude_code; do
     local vm_name="pilot-sbl-opus46-${cond//_/-}-med"
