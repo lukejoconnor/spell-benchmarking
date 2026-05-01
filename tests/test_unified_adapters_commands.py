@@ -500,6 +500,46 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         self.assertEqual(response.tokens_in, 13)
         self.assertEqual(response.cached_input_tokens, 3)
 
+    @patch("src.unified_adapters.SpellBenchmarkClient.run")
+    def test_spell_adapter_resolves_fireworks_reasoning_effort(self, client_run_mock):
+        client_run_mock.return_value = SimpleNamespace(
+            ok=True,
+            result="42",
+            usage={"total": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+            latency_ms=1.0,
+            trace_dir=None,
+            raw={},
+            error=None,
+            error_type=None,
+        )
+        adapter = SpellAdapter(project_root=PROJECT_ROOT, model_spec="fireworks:qwen3p6-plus")
+
+        response = adapter.run(_request("spell", "fireworks:qwen3p6-plus"))
+
+        self.assertEqual(response.status, "ok")
+        payload = client_run_mock.call_args.args[0]
+        self.assertEqual(payload["reasoning_effort"], "32000")
+
+    @patch("src.unified_adapters.SpellBenchmarkClient.run")
+    def test_one_shot_adapter_drops_unsupported_fireworks_reasoning_effort(self, client_run_mock):
+        client_run_mock.return_value = SimpleNamespace(
+            ok=True,
+            result="42",
+            usage={"total": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+            latency_ms=1.0,
+            trace_dir=None,
+            raw={},
+            error=None,
+            error_type=None,
+        )
+        adapter = OneShotAdapter(project_root=PROJECT_ROOT, model_spec="fireworks:kimi-k2p6")
+
+        response = adapter.run(_request("one_shot", "fireworks:kimi-k2p6"))
+
+        self.assertEqual(response.status, "ok")
+        payload = client_run_mock.call_args.args[0]
+        self.assertNotIn("reasoning_effort", payload)
+
     @patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-token"}, clear=False)
     @patch("src.unified_adapters.subprocess.run")
     def test_claude_adapter_reports_total_and_cached_input_tokens(self, run_mock):

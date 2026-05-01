@@ -37,6 +37,7 @@ from .usage_accounting import (
     claude_code_usage_from_text,
     usage_from_totals,
 )
+from .reasoning_effort import effective_reasoning_effort
 
 BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 
@@ -204,15 +205,21 @@ class SpellAdapter:
 
     def run(self, req: RunRequest) -> RunResponse:
         format_spec = req.format_spec or _default_format_for_spell(req)
+        model_spec = req.model_spec or self.model_spec
+        reasoning_effort = effective_reasoning_effort(
+            self.condition,
+            model_spec,
+            req.reasoning_effort or DEFAULT_REASONING_EFFORT,
+        )
         payload = {
             "mode": "spell",
-            "model": req.model_spec or self.model_spec,
+            "model": model_spec,
             "agent": req.agent_file,
             "budget": req.budget,
             "depth": req.depth,
             "max_tokens": req.max_tokens,
             "thinking": req.thinking_budget,
-            "reasoning_effort": req.reasoning_effort or DEFAULT_REASONING_EFFORT,
+            "reasoning_effort": reasoning_effort,
             "verbosity": req.verbosity,
             "responses_api": req.responses_api,
             "suffix_grammar": req.suffix_grammar,
@@ -267,14 +274,20 @@ class OneShotAdapter:
         self.client.clj_cmd = _benchmark_api_clj_cmd(project_root)
 
     def run(self, req: RunRequest) -> RunResponse:
+        model_spec = req.model_spec or self.model_spec
+        reasoning_effort = effective_reasoning_effort(
+            self.condition,
+            model_spec,
+            req.reasoning_effort or DEFAULT_REASONING_EFFORT,
+        )
         payload = {
             "mode": "one_shot",
             "prompt": req.prompt,
-            "model": req.model_spec or self.model_spec,
+            "model": model_spec,
             "budget": req.budget,
             "max_tokens": req.max_tokens,
             "thinking": req.thinking_budget,
-            "reasoning_effort": req.reasoning_effort or DEFAULT_REASONING_EFFORT,
+            "reasoning_effort": reasoning_effort,
             "verbosity": req.verbosity,
             "responses_api": req.responses_api,
         }
