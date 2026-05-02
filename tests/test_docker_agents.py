@@ -97,6 +97,7 @@ def _write_executable(path: Path, script: str) -> None:
 class DockerAgentsTests(unittest.TestCase):
     def test_resolve_spell_model_preserves_fireworks_prefix(self) -> None:
         self.assertEqual(resolve_spell_model("fireworks:glm-5"), "fireworks:glm-5")
+        self.assertEqual(resolve_spell_model("fireworks-tc:kimi-k2p6"), "fireworks-tc:kimi-k2p6")
 
     def test_build_spell_init_defaults_to_extend(self) -> None:
         init = build_spell_init("Solve it")
@@ -149,6 +150,30 @@ class DockerAgentsTests(unittest.TestCase):
         cmd = spell_run_command(
             prompt="Solve it",
             model_name="fireworks:kimi-k2p6",
+            reasoning_effort="high",
+        )
+
+        payload_text = cmd.split("<<'SPELL_PAYLOAD'\n", 1)[1].split("\nSPELL_PAYLOAD", 1)[0]
+        payload = json.loads(payload_text)
+        self.assertNotIn("reasoning_effort", payload)
+        self.assertNotIn("thinking", payload)
+
+    def test_spell_run_command_threads_fireworks_tc_reasoning_effort(self) -> None:
+        cmd = spell_run_command(
+            prompt="Solve it",
+            model_name="fireworks-tc:glm-5p1",
+            reasoning_effort="high",
+        )
+
+        payload_text = cmd.split("<<'SPELL_PAYLOAD'\n", 1)[1].split("\nSPELL_PAYLOAD", 1)[0]
+        payload = json.loads(payload_text)
+        self.assertEqual(payload["reasoning_effort"], "high")
+        self.assertNotIn("thinking", payload)
+
+    def test_spell_run_command_drops_unsupported_fireworks_tc_reasoning_effort(self) -> None:
+        cmd = spell_run_command(
+            prompt="Solve it",
+            model_name="fireworks-tc:kimi-k2p6",
             reasoning_effort="high",
         )
 

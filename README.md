@@ -244,7 +244,7 @@ Selected via `--split` and `--task-ids`. Tasks are loaded from the FeatureBench 
 `--reasoning-effort` is support-matrix driven rather than purely condition-driven:
 - `codex`: forwarded and recorded.
 - `claude_code`: forwarded via `claude --effort` and recorded.
-- `spell` / `one_shot`: forwarded and recorded for `openai-tc`, `codex-tc`, `anthropic-pf`, `anthropic-tc`, and the Fireworks thinking models `glm-5p1` and `qwen3p6-plus`. For `fireworks:qwen3p6-plus`, `high` resolves to Fireworks `reasoning_effort=32000`.
+- `spell` / `one_shot`: forwarded and recorded for `openai-tc`, `codex-tc`, `anthropic-pf`, `anthropic-tc`, and the Fireworks thinking models `glm-5p1` and `qwen3p6-plus` on `fireworks` or `fireworks-tc`. For `fireworks:qwen3p6-plus` and `fireworks-tc:qwen3p6-plus`, `high` resolves to Fireworks `reasoning_effort=32000`.
 - `swe_agent`: not currently benchmark-wired, so records leave the field empty.
 
 ## One-Off Files
@@ -266,6 +266,7 @@ The `--model` flag uses a `provider:model` format that determines both the trans
 | `anthropic-tc` | Anthropic tool-call | `io-tc.agent.edn` | `anthropic-tc:claude-opus-4-5-20251101` |
 | `codex-tc` | Codex tool-call | `io-tc.agent.edn` | `codex-tc:gpt-5.3-codex` |
 | `fireworks` | Fireworks completions prefill | `io-pf.agent.edn` | `fireworks:glm-5p1` |
+| `fireworks-tc` | Fireworks Anthropic-compatible tool-call | `io-tc.agent.edn` | `fireworks-tc:kimi-k2p6` |
 | `openai-tc` | OpenAI tool-call | `io-tc.agent.edn` | `openai-tc:gpt-5.4` |
 
 ### Model Aliases
@@ -314,7 +315,7 @@ The agent is selected automatically based on the provider prefix:
 | Provider prefix | Provider family | Default agent |
 |----------------|----------------|---------------|
 | `anthropic-pf` | prefill | `config/agents/io-pf.agent.edn` |
-| `anthropic-tc`, `codex-tc`, `openai-tc` | toolcall | `config/agents/io-tc.agent.edn` |
+| `anthropic-tc`, `codex-tc`, `fireworks-tc`, `openai-tc` | toolcall | `config/agents/io-tc.agent.edn` |
 
 Each agent inherits from a base agent (e.g., `base-tc.agent.edn`) and adds the `io` namespace for file access. The agent determines the system prompt and available namespaces but not the model — the model comes from the `--model` flag.
 

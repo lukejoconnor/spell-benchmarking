@@ -37,10 +37,10 @@ def anthropic_thinking_budget(reasoning_effort: str | None) -> int | None:
 
 
 def fireworks_reasoning_effort(model_spec: str | None, reasoning_effort: str | None) -> str | None:
-    """Resolve benchmark effort levels to Fireworks /completions reasoning_effort values."""
+    """Resolve benchmark effort levels to Fireworks provider reasoning values."""
     if not reasoning_effort:
         return None
-    if _provider_prefix(model_spec) != "fireworks":
+    if _provider_prefix(model_spec) not in {"fireworks", "fireworks-tc"}:
         return reasoning_effort
     model = _model_name(model_spec)
     if not _fireworks_supports_reasoning(model):
@@ -79,7 +79,7 @@ def supports_reasoning_effort(condition: str, model_spec: str | None) -> bool:
         provider = _provider_prefix(model_spec)
         if provider in SUPPORTED_SPELL_PROVIDER_PREFIXES:
             return True
-        if provider == "fireworks":
+        if provider in {"fireworks", "fireworks-tc"}:
             return _fireworks_supports_reasoning(_model_name(model_spec))
     return False
 
