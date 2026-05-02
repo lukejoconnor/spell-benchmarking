@@ -187,6 +187,115 @@ class UnifiedSWEBenchRunnerTest(unittest.TestCase):
         self.assertEqual(response.metadata["instance_image_name"], "sweb.eval.x86_64.instance-1:latest")
         self.assertTrue(response.metadata["same_container_resolved"])
 
+    @patch("src.unified_swebench.run_agent_in_container")
+    @patch("src.unified_swebench.SWEBenchContainer")
+    def test_runner_keeps_status_from_swe_agent_raw_trajectory(self, container_cls, run_agent_mock):
+        container = MagicMock()
+        container.initial_commit = "base-sha"
+        container.diff.return_value = "diff --git a/foo b/foo"
+        container.changed_files.return_value = ["foo.py"]
+        container.image_name = "sweb.eval.x86_64.instance-1:latest"
+        container.run_eval.return_value = SimpleNamespace(
+            resolved=True,
+            test_output="eval ok",
+            raw_report={"instance-1": {"resolved": True}},
+        )
+
+        container_cm = MagicMock()
+        container_cm.__enter__.return_value = container
+        container_cm.__exit__.return_value = False
+        container_cls.return_value = container_cm
+
+        run_agent_mock.return_value = SimpleNamespace(
+            output=ExecOutput(exit_code=0, stdout="", stderr="", timed_out=False),
+            usage=None,
+            response_text="ok",
+            error_message=None,
+            error_type=None,
+            raw={"trajectory_path": "/workspace/run.traj.json", "trajectory": {"messages": []}},
+            trace_dir="/tmp/host-traces/run.traj.json",
+            metadata={"cost_source": "estimated_per_call"},
+        )
+
+        response = run_unified_swebench(
+            condition="swe_agent",
+            prompt="Fix it",
+            model_spec="fireworks_ai/accounts/fireworks/models/glm-5p1",
+            timeout=30,
+            init=None,
+            agent_file=None,
+            budget=5.0,
+            depth=4,
+            max_tokens=None,
+            reasoning_effort=None,
+            web_search=False,
+            trace=True,
+            trace_dir=Path("/tmp/host-traces"),
+            eval_timeout=90,
+            item=SimpleNamespace(
+                instance_id="instance-1",
+                raw_instance={},
+            ),
+        )
+
+        self.assertEqual(response.status, "ok")
+        self.assertEqual(response.metadata["cost_source"], "estimated_per_call")
+        self.assertTrue(response.metadata["same_container_resolved"])
+
+    @patch("src.unified_swebench.run_agent_in_container")
+    @patch("src.unified_swebench.SWEBenchContainer")
+    def test_runner_preserves_timeout_with_swe_agent_raw_trajectory(self, container_cls, run_agent_mock):
+        container = MagicMock()
+        container.initial_commit = "base-sha"
+        container.diff.return_value = "diff --git a/foo b/foo"
+        container.changed_files.return_value = ["foo.py"]
+        container.image_name = "sweb.eval.x86_64.instance-1:latest"
+        container.run_eval.return_value = SimpleNamespace(
+            resolved=True,
+            test_output="eval ok",
+            raw_report={"instance-1": {"resolved": True}},
+        )
+
+        container_cm = MagicMock()
+        container_cm.__enter__.return_value = container
+        container_cm.__exit__.return_value = False
+        container_cls.return_value = container_cm
+
+        run_agent_mock.return_value = SimpleNamespace(
+            output=ExecOutput(exit_code=124, stdout="", stderr="", timed_out=True),
+            usage=None,
+            response_text="partial",
+            error_message="Timeout after 300s",
+            error_type="mini_cli_error",
+            raw={"trajectory_path": "/workspace/run.traj.json", "trajectory": {"messages": []}},
+            trace_dir="/tmp/host-traces/run.traj.json",
+            metadata=None,
+        )
+
+        response = run_unified_swebench(
+            condition="swe_agent",
+            prompt="Fix it",
+            model_spec="fireworks_ai/accounts/fireworks/models/glm-5p1",
+            timeout=30,
+            init=None,
+            agent_file=None,
+            budget=5.0,
+            depth=4,
+            max_tokens=None,
+            reasoning_effort=None,
+            web_search=False,
+            trace=True,
+            trace_dir=Path("/tmp/host-traces"),
+            eval_timeout=90,
+            item=SimpleNamespace(
+                instance_id="instance-1",
+                raw_instance={},
+            ),
+        )
+
+        self.assertEqual(response.status, "timeout")
+        self.assertTrue(response.metadata["same_container_resolved"])
+
 
 class SweAgentContainerRunnerTest(unittest.TestCase):
     @patch("src.docker_agents.run_install_script", return_value=True)
@@ -216,7 +325,7 @@ class SweAgentContainerRunnerTest(unittest.TestCase):
                 "trajectory": [{"role": "assistant", "content": "done"}],
             },
         )
-        parse_usage_mock.return_value = ParsedUsage(cost_usd=0.25)
+        parse_usage_mock.return_value = ParsedUsage(cost_usd=0.25, cost_source="reported")
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             result = run_agent_in_container(
@@ -237,6 +346,7 @@ class SweAgentContainerRunnerTest(unittest.TestCase):
         container.copy_to_host.assert_called_once_with("/workspace/run.traj.json", Path(tmp_dir))
         self.assertEqual(result.response_text, "done")
         self.assertEqual(result.usage.cost_usd, 0.25)
+        self.assertEqual(result.metadata["cost_source"], "reported")
         self.assertEqual(result.trace_dir, str(Path(tmp_dir) / "run.traj.json"))
         self.assertEqual(result.raw["trajectory_path"], "/workspace/run.traj.json")
 

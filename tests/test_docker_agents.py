@@ -1026,8 +1026,53 @@ EOF
         self.assertEqual(usage.uncached_input_tokens, 1750)
         self.assertEqual(usage.cached_input_tokens, 1250)
         self.assertEqual(usage.visible_output_tokens, 150)
-        self.assertEqual(usage.cost_source, "estimated_per_call")
+        self.assertEqual(usage.cost_source, "estimated")
         self.assertAlmostEqual(usage.cost_usd or 0.0, 0.003435, places=9)
+
+    def test_swe_agent_usage_estimates_from_nested_trajectory_response_tokens(self) -> None:
+        traj = {
+            "info": {"model_stats": {"instance_cost": 0.0}},
+            "trajectory": [
+                {
+                    "response": {
+                        "usage": {
+                            "prompt_tokens": 1000,
+                            "completion_tokens": 100,
+                            "prompt_tokens_details": {"cached_tokens": 250},
+                        }
+                    }
+                }
+            ],
+        }
+
+        pricing = {
+            "accounts/fireworks/models/glm-5p1": {
+                "input": 1.40,
+                "cache-read-input": 0.26,
+                "cache-write-input": 1.75,
+                "output": 4.40,
+            }
+        }
+        with patch("src.usage_accounting.load_pricing_table", return_value=pricing):
+            usage = _swe_agent_usage_from_trajectory(
+                traj,
+                "fireworks_ai/accounts/fireworks/models/glm-5p1",
+            )
+
+        self.assertIsNotNone(usage)
+        assert usage is not None
+        self.assertEqual(usage.uncached_input_tokens, 750)
+        self.assertEqual(usage.cached_input_tokens, 250)
+        self.assertEqual(usage.visible_output_tokens, 100)
+        self.assertEqual(usage.cost_source, "estimated")
+        self.assertAlmostEqual(usage.cost_usd or 0.0, 0.001555, places=9)
+
+    def test_swe_agent_usage_ignores_zero_reported_cost_without_tokens(self) -> None:
+        traj = {"info": {"model_stats": {"instance_cost": 0.0}}}
+
+        usage = _swe_agent_usage_from_trajectory(traj, "fireworks_ai/accounts/fireworks/models/glm-5p1")
+
+        self.assertIsNone(usage)
 
     def test_swe_agent_usage_preserves_nonzero_reported_cost(self) -> None:
         traj = {

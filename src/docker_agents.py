@@ -2241,6 +2241,9 @@ def run_agent_in_container(
             "trajectory": traj,
         }
         raw = {k: v for k, v in raw.items() if v is not None}
+        metadata = {}
+        if usage and usage.cost_source:
+            metadata["cost_source"] = usage.cost_source
         return AgentRunResult(
             output=output,
             usage=usage,
@@ -2249,6 +2252,7 @@ def run_agent_in_container(
             error_type="mini_cli_error" if output.exit_code != 0 else ("parse_error" if traj is None else None),
             raw=raw or None,
             trace_dir=trace_file,
+            metadata=metadata or None,
         )
 
     resolved_model = resolve_spell_model(model_spec)
