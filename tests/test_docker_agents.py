@@ -46,6 +46,7 @@ from src.docker_agents import (
     _read_codex_rollout_from_exec,
     _load_swe_agent_trajectory,
     _normalize_spell_trailing,
+    _swe_agent_usage_from_trajectory,
     build_spell_init,
     cc_parse_usage,
     codex_env_vars,
@@ -976,6 +977,82 @@ EOF
         self.assertEqual(env["FIREWORKS_API_KEY"], "fw-test")
         self.assertEqual(env["FIREWORKS_AI_API_KEY"], "fw-ai-test")
         self.assertEqual(env["OPENAI_API_KEY"], "openai-test")
+
+    def test_swe_agent_usage_estimates_fireworks_cost_from_trajectory_tokens(self) -> None:
+        traj = {
+            "info": {"model_stats": {"instance_cost": 0.0}},
+            "messages": [
+                {
+                    "extra": {
+                        "response": {
+                            "usage": {
+                                "prompt_tokens": 1000,
+                                "completion_tokens": 100,
+                                "prompt_tokens_details": {"cached_tokens": 250},
+                            }
+                        }
+                    }
+                },
+                {
+                    "extra": {
+                        "response": {
+                            "usage": {
+                                "prompt_tokens": 2000,
+                                "completion_tokens": 50,
+                                "prompt_tokens_details": {"cached_tokens": 1000},
+                            }
+                        }
+                    }
+                },
+            ],
+        }
+
+        pricing = {
+            "accounts/fireworks/models/glm-5p1": {
+                "input": 1.40,
+                "cache-read-input": 0.26,
+                "cache-write-input": 1.75,
+                "output": 4.40,
+            }
+        }
+        with patch("src.usage_accounting.load_pricing_table", return_value=pricing):
+            usage = _swe_agent_usage_from_trajectory(
+                traj,
+                "fireworks_ai/accounts/fireworks/models/glm-5p1",
+            )
+
+        self.assertIsNotNone(usage)
+        assert usage is not None
+        self.assertEqual(usage.uncached_input_tokens, 1750)
+        self.assertEqual(usage.cached_input_tokens, 1250)
+        self.assertEqual(usage.visible_output_tokens, 150)
+        self.assertEqual(usage.cost_source, "estimated_per_call")
+        self.assertAlmostEqual(usage.cost_usd or 0.0, 0.003435, places=9)
+
+    def test_swe_agent_usage_preserves_nonzero_reported_cost(self) -> None:
+        traj = {
+            "info": {"model_stats": {"instance_cost": 0.25}},
+            "messages": [
+                {
+                    "extra": {
+                        "response": {
+                            "usage": {
+                                "prompt_tokens": 1000,
+                                "completion_tokens": 100,
+                                "prompt_tokens_details": {"cached_tokens": 250},
+                            }
+                        }
+                    }
+                },
+            ],
+        }
+
+        usage = _swe_agent_usage_from_trajectory(traj, "fireworks_ai/accounts/fireworks/models/glm-5p1")
+
+        self.assertIsNotNone(usage)
+        assert usage is not None
+        self.assertEqual(usage.cost_usd, 0.25)
+        self.assertEqual(usage.cost_source, "reported")
 
     def test_install_nvm_node_exec_retries_nvm_script_before_succeeding(self) -> None:
         env = {"NVM_DIR": "/tmp/nvm"}
