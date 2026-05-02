@@ -63,6 +63,7 @@ from src.docker_agents import (
     spell_run_command,
     swe_agent_env_vars,
     swe_agent_install_script,
+    swe_agent_parse_usage,
     swe_agent_run_command,
 )
 
@@ -1205,6 +1206,96 @@ EOF
 
         self.assertEqual(path, Path("/workspace/newer.traj.json"))
         self.assertEqual(traj, {"answer": "new"})
+
+    def test_swe_agent_parse_usage_estimates_cost_from_tokens_when_litellm_cost_is_zero(self) -> None:
+        test_case = self
+
+        class FakeContainer:
+            container_workdir = "/workspace"
+
+            def exec_run(self, cmd: str, **kwargs):
+                del cmd, kwargs
+                return ExecOutput(exit_code=0, stdout="1.0\t/workspace/run.traj.json\n", stderr="")
+
+            def read_text(self, path: str) -> str:
+                test_case.assertEqual(path, "/workspace/run.traj.json")
+                return json.dumps(
+                    {
+                        "info": {
+                            "model_stats": {"instance_cost": 0.0},
+                            "config": {
+                                "model": {
+                                    "model_name": "fireworks_ai/accounts/fireworks/models/glm-5p1",
+                                }
+                            },
+                        },
+                        "trajectory": [
+                            {
+                                "response": {
+                                    "usage": {
+                                        "prompt_tokens": 1000,
+                                        "completion_tokens": 200,
+                                        "prompt_tokens_details": {"cached_tokens": 100},
+                                    }
+                                }
+                            },
+                            {
+                                "response": {
+                                    "usage": {
+                                        "prompt_tokens": 500,
+                                        "completion_tokens": 50,
+                                    }
+                                }
+                            },
+                        ],
+                    }
+                )
+
+        with patch("src.docker_agents.estimate_cost", return_value=0.003086) as estimate:
+            usage = swe_agent_parse_usage("", FakeContainer())
+
+        self.assertIsNotNone(usage)
+        assert usage is not None
+        estimate.assert_called_once()
+        self.assertEqual(estimate.call_args.args[0], "accounts/fireworks/models/glm-5p1")
+        self.assertEqual(usage.total_input_tokens, 1500)
+        self.assertEqual(usage.cached_input_tokens, 100)
+        self.assertEqual(usage.uncached_input_tokens, 1400)
+        self.assertEqual(usage.total_output_tokens, 250)
+        self.assertEqual(usage.cost_usd, 0.003086)
+        self.assertEqual(usage.cost_source, "estimated")
+
+    def test_swe_agent_parse_usage_preserves_positive_reported_cost_with_tokens(self) -> None:
+        test_case = self
+
+        class FakeContainer:
+            container_workdir = "/workspace"
+
+            def exec_run(self, cmd: str, **kwargs):
+                del cmd, kwargs
+                return ExecOutput(exit_code=0, stdout="1.0\t/workspace/run.traj.json\n", stderr="")
+
+            def read_text(self, path: str) -> str:
+                test_case.assertEqual(path, "/workspace/run.traj.json")
+                return json.dumps(
+                    {
+                        "info": {
+                            "model_stats": {"instance_cost": 0.42},
+                            "config": {"model": {"model_name": "some/model"}},
+                        },
+                        "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+                    }
+                )
+
+        with patch("src.docker_agents.estimate_cost", return_value=0.001):
+            usage = swe_agent_parse_usage("", FakeContainer())
+
+        self.assertIsNotNone(usage)
+        assert usage is not None
+        self.assertEqual(usage.total_input_tokens, 12)
+        self.assertEqual(usage.total_output_tokens, 3)
+        self.assertEqual(usage.cost_usd, 0.42)
+        self.assertEqual(usage.cost_source, "reported")
 
     @patch("src.docker_agents._install_agent_runtime", return_value=True)
     def test_codex_run_in_container_attaches_rollout_metadata(self, _install_runtime) -> None:

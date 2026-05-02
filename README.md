@@ -247,7 +247,7 @@ Selected via `--split` and `--task-ids`. Tasks are loaded from the FeatureBench 
 - `spell` / `one_shot`: forwarded and recorded for `openai-tc`, `codex-tc`, `anthropic-pf`, `anthropic-tc`, and the Fireworks thinking models `glm-5p1` and `qwen3p6-plus` on `fireworks` or `fireworks-tc`. For `fireworks:qwen3p6-plus` and `fireworks-tc:qwen3p6-plus`, `high` resolves to Fireworks `reasoning_effort=32000`.
 - `swe_agent`: not currently benchmark-wired, so records leave the field empty.
 
-For mini-swe-agent through LiteLLM/Fireworks, pass the LiteLLM model string directly, for example `--swe-agent-model fireworks_ai/accounts/fireworks/models/glm-5p1`. The harness forwards both `FIREWORKS_API_KEY` and `FIREWORKS_AI_API_KEY`, deriving either alias from the other when only one is set. It also sets mini-swe-agent cost tracking to ignore LiteLLM pricing errors; unified records leave cost empty when mini reports only a zero-cost placeholder.
+For mini-swe-agent through LiteLLM/Fireworks, pass the LiteLLM model string directly, for example `--swe-agent-model fireworks_ai/accounts/fireworks/models/glm-5p1`. The harness forwards both `FIREWORKS_API_KEY` and `FIREWORKS_AI_API_KEY`, deriving either alias from the other when only one is set. It also sets mini-swe-agent cost tracking to ignore LiteLLM pricing errors; when mini reports only a zero-cost placeholder, the harness estimates cost from trajectory token counts and the shared `data/pricing.edn` table.
 
 ## One-Off Files
 

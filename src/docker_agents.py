@@ -39,6 +39,8 @@ from .usage_accounting import (
     UsageBreakdown,
     claude_code_usage_from_events,
     claude_code_usage_from_text,
+    estimate_cost,
+    usage_from_totals,
 )
 
 logger = logging.getLogger(__name__)
@@ -1475,6 +1477,71 @@ def _extract_swe_agent_cost(traj: dict[str, Any]) -> float | None:
     return None
 
 
+def _extract_swe_agent_model(traj: dict[str, Any]) -> str | None:
+    candidate_paths = (
+        ("info", "config", "model", "model_name"),
+        ("config", "model", "model_name"),
+        ("model", "model_name"),
+    )
+    for path in candidate_paths:
+        value = _lookup_path(traj, path)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    for dict_value in iter_dicts(traj):
+        value = dict_value.get("model")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _swe_agent_pricing_model(model: str | None) -> str | None:
+    if not model:
+        return None
+    normalized = model.strip()
+    accounts_idx = normalized.find("accounts/")
+    if accounts_idx >= 0:
+        return normalized[accounts_idx:]
+    if normalized.startswith("fireworks_ai/"):
+        return normalized.removeprefix("fireworks_ai/")
+    return normalized
+
+
+def _swe_usage_int(value: Any) -> int:
+    return int(value) if isinstance(value, (int, float)) else 0
+
+
+def _extract_swe_agent_token_usage(traj: dict[str, Any]) -> UsageBreakdown | None:
+    total_input_tokens = 0
+    total_output_tokens = 0
+    cached_input_tokens = 0
+    cache_write_input_tokens = 0
+
+    for dict_value in iter_dicts(traj):
+        prompt_tokens = _swe_usage_int(dict_value.get("prompt_tokens"))
+        completion_tokens = _swe_usage_int(dict_value.get("completion_tokens"))
+        if prompt_tokens == 0 and completion_tokens == 0:
+            continue
+
+        total_input_tokens += prompt_tokens
+        total_output_tokens += completion_tokens
+
+        prompt_details = dict_value.get("prompt_tokens_details")
+        if isinstance(prompt_details, dict):
+            cached_input_tokens += _swe_usage_int(prompt_details.get("cached_tokens"))
+            cache_write_input_tokens += _swe_usage_int(prompt_details.get("cache_creation_tokens"))
+
+    if total_input_tokens == 0 and total_output_tokens == 0:
+        return None
+
+    return usage_from_totals(
+        total_input_tokens=total_input_tokens,
+        total_output_tokens=total_output_tokens,
+        cached_input_tokens=cached_input_tokens,
+        cache_write_input_tokens=cache_write_input_tokens,
+    )
+
+
 def _extract_swe_agent_response(traj: dict[str, Any]) -> str:
     for key in ("final_response", "final_message", "response_text", "result", "answer", "output"):
         text = _extract_swe_agent_text(traj.get(key))
@@ -1541,10 +1608,31 @@ def swe_agent_parse_usage(stdout: str, container: DockerWorkspaceContainer) -> U
     if not traj:
         return None
 
-    cost_usd = _extract_swe_agent_cost(traj)
-    if cost_usd is None or cost_usd <= 0:
-        return None
-    return UsageBreakdown(cost_usd=cost_usd)
+    reported_cost = _extract_swe_agent_cost(traj)
+    token_usage = _extract_swe_agent_token_usage(traj)
+    if token_usage is None:
+        if reported_cost is None or reported_cost <= 0:
+            return None
+        return UsageBreakdown(cost_usd=reported_cost, cost_source="reported")
+
+    model = _swe_agent_pricing_model(_extract_swe_agent_model(traj))
+    estimated_cost = estimate_cost(model, token_usage)
+    if reported_cost is not None and reported_cost > 0:
+        cost_usd = reported_cost
+        cost_source = "reported"
+    else:
+        cost_usd = estimated_cost
+        cost_source = "estimated" if estimated_cost is not None else None
+
+    return UsageBreakdown(
+        uncached_input_tokens=token_usage.uncached_input_tokens,
+        cached_input_tokens=token_usage.cached_input_tokens,
+        cache_write_input_tokens=token_usage.cache_write_input_tokens,
+        visible_output_tokens=token_usage.visible_output_tokens,
+        reasoning_output_tokens=token_usage.reasoning_output_tokens,
+        cost_usd=cost_usd,
+        cost_source=cost_source,
+    )
 
 
 def resolve_spell_model(model_name: str | None) -> str:
