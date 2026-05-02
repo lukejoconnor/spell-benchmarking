@@ -2484,7 +2484,7 @@ def run_featurebench(
     "--condition",
     "condition_values",
     multiple=True,
-    type=click.Choice(["spell", "claude_code", "codex", "all"]),
+    type=click.Choice(["spell", "claude_code", "codex", "swe_agent", "all"]),
     default=("all",),
     help="Condition(s) to run. Repeat the flag to run multiple explicit conditions.",
 )
@@ -2497,6 +2497,7 @@ def run_featurebench(
 @click.option("--model", default=None, help="provider:model override for Spell")
 @click.option("--claude-model", default=None, help="Model override for Claude Code")
 @click.option("--codex-model", default=None, help="Model override for Codex CLI")
+@click.option("--swe-agent-model", default=None, help="LiteLLM model override for mini-swe-agent")
 @click.option("--items", "task_ids", multiple=True, help="Specific Terminal-Bench task IDs")
 @click.option("-t", "task_ids_short", multiple=True, help="Specific Terminal-Bench task IDs")
 @click.option("--n", "n_tasks", type=int, default=None, help="Limit to N tasks")
@@ -2530,6 +2531,7 @@ def run_terminalbench(
     model: str | None,
     claude_model: str | None,
     codex_model: str | None,
+    swe_agent_model: str | None,
     task_ids: tuple[str, ...],
     task_ids_short: tuple[str, ...],
     n_tasks: int | None,
@@ -2550,6 +2552,8 @@ def run_terminalbench(
     run_id = run_id or _run_id("terminalbench")
     output_file = Path(output) if output else terminalbench_output_file(run_id)
     conditions = _parse_terminalbench_conditions_option(condition_values)
+    if "swe_agent" in conditions and not swe_agent_model:
+        raise click.UsageError("--swe-agent-model is required when running Terminal-Bench swe_agent")
     requested_dataset = dataset
     resolved_dataset = resolve_terminalbench_dataset_spec(dataset).dataset
     requested_task_ids = tuple(task_ids) + tuple(task_ids_short)
@@ -2570,6 +2574,7 @@ def run_terminalbench(
         "spell": model,
         "claude_code": claude_model,
         "codex": codex_model,
+        "swe_agent": swe_agent_model,
     }
     commands: list[dict[str, Any]] = []
     for cond in conditions:

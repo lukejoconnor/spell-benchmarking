@@ -39,6 +39,8 @@ from .usage_accounting import (
     UsageBreakdown,
     claude_code_usage_from_events,
     claude_code_usage_from_text,
+    estimate_cost,
+    usage_from_totals,
 )
 
 logger = logging.getLogger(__name__)
@@ -1287,27 +1289,95 @@ def _read_codex_rollout_from_container(
 def swe_agent_install_script() -> str:
     return r"""
 set -euo pipefail
-pip_cache_flag=
-if [ "${PIP_NO_CACHE_DIR:-}" = "1" ]; then
-  pip_cache_flag="--no-cache-dir"
+export PATH="$HOME/.local/bin:$PATH"
+
+if ! command -v uv >/dev/null 2>&1; then
+  if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+    if command -v apt-get >/dev/null 2>&1; then
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get -o Acquire::AllowInsecureRepositories=true update -qq
+      apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq ca-certificates curl >/dev/null
+    elif command -v apk >/dev/null 2>&1; then
+      apk add --no-cache ca-certificates curl >/dev/null
+    elif command -v dnf >/dev/null 2>&1; then
+      dnf install -y -q ca-certificates curl >/dev/null
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y -q ca-certificates curl >/dev/null
+    else
+      echo "Unable to install uv: curl/wget unavailable and unsupported package manager" >&2
+      exit 1
+    fi
+  fi
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh >/dev/null
+  else
+    wget -qO- https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh >/dev/null
+  fi
 fi
-if command -v uv >/dev/null 2>&1 && [ -z "$pip_cache_flag" ]; then
-  uv pip install --system -q mini-swe-agent
-elif command -v python3 >/dev/null 2>&1; then
-  python3 -m pip install -q --disable-pip-version-check $pip_cache_flag mini-swe-agent
-else
-  python -m pip install -q --disable-pip-version-check $pip_cache_flag mini-swe-agent
+
+uv_bin="$(command -v uv || true)"
+if [ -z "$uv_bin" ] && [ -x "$HOME/.local/bin/uv" ]; then
+  uv_bin="$HOME/.local/bin/uv"
 fi
+if [ -z "$uv_bin" ]; then
+  echo "uv not available after installation" >&2
+  exit 1
+fi
+"$uv_bin" python install 3.11 >/dev/null
+"$uv_bin" tool install -q --managed-python --python 3.11 mini-swe-agent >/dev/null
+
+# Create pty-run wrapper: mini has an interactive setup wizard that checks
+# isatty(0) and aborts without a TTY. This wrapper allocates a real PTY and
+# sends newlines to auto-answer the wizard prompts with empty values.
+UV_PYTHON=$("$uv_bin" python find 3.11 2>/dev/null || echo python3)
+cat > "$HOME/.local/bin/pty-run" << PYEOF
+#!${UV_PYTHON}
+import os
+import pty
+import sys
+import time
+
+def main():
+    argv = sys.argv[1:]
+    if not argv:
+        sys.exit(1)
+    pid, master_fd = pty.fork()
+    if pid == 0:
+        os.execlp(argv[0], *argv)
+    time.sleep(1)
+    os.write(master_fd, b"\n\n\n\n\n\n\n\n\n\n")
+    while True:
+        try:
+            data = os.read(master_fd, 4096)
+        except OSError:
+            break
+        if not data:
+            break
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+    _, status = os.waitpid(pid, 0)
+    sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
+
+main()
+PYEOF
+chmod +x "$HOME/.local/bin/pty-run"
 echo "mini installed: $(mini --help >/dev/null 2>&1 && echo ok || echo missing)"
 """
 
 
 def swe_agent_env_vars() -> dict[str, str]:
-    env: dict[str, str] = {}
-    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "FIREWORKS_API_KEY"):
+    env: dict[str, str] = {"MSWEA_COST_TRACKING": "ignore_errors"}
+    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
         value = os.environ.get(key)
         if value:
             env[key] = value
+    fireworks_api_key = os.environ.get("FIREWORKS_API_KEY")
+    fireworks_ai_api_key = os.environ.get("FIREWORKS_AI_API_KEY")
+    if fireworks_api_key or fireworks_ai_api_key:
+        resolved_fireworks_key = fireworks_api_key or fireworks_ai_api_key or ""
+        env["FIREWORKS_API_KEY"] = fireworks_api_key or resolved_fireworks_key
+        env["FIREWORKS_AI_API_KEY"] = fireworks_ai_api_key or resolved_fireworks_key
     return env
 
 
@@ -1318,10 +1388,29 @@ def swe_agent_run_command(
     budget: float | None = None,
     workdir: str | None = None,
 ) -> str:
-    parts: list[str] = []
+    setup = (
+        'export PATH="$HOME/.local/bin:$PATH" && '
+        'mkdir -p "$HOME/.config/mini-swe-agent" && '
+        'printf "MSWEA_MODEL_NAME=%s\\n" ' + shlex.quote(model) + ' > "$HOME/.config/mini-swe-agent/.env" && '
+        'printf "MSWEA_CONFIGURED=true\\n" >> "$HOME/.config/mini-swe-agent/.env" && '
+        'for k in OPENAI_API_KEY ANTHROPIC_API_KEY FIREWORKS_API_KEY FIREWORKS_AI_API_KEY; do '
+        '  [ -n "${!k:-}" ] && printf "%s=%s\\n" "$k" "${!k}" >> "$HOME/.config/mini-swe-agent/.env"; '
+        'done; true'
+    )
+    parts: list[str] = [setup, "&&"]
     if workdir:
         parts.extend(["cd", shlex.quote(workdir), "&&"])
-    parts.extend(["mini", "-t", shlex.quote(prompt), "-m", shlex.quote(model), "-y", "--exit-immediately"])
+    parts.extend(["mkdir", "-p", ".mini-swe-agent", "&&"])
+    parts.extend([
+        "pty-run",
+        "mini",
+        "-c", "mini.yaml",
+        "-c", "model.model_name=" + shlex.quote(model),
+        "-c", "agent.output_path=.mini-swe-agent/latest.traj.json",
+        "-t", shlex.quote(prompt),
+        "-m", shlex.quote(model),
+        "-y", "--exit-immediately",
+    ])
     if budget is not None:
         parts.extend(["-l", str(budget)])
     return " ".join(parts)
@@ -1386,6 +1475,71 @@ def _extract_swe_agent_cost(traj: dict[str, Any]) -> float | None:
                 except ValueError:
                     continue
     return None
+
+
+def _extract_swe_agent_model(traj: dict[str, Any]) -> str | None:
+    candidate_paths = (
+        ("info", "config", "model", "model_name"),
+        ("config", "model", "model_name"),
+        ("model", "model_name"),
+    )
+    for path in candidate_paths:
+        value = _lookup_path(traj, path)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    for dict_value in iter_dicts(traj):
+        value = dict_value.get("model")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _swe_agent_pricing_model(model: str | None) -> str | None:
+    if not model:
+        return None
+    normalized = model.strip()
+    accounts_idx = normalized.find("accounts/")
+    if accounts_idx >= 0:
+        return normalized[accounts_idx:]
+    if normalized.startswith("fireworks_ai/"):
+        return normalized.removeprefix("fireworks_ai/")
+    return normalized
+
+
+def _swe_usage_int(value: Any) -> int:
+    return int(value) if isinstance(value, (int, float)) else 0
+
+
+def _extract_swe_agent_token_usage(traj: dict[str, Any]) -> UsageBreakdown | None:
+    total_input_tokens = 0
+    total_output_tokens = 0
+    cached_input_tokens = 0
+    cache_write_input_tokens = 0
+
+    for dict_value in iter_dicts(traj):
+        prompt_tokens = _swe_usage_int(dict_value.get("prompt_tokens"))
+        completion_tokens = _swe_usage_int(dict_value.get("completion_tokens"))
+        if prompt_tokens == 0 and completion_tokens == 0:
+            continue
+
+        total_input_tokens += prompt_tokens
+        total_output_tokens += completion_tokens
+
+        prompt_details = dict_value.get("prompt_tokens_details")
+        if isinstance(prompt_details, dict):
+            cached_input_tokens += _swe_usage_int(prompt_details.get("cached_tokens"))
+            cache_write_input_tokens += _swe_usage_int(prompt_details.get("cache_creation_tokens"))
+
+    if total_input_tokens == 0 and total_output_tokens == 0:
+        return None
+
+    return usage_from_totals(
+        total_input_tokens=total_input_tokens,
+        total_output_tokens=total_output_tokens,
+        cached_input_tokens=cached_input_tokens,
+        cache_write_input_tokens=cache_write_input_tokens,
+    )
 
 
 def _extract_swe_agent_response(traj: dict[str, Any]) -> str:
@@ -1454,10 +1608,31 @@ def swe_agent_parse_usage(stdout: str, container: DockerWorkspaceContainer) -> U
     if not traj:
         return None
 
-    cost_usd = _extract_swe_agent_cost(traj)
-    if cost_usd is None:
-        return None
-    return UsageBreakdown(cost_usd=cost_usd)
+    reported_cost = _extract_swe_agent_cost(traj)
+    token_usage = _extract_swe_agent_token_usage(traj)
+    if token_usage is None:
+        if reported_cost is None or reported_cost <= 0:
+            return None
+        return UsageBreakdown(cost_usd=reported_cost, cost_source="reported")
+
+    model = _swe_agent_pricing_model(_extract_swe_agent_model(traj))
+    estimated_cost = estimate_cost(model, token_usage)
+    if reported_cost is not None and reported_cost > 0:
+        cost_usd = reported_cost
+        cost_source = "reported"
+    else:
+        cost_usd = estimated_cost
+        cost_source = "estimated" if estimated_cost is not None else None
+
+    return UsageBreakdown(
+        uncached_input_tokens=token_usage.uncached_input_tokens,
+        cached_input_tokens=token_usage.cached_input_tokens,
+        cache_write_input_tokens=token_usage.cache_write_input_tokens,
+        visible_output_tokens=token_usage.visible_output_tokens,
+        reasoning_output_tokens=token_usage.reasoning_output_tokens,
+        cost_usd=cost_usd,
+        cost_source=cost_source,
+    )
 
 
 def resolve_spell_model(model_name: str | None) -> str:

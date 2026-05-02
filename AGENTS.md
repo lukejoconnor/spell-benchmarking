@@ -156,6 +156,14 @@ uv run python bench.py terminalbench \
   --dataset 2.0 \
   -t hello-world \
   --dry-run
+
+# Dry-run mini-swe-agent on Fireworks GLM-5.1 through LiteLLM
+uv run python bench.py terminalbench \
+  --condition swe_agent \
+  --swe-agent-model fireworks_ai/accounts/fireworks/models/glm-5p1 \
+  --dataset old-core \
+  -t hello-world \
+  --dry-run
 ```
 
 Direct `tb run` still works for one-off debugging when you need raw harness behavior, but batch runs and unified JSONL collection should go through `bench.py terminalbench`.
@@ -196,7 +204,7 @@ Condition semantics:
 - `codex`: Codex CLI harness (agent loop). Default model is `codex` via `--codex-model codex`.
   - In the harness adapter, `codex` resolves to `gpt-5-codex` for stable Codex CLI compatibility.
 - `claude_code`: Claude Code CLI harness. `--reasoning-effort` maps to the CLI's `--effort` flag.
-- `swe_agent`: mini-swe-agent comparator. It does not currently expose a benchmark-wired reasoning-effort control, so records should leave this field empty.
+- `swe_agent`: mini-swe-agent comparator. It does not currently expose a benchmark-wired reasoning-effort control, so records should leave this field empty. For Fireworks/LiteLLM, pass the full LiteLLM model string such as `fireworks_ai/accounts/fireworks/models/glm-5p1`; the harness forwards both `FIREWORKS_API_KEY` and `FIREWORKS_AI_API_KEY`, deriving either alias from the other when only one is set. It sets mini-swe-agent cost tracking to ignore LiteLLM pricing errors; when mini reports only a zero-cost placeholder, the harness estimates cost from trajectory token counts and the shared `data/pricing.edn` table.
 - `spell` (including SWE-bench workspaces): adapter injects local `-Sdeps` so `spell.benchmark-api` resolves even when `cwd` is a cloned repo workspace.
   - `reasoning_effort` currently applies to `openai-tc`, `codex-tc`, `anthropic-pf`, `anthropic-tc`, and the Fireworks thinking models `glm-5p1` and `qwen3p6-plus` on `fireworks` or `fireworks-tc`.
   - For `fireworks:qwen3p6-plus` and `fireworks-tc:qwen3p6-plus`, benchmark `high` is resolved to Fireworks `reasoning_effort=32000` because the documented Qwen control is an integer reasoning token limit.

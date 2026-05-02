@@ -61,7 +61,10 @@ from src.docker_agents import (
     spell_env_vars,
     spell_parse_usage_log,
     spell_run_command,
+    swe_agent_env_vars,
     swe_agent_install_script,
+    swe_agent_parse_usage,
+    swe_agent_run_command,
 )
 
 
@@ -910,12 +913,69 @@ EOF
             "python -m pip install -q --disable-pip-version-check numpy",
         )
 
-    def test_swe_agent_install_script_uses_pip_when_cache_disabled(self) -> None:
+    def test_swe_agent_install_script_uses_uv_tool_python_311_runtime(self) -> None:
         script = swe_agent_install_script()
 
-        self.assertIn('if [ "${PIP_NO_CACHE_DIR:-}" = "1" ]; then', script)
-        self.assertIn('python3 -m pip install -q --disable-pip-version-check $pip_cache_flag mini-swe-agent', script)
-        self.assertIn('command -v uv >/dev/null 2>&1 && [ -z "$pip_cache_flag" ]', script)
+        self.assertIn('export PATH="$HOME/.local/bin:$PATH"', script)
+        self.assertIn('UV_UNMANAGED_INSTALL="$HOME/.local/bin"', script)
+        self.assertIn('"$uv_bin" python install 3.11', script)
+        self.assertIn('"$uv_bin" tool install -q --managed-python --python 3.11 mini-swe-agent', script)
+        self.assertNotIn("uv pip install --system", script)
+        self.assertNotIn("pip install -q --disable-pip-version-check", script)
+
+    def test_swe_agent_install_script_installs_pty_run_wrapper(self) -> None:
+        script = swe_agent_install_script()
+
+        self.assertIn('cat > "$HOME/.local/bin/pty-run"', script)
+        self.assertIn("pty.fork()", script)
+        self.assertIn('os.write(master_fd, b"\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n")', script)
+
+    def test_swe_agent_run_command_uses_home_local_bin_config_and_pty_wrapper(self) -> None:
+        cmd = swe_agent_run_command(
+            "Fix this",
+            model="fireworks_ai/accounts/fireworks/models/glm-5p1",
+            budget=1.5,
+            workdir="/testbed",
+        )
+
+        self.assertIn('export PATH="$HOME/.local/bin:$PATH"', cmd)
+        self.assertIn('printf "MSWEA_MODEL_NAME=%s\\n" fireworks_ai/accounts/fireworks/models/glm-5p1', cmd)
+        self.assertIn('printf "MSWEA_CONFIGURED=true\\n"', cmd)
+        self.assertIn("FIREWORKS_API_KEY FIREWORKS_AI_API_KEY", cmd)
+        self.assertIn("cd /testbed && mkdir -p .mini-swe-agent && pty-run mini", cmd)
+        self.assertIn("-c mini.yaml", cmd)
+        self.assertIn("-c model.model_name=fireworks_ai/accounts/fireworks/models/glm-5p1", cmd)
+        self.assertIn("-c agent.output_path=.mini-swe-agent/latest.traj.json", cmd)
+        self.assertIn("-m fireworks_ai/accounts/fireworks/models/glm-5p1", cmd)
+        self.assertIn("-l 1.5", cmd)
+
+    def test_swe_agent_env_vars_derives_fireworks_ai_alias_from_fireworks_key(self) -> None:
+        with patch.dict(os.environ, {"FIREWORKS_API_KEY": "fw-test"}, clear=True):
+            env = swe_agent_env_vars()
+
+        self.assertEqual(env["FIREWORKS_API_KEY"], "fw-test")
+        self.assertEqual(env["FIREWORKS_AI_API_KEY"], "fw-test")
+        self.assertEqual(env["MSWEA_COST_TRACKING"], "ignore_errors")
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+
+    def test_swe_agent_env_vars_derives_fireworks_alias_from_fireworks_ai_key(self) -> None:
+        with patch.dict(os.environ, {"FIREWORKS_AI_API_KEY": "fw-ai-test"}, clear=True):
+            env = swe_agent_env_vars()
+
+        self.assertEqual(env["FIREWORKS_API_KEY"], "fw-ai-test")
+        self.assertEqual(env["FIREWORKS_AI_API_KEY"], "fw-ai-test")
+
+    def test_swe_agent_env_vars_preserves_distinct_fireworks_keys(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"FIREWORKS_API_KEY": "fw-test", "FIREWORKS_AI_API_KEY": "fw-ai-test", "OPENAI_API_KEY": "openai-test"},
+            clear=True,
+        ):
+            env = swe_agent_env_vars()
+
+        self.assertEqual(env["FIREWORKS_API_KEY"], "fw-test")
+        self.assertEqual(env["FIREWORKS_AI_API_KEY"], "fw-ai-test")
+        self.assertEqual(env["OPENAI_API_KEY"], "openai-test")
 
     def test_install_nvm_node_exec_retries_nvm_script_before_succeeding(self) -> None:
         env = {"NVM_DIR": "/tmp/nvm"}
@@ -1146,6 +1206,96 @@ EOF
 
         self.assertEqual(path, Path("/workspace/newer.traj.json"))
         self.assertEqual(traj, {"answer": "new"})
+
+    def test_swe_agent_parse_usage_estimates_cost_from_tokens_when_litellm_cost_is_zero(self) -> None:
+        test_case = self
+
+        class FakeContainer:
+            container_workdir = "/workspace"
+
+            def exec_run(self, cmd: str, **kwargs):
+                del cmd, kwargs
+                return ExecOutput(exit_code=0, stdout="1.0\t/workspace/run.traj.json\n", stderr="")
+
+            def read_text(self, path: str) -> str:
+                test_case.assertEqual(path, "/workspace/run.traj.json")
+                return json.dumps(
+                    {
+                        "info": {
+                            "model_stats": {"instance_cost": 0.0},
+                            "config": {
+                                "model": {
+                                    "model_name": "fireworks_ai/accounts/fireworks/models/glm-5p1",
+                                }
+                            },
+                        },
+                        "trajectory": [
+                            {
+                                "response": {
+                                    "usage": {
+                                        "prompt_tokens": 1000,
+                                        "completion_tokens": 200,
+                                        "prompt_tokens_details": {"cached_tokens": 100},
+                                    }
+                                }
+                            },
+                            {
+                                "response": {
+                                    "usage": {
+                                        "prompt_tokens": 500,
+                                        "completion_tokens": 50,
+                                    }
+                                }
+                            },
+                        ],
+                    }
+                )
+
+        with patch("src.docker_agents.estimate_cost", return_value=0.003086) as estimate:
+            usage = swe_agent_parse_usage("", FakeContainer())
+
+        self.assertIsNotNone(usage)
+        assert usage is not None
+        estimate.assert_called_once()
+        self.assertEqual(estimate.call_args.args[0], "accounts/fireworks/models/glm-5p1")
+        self.assertEqual(usage.total_input_tokens, 1500)
+        self.assertEqual(usage.cached_input_tokens, 100)
+        self.assertEqual(usage.uncached_input_tokens, 1400)
+        self.assertEqual(usage.total_output_tokens, 250)
+        self.assertEqual(usage.cost_usd, 0.003086)
+        self.assertEqual(usage.cost_source, "estimated")
+
+    def test_swe_agent_parse_usage_preserves_positive_reported_cost_with_tokens(self) -> None:
+        test_case = self
+
+        class FakeContainer:
+            container_workdir = "/workspace"
+
+            def exec_run(self, cmd: str, **kwargs):
+                del cmd, kwargs
+                return ExecOutput(exit_code=0, stdout="1.0\t/workspace/run.traj.json\n", stderr="")
+
+            def read_text(self, path: str) -> str:
+                test_case.assertEqual(path, "/workspace/run.traj.json")
+                return json.dumps(
+                    {
+                        "info": {
+                            "model_stats": {"instance_cost": 0.42},
+                            "config": {"model": {"model_name": "some/model"}},
+                        },
+                        "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+                    }
+                )
+
+        with patch("src.docker_agents.estimate_cost", return_value=0.001):
+            usage = swe_agent_parse_usage("", FakeContainer())
+
+        self.assertIsNotNone(usage)
+        assert usage is not None
+        self.assertEqual(usage.total_input_tokens, 12)
+        self.assertEqual(usage.total_output_tokens, 3)
+        self.assertEqual(usage.cost_usd, 0.42)
+        self.assertEqual(usage.cost_source, "reported")
 
     @patch("src.docker_agents._install_agent_runtime", return_value=True)
     def test_codex_run_in_container_attaches_rollout_metadata(self, _install_runtime) -> None:
