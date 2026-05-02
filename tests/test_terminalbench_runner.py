@@ -37,11 +37,15 @@ class TerminalBenchRunnerTests(unittest.TestCase):
     def test_parse_terminalbench_conditions_expands_all_and_dedupes(self) -> None:
         self.assertEqual(
             parse_terminalbench_conditions(["all"]),
-            ["spell", "claude_code", "codex", "swe_agent"],
+            ["spell", "claude_code", "codex"],
         )
         self.assertEqual(
             parse_terminalbench_conditions(["spell", "codex", "spell"]),
             ["spell", "codex"],
+        )
+        self.assertEqual(
+            parse_terminalbench_conditions(["swe_agent"]),
+            ["swe_agent"],
         )
 
     def test_terminalbench_dataset_aliases_keep_old_core_default_and_head_aliases(self) -> None:
@@ -292,6 +296,47 @@ class TerminalBenchRunnerTests(unittest.TestCase):
         self.assertIn("fireworks_ai/accounts/fireworks/models/glm-5p1", result.output)
         self.assertIn("swe_agent_terminalbench_demo", result.output)
         self.assertNotIn("reasoning_effort=high", result.output)
+
+    def test_terminalbench_swe_agent_requires_model(self) -> None:
+        import bench
+
+        result = CliRunner().invoke(
+            bench.cli,
+            [
+                "terminalbench",
+                "--condition",
+                "swe_agent",
+                "--dataset",
+                "old-core",
+                "-t",
+                "hello-world",
+                "--dry-run",
+            ],
+        )
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("--swe-agent-model is required", result.output)
+
+    def test_terminalbench_default_all_does_not_include_swe_agent(self) -> None:
+        import bench
+
+        result = CliRunner().invoke(
+            bench.cli,
+            [
+                "terminalbench",
+                "--dataset",
+                "old-core",
+                "-t",
+                "hello-world",
+                "--run-id",
+                "terminalbench_demo",
+                "--dry-run",
+            ],
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn('"conditions": [\n    "spell",\n    "claude_code",\n    "codex"\n  ]', result.output)
+        self.assertNotIn("swe_agent:MiniSweAgent", result.output)
 
     def test_build_terminalbench_command_includes_supported_anthropic_spell_effort(self) -> None:
         cmd = build_terminalbench_command(

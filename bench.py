@@ -2552,6 +2552,8 @@ def run_terminalbench(
     run_id = run_id or _run_id("terminalbench")
     output_file = Path(output) if output else terminalbench_output_file(run_id)
     conditions = _parse_terminalbench_conditions_option(condition_values)
+    if "swe_agent" in conditions and not swe_agent_model:
+        raise click.UsageError("--swe-agent-model is required when running Terminal-Bench swe_agent")
     requested_dataset = dataset
     resolved_dataset = resolve_terminalbench_dataset_spec(dataset).dataset
     requested_task_ids = tuple(task_ids) + tuple(task_ids_short)

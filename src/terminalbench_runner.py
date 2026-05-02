@@ -39,6 +39,7 @@ TERMINALBENCH_DATASET_ALIASES = {
     **{alias: TERMINALBENCH_HEAD_DATASET for alias in TERMINALBENCH_HEAD_ALIASES},
 }
 TERMINALBENCH_CONDITIONS = ("spell", "claude_code", "codex", "swe_agent")
+TERMINALBENCH_DEFAULT_CONDITIONS = ("spell", "claude_code", "codex")
 TERMINALBENCH_RESULTS_DIR = Path("results") / "terminal-bench"
 
 
@@ -94,7 +95,7 @@ def resolve_terminalbench_dataset_spec(dataset: str | None) -> TerminalBenchData
 def parse_terminalbench_conditions(values: tuple[str, ...] | list[str]) -> list[str]:
     selected = list(values) if values else ["all"]
     if "all" in selected:
-        return list(TERMINALBENCH_CONDITIONS)
+        return list(TERMINALBENCH_DEFAULT_CONDITIONS)
 
     seen: set[str] = set()
     ordered: list[str] = []
