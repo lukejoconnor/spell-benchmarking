@@ -1287,27 +1287,95 @@ def _read_codex_rollout_from_container(
 def swe_agent_install_script() -> str:
     return r"""
 set -euo pipefail
-pip_cache_flag=
-if [ "${PIP_NO_CACHE_DIR:-}" = "1" ]; then
-  pip_cache_flag="--no-cache-dir"
+export PATH="$HOME/.local/bin:$PATH"
+
+if ! command -v uv >/dev/null 2>&1; then
+  if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+    if command -v apt-get >/dev/null 2>&1; then
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get -o Acquire::AllowInsecureRepositories=true update -qq
+      apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq ca-certificates curl >/dev/null
+    elif command -v apk >/dev/null 2>&1; then
+      apk add --no-cache ca-certificates curl >/dev/null
+    elif command -v dnf >/dev/null 2>&1; then
+      dnf install -y -q ca-certificates curl >/dev/null
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y -q ca-certificates curl >/dev/null
+    else
+      echo "Unable to install uv: curl/wget unavailable and unsupported package manager" >&2
+      exit 1
+    fi
+  fi
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh >/dev/null
+  else
+    wget -qO- https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh >/dev/null
+  fi
 fi
-if command -v uv >/dev/null 2>&1 && [ -z "$pip_cache_flag" ]; then
-  uv pip install --system -q mini-swe-agent
-elif command -v python3 >/dev/null 2>&1; then
-  python3 -m pip install -q --disable-pip-version-check $pip_cache_flag mini-swe-agent
-else
-  python -m pip install -q --disable-pip-version-check $pip_cache_flag mini-swe-agent
+
+uv_bin="$(command -v uv || true)"
+if [ -z "$uv_bin" ] && [ -x "$HOME/.local/bin/uv" ]; then
+  uv_bin="$HOME/.local/bin/uv"
 fi
+if [ -z "$uv_bin" ]; then
+  echo "uv not available after installation" >&2
+  exit 1
+fi
+"$uv_bin" python install 3.11 >/dev/null
+"$uv_bin" tool install -q --managed-python --python 3.11 mini-swe-agent >/dev/null
+
+# Create pty-run wrapper: mini has an interactive setup wizard that checks
+# isatty(0) and aborts without a TTY. This wrapper allocates a real PTY and
+# sends newlines to auto-answer the wizard prompts with empty values.
+UV_PYTHON=$("$uv_bin" python find 3.11 2>/dev/null || echo python3)
+cat > "$HOME/.local/bin/pty-run" << PYEOF
+#!${UV_PYTHON}
+import os
+import pty
+import sys
+import time
+
+def main():
+    argv = sys.argv[1:]
+    if not argv:
+        sys.exit(1)
+    pid, master_fd = pty.fork()
+    if pid == 0:
+        os.execlp(argv[0], *argv)
+    time.sleep(1)
+    os.write(master_fd, b"\n\n\n\n\n\n\n\n\n\n")
+    while True:
+        try:
+            data = os.read(master_fd, 4096)
+        except OSError:
+            break
+        if not data:
+            break
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+    _, status = os.waitpid(pid, 0)
+    sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
+
+main()
+PYEOF
+chmod +x "$HOME/.local/bin/pty-run"
 echo "mini installed: $(mini --help >/dev/null 2>&1 && echo ok || echo missing)"
 """
 
 
 def swe_agent_env_vars() -> dict[str, str]:
-    env: dict[str, str] = {}
-    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "FIREWORKS_API_KEY"):
+    env: dict[str, str] = {"MSWEA_COST_TRACKING": "ignore_errors"}
+    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
         value = os.environ.get(key)
         if value:
             env[key] = value
+    fireworks_api_key = os.environ.get("FIREWORKS_API_KEY")
+    fireworks_ai_api_key = os.environ.get("FIREWORKS_AI_API_KEY")
+    if fireworks_api_key or fireworks_ai_api_key:
+        resolved_fireworks_key = fireworks_api_key or fireworks_ai_api_key or ""
+        env["FIREWORKS_API_KEY"] = fireworks_api_key or resolved_fireworks_key
+        env["FIREWORKS_AI_API_KEY"] = fireworks_ai_api_key or resolved_fireworks_key
     return env
 
 
@@ -1318,10 +1386,29 @@ def swe_agent_run_command(
     budget: float | None = None,
     workdir: str | None = None,
 ) -> str:
-    parts: list[str] = []
+    setup = (
+        'export PATH="$HOME/.local/bin:$PATH" && '
+        'mkdir -p "$HOME/.config/mini-swe-agent" && '
+        'printf "MSWEA_MODEL_NAME=%s\\n" ' + shlex.quote(model) + ' > "$HOME/.config/mini-swe-agent/.env" && '
+        'printf "MSWEA_CONFIGURED=true\\n" >> "$HOME/.config/mini-swe-agent/.env" && '
+        'for k in OPENAI_API_KEY ANTHROPIC_API_KEY FIREWORKS_API_KEY FIREWORKS_AI_API_KEY; do '
+        '  [ -n "${!k:-}" ] && printf "%s=%s\\n" "$k" "${!k}" >> "$HOME/.config/mini-swe-agent/.env"; '
+        'done; true'
+    )
+    parts: list[str] = [setup, "&&"]
     if workdir:
         parts.extend(["cd", shlex.quote(workdir), "&&"])
-    parts.extend(["mini", "-t", shlex.quote(prompt), "-m", shlex.quote(model), "-y", "--exit-immediately"])
+    parts.extend(["mkdir", "-p", ".mini-swe-agent", "&&"])
+    parts.extend([
+        "pty-run",
+        "mini",
+        "-c", "mini.yaml",
+        "-c", "model.model_name=" + shlex.quote(model),
+        "-c", "agent.output_path=.mini-swe-agent/latest.traj.json",
+        "-t", shlex.quote(prompt),
+        "-m", shlex.quote(model),
+        "-y", "--exit-immediately",
+    ])
     if budget is not None:
         parts.extend(["-l", str(budget)])
     return " ".join(parts)
@@ -1455,7 +1542,7 @@ def swe_agent_parse_usage(stdout: str, container: DockerWorkspaceContainer) -> U
         return None
 
     cost_usd = _extract_swe_agent_cost(traj)
-    if cost_usd is None:
+    if cost_usd is None or cost_usd <= 0:
         return None
     return UsageBreakdown(cost_usd=cost_usd)
 

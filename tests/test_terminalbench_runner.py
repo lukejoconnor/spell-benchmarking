@@ -37,7 +37,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
     def test_parse_terminalbench_conditions_expands_all_and_dedupes(self) -> None:
         self.assertEqual(
             parse_terminalbench_conditions(["all"]),
-            ["spell", "claude_code", "codex"],
+            ["spell", "claude_code", "codex", "swe_agent"],
         )
         self.assertEqual(
             parse_terminalbench_conditions(["spell", "codex", "spell"]),
@@ -190,6 +190,32 @@ class TerminalBenchRunnerTests(unittest.TestCase):
 
         self.assertIn("-k reasoning_effort=medium", " ".join(codex_cmd))
 
+    def test_build_terminalbench_command_threads_swe_agent_model_without_reasoning_effort(self) -> None:
+        cmd = build_terminalbench_command(
+            condition="swe_agent",
+            run_id="swe_agent_demo",
+            model="fireworks_ai/accounts/fireworks/models/glm-5p1",
+            dataset="terminal-bench-core==0.1.1",
+            task_ids=("hello-world",),
+            n_tasks=1,
+            n_concurrent=1,
+            budget=2.5,
+            cleanup=False,
+            reasoning_effort="high",
+            agent_timeout_sec=1800,
+            test_timeout_sec=None,
+            agent_file=None,
+            trailing=None,
+            trace=False,
+        )
+
+        rendered = " ".join(cmd)
+        self.assertIn("--agent-import-path swe_agent:MiniSweAgent", rendered)
+        self.assertIn("--model fireworks_ai/accounts/fireworks/models/glm-5p1", rendered)
+        self.assertIn("-k budget=2.5", rendered)
+        self.assertIn("-k agent_timeout=1800", rendered)
+        self.assertNotIn("reasoning_effort", rendered)
+
     def test_terminalbench_dry_run_threads_test_timeout_cli_option(self) -> None:
         import bench
 
@@ -238,6 +264,34 @@ class TerminalBenchRunnerTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("--global-agent-timeout-sec", result.output)
         self.assertNotIn("--global-test-timeout-sec", result.output)
+
+    def test_terminalbench_dry_run_threads_swe_agent_model(self) -> None:
+        import bench
+
+        result = CliRunner().invoke(
+            bench.cli,
+            [
+                "terminalbench",
+                "--condition",
+                "swe_agent",
+                "--swe-agent-model",
+                "fireworks_ai/accounts/fireworks/models/glm-5p1",
+                "--dataset",
+                "old-core",
+                "-t",
+                "hello-world",
+                "--run-id",
+                "terminalbench_demo",
+                "--dry-run",
+            ],
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn('"conditions": [\n    "swe_agent"\n  ]', result.output)
+        self.assertIn("swe_agent:MiniSweAgent", result.output)
+        self.assertIn("fireworks_ai/accounts/fireworks/models/glm-5p1", result.output)
+        self.assertIn("swe_agent_terminalbench_demo", result.output)
+        self.assertNotIn("reasoning_effort=high", result.output)
 
     def test_build_terminalbench_command_includes_supported_anthropic_spell_effort(self) -> None:
         cmd = build_terminalbench_command(
@@ -387,6 +441,52 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             self.assertEqual(records[0].dataset, TERMINALBENCH_HEAD_DATASET)
             self.assertEqual(records[0].metadata["requested_dataset"], "2.0")
             self.assertEqual(records[0].metadata["resolved_dataset"], TERMINALBENCH_HEAD_DATASET)
+
+    def test_terminalbench_records_preserve_swe_agent_litellm_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir) / "results" / "swe_agent_demo"
+            trial_dir = run_dir / "hello-world" / "hello-world.1-of-1.swe_agent_demo"
+            agent_log_dir = trial_dir / "agent-logs"
+            agent_log_dir.mkdir(parents=True, exist_ok=True)
+            (agent_log_dir / "result.json").write_text(
+                json.dumps({"cost_usd": 0.12, "cost_source": "reported"}),
+                encoding="utf-8",
+            )
+            (run_dir / "results.json").write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "trial_name": "hello-world.1-of-1.swe_agent_demo",
+                                "task_id": "hello-world",
+                                "is_resolved": True,
+                                "failure_mode": "none",
+                                "parser_results": {"check": "passed"},
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            records = terminalbench_records_from_run(
+                run_dir=run_dir,
+                run_id="terminalbench_demo",
+                condition="swe_agent",
+                dataset="old-core",
+                model_spec="fireworks_ai/accounts/fireworks/models/glm-5p1",
+                name=None,
+                agent_file=None,
+                requested_dataset="old-core",
+                reasoning_effort="high",
+            )
+
+            self.assertEqual(records[0].condition, "swe_agent")
+            self.assertEqual(records[0].provider, "fireworks_ai")
+            self.assertEqual(records[0].model, "fireworks_ai/accounts/fireworks/models/glm-5p1")
+            self.assertIsNone(records[0].reasoning_effort)
+            self.assertEqual(records[0].cost_usd, 0.12)
+            self.assertEqual(records[0].metadata["cost_source"], "reported")
 
     def test_terminalbench_records_extract_recovery_caveat_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

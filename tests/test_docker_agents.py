@@ -61,7 +61,9 @@ from src.docker_agents import (
     spell_env_vars,
     spell_parse_usage_log,
     spell_run_command,
+    swe_agent_env_vars,
     swe_agent_install_script,
+    swe_agent_run_command,
 )
 
 
@@ -910,12 +912,69 @@ EOF
             "python -m pip install -q --disable-pip-version-check numpy",
         )
 
-    def test_swe_agent_install_script_uses_pip_when_cache_disabled(self) -> None:
+    def test_swe_agent_install_script_uses_uv_tool_python_311_runtime(self) -> None:
         script = swe_agent_install_script()
 
-        self.assertIn('if [ "${PIP_NO_CACHE_DIR:-}" = "1" ]; then', script)
-        self.assertIn('python3 -m pip install -q --disable-pip-version-check $pip_cache_flag mini-swe-agent', script)
-        self.assertIn('command -v uv >/dev/null 2>&1 && [ -z "$pip_cache_flag" ]', script)
+        self.assertIn('export PATH="$HOME/.local/bin:$PATH"', script)
+        self.assertIn('UV_UNMANAGED_INSTALL="$HOME/.local/bin"', script)
+        self.assertIn('"$uv_bin" python install 3.11', script)
+        self.assertIn('"$uv_bin" tool install -q --managed-python --python 3.11 mini-swe-agent', script)
+        self.assertNotIn("uv pip install --system", script)
+        self.assertNotIn("pip install -q --disable-pip-version-check", script)
+
+    def test_swe_agent_install_script_installs_pty_run_wrapper(self) -> None:
+        script = swe_agent_install_script()
+
+        self.assertIn('cat > "$HOME/.local/bin/pty-run"', script)
+        self.assertIn("pty.fork()", script)
+        self.assertIn('os.write(master_fd, b"\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n")', script)
+
+    def test_swe_agent_run_command_uses_home_local_bin_config_and_pty_wrapper(self) -> None:
+        cmd = swe_agent_run_command(
+            "Fix this",
+            model="fireworks_ai/accounts/fireworks/models/glm-5p1",
+            budget=1.5,
+            workdir="/testbed",
+        )
+
+        self.assertIn('export PATH="$HOME/.local/bin:$PATH"', cmd)
+        self.assertIn('printf "MSWEA_MODEL_NAME=%s\\n" fireworks_ai/accounts/fireworks/models/glm-5p1', cmd)
+        self.assertIn('printf "MSWEA_CONFIGURED=true\\n"', cmd)
+        self.assertIn("FIREWORKS_API_KEY FIREWORKS_AI_API_KEY", cmd)
+        self.assertIn("cd /testbed && mkdir -p .mini-swe-agent && pty-run mini", cmd)
+        self.assertIn("-c mini.yaml", cmd)
+        self.assertIn("-c model.model_name=fireworks_ai/accounts/fireworks/models/glm-5p1", cmd)
+        self.assertIn("-c agent.output_path=.mini-swe-agent/latest.traj.json", cmd)
+        self.assertIn("-m fireworks_ai/accounts/fireworks/models/glm-5p1", cmd)
+        self.assertIn("-l 1.5", cmd)
+
+    def test_swe_agent_env_vars_derives_fireworks_ai_alias_from_fireworks_key(self) -> None:
+        with patch.dict(os.environ, {"FIREWORKS_API_KEY": "fw-test"}, clear=True):
+            env = swe_agent_env_vars()
+
+        self.assertEqual(env["FIREWORKS_API_KEY"], "fw-test")
+        self.assertEqual(env["FIREWORKS_AI_API_KEY"], "fw-test")
+        self.assertEqual(env["MSWEA_COST_TRACKING"], "ignore_errors")
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+
+    def test_swe_agent_env_vars_derives_fireworks_alias_from_fireworks_ai_key(self) -> None:
+        with patch.dict(os.environ, {"FIREWORKS_AI_API_KEY": "fw-ai-test"}, clear=True):
+            env = swe_agent_env_vars()
+
+        self.assertEqual(env["FIREWORKS_API_KEY"], "fw-ai-test")
+        self.assertEqual(env["FIREWORKS_AI_API_KEY"], "fw-ai-test")
+
+    def test_swe_agent_env_vars_preserves_distinct_fireworks_keys(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"FIREWORKS_API_KEY": "fw-test", "FIREWORKS_AI_API_KEY": "fw-ai-test", "OPENAI_API_KEY": "openai-test"},
+            clear=True,
+        ):
+            env = swe_agent_env_vars()
+
+        self.assertEqual(env["FIREWORKS_API_KEY"], "fw-test")
+        self.assertEqual(env["FIREWORKS_AI_API_KEY"], "fw-ai-test")
+        self.assertEqual(env["OPENAI_API_KEY"], "openai-test")
 
     def test_install_nvm_node_exec_retries_nvm_script_before_succeeding(self) -> None:
         env = {"NVM_DIR": "/tmp/nvm"}

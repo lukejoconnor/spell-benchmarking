@@ -15,6 +15,7 @@ BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 BASE_MODULE_PATH = BENCHMARK_ROOT / "terminal_bench" / "base.py"
 CC_AGENT_MODULE_PATH = BENCHMARK_ROOT / "terminal_bench" / "cc_agent.py"
 SPELL_AGENT_MODULE_PATH = BENCHMARK_ROOT / "terminal_bench" / "spell_agent.py"
+SWE_AGENT_MODULE_PATH = BENCHMARK_ROOT / "terminal_bench" / "swe_agent.py"
 
 
 @dataclass
@@ -133,6 +134,25 @@ def _load_spell_agent_module():
     spec = importlib.util.spec_from_file_location("terminal_bench_spell_agent_under_test", SPELL_AGENT_MODULE_PATH)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Could not load {SPELL_AGENT_MODULE_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        _restore_modules(prior)
+        raise
+    return module, prior
+
+
+def _load_swe_agent_module():
+    base_module, prior = _load_base_module()
+    prior["terminal_bench.base"] = sys.modules.get("terminal_bench.base")
+    prior["base"] = sys.modules.get("base")
+    sys.modules["terminal_bench.base"] = base_module
+    sys.modules["base"] = base_module
+
+    spec = importlib.util.spec_from_file_location("terminal_bench_swe_agent_under_test", SWE_AGENT_MODULE_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load {SWE_AGENT_MODULE_PATH}")
     module = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(module)
@@ -406,6 +426,70 @@ class TerminalBenchBaseTests(unittest.TestCase):
             agent = module.SpellAgent(model_name="anthropic-tc:opus46")
 
             self.assertFalse(agent._requires_uv())
+        finally:
+            _restore_modules(prior)
+
+    def test_swe_agent_skips_node_and_uses_shared_helpers(self) -> None:
+        module, prior = _load_swe_agent_module()
+        try:
+            agent = module.MiniSweAgent(
+                model_name="fireworks_ai/accounts/fireworks/models/glm-5p1",
+                budget=1.5,
+                agent_timeout=120,
+            )
+
+            self.assertFalse(agent._requires_node())
+            self.assertIn("mini-swe-agent", agent._install_script())
+            cmd = agent._run_command("Fix it", "/workspace")
+            self.assertIn("pty-run mini", cmd)
+            self.assertIn("-m fireworks_ai/accounts/fireworks/models/glm-5p1", cmd)
+            self.assertIn("-l 1.5", cmd)
+        finally:
+            _restore_modules(prior)
+
+    def test_swe_agent_parse_usage_wraps_terminalbench_container(self) -> None:
+        module, prior = _load_swe_agent_module()
+        try:
+            agent = module.MiniSweAgent(model_name="fireworks_ai/accounts/fireworks/models/glm-5p1")
+            seen = {}
+
+            def fake_parse(stdout, container):
+                seen["stdout"] = stdout
+                seen["container_workdir"] = container.container_workdir
+                return module.ParsedUsage(cost_usd=0.25, cost_source="reported")
+
+            with patch.object(module, "swe_agent_parse_usage", side_effect=fake_parse):
+                usage = agent._parse_usage("mini stdout", container=_FakeContainer(), workdir="/workspace")
+
+            self.assertIsNotNone(usage)
+            assert usage is not None
+            self.assertEqual(usage.cost_usd, 0.25)
+            self.assertEqual(seen["stdout"], "mini stdout")
+            self.assertEqual(seen["container_workdir"], "/workspace")
+        finally:
+            _restore_modules(prior)
+
+    def test_swe_agent_saves_trajectory_artifact(self) -> None:
+        module, prior = _load_swe_agent_module()
+        try:
+            agent = module.MiniSweAgent(model_name="fireworks_ai/accounts/fireworks/models/glm-5p1")
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                logging_dir = Path(tmp_dir)
+                with patch.object(
+                    module,
+                    "_load_swe_agent_trajectory",
+                    return_value=(Path("/workspace/.mini/run.traj.json"), {"final_response": "done"}),
+                ):
+                    agent._save_trajectory_artifact(_FakeContainer(), "stdout", logging_dir, "/workspace")
+
+                self.assertEqual(
+                    (logging_dir / "trajectory-path.txt").read_text(encoding="utf-8"),
+                    "/workspace/.mini/run.traj.json",
+                )
+                self.assertEqual(
+                    json.loads((logging_dir / "trajectory.json").read_text(encoding="utf-8")),
+                    {"final_response": "done"},
+                )
         finally:
             _restore_modules(prior)
 

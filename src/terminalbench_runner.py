@@ -38,7 +38,7 @@ TERMINALBENCH_DATASET_ALIASES = {
     "1.1": TERMINALBENCH_OLD_CORE_DATASET,
     **{alias: TERMINALBENCH_HEAD_DATASET for alias in TERMINALBENCH_HEAD_ALIASES},
 }
-TERMINALBENCH_CONDITIONS = ("spell", "claude_code", "codex")
+TERMINALBENCH_CONDITIONS = ("spell", "claude_code", "codex", "swe_agent")
 TERMINALBENCH_RESULTS_DIR = Path("results") / "terminal-bench"
 
 
@@ -66,6 +66,10 @@ CONDITION_SPECS: dict[str, TerminalBenchConditionSpec] = {
     "codex": TerminalBenchConditionSpec(
         agent_import_path="codex_agent:CodexAgent",
         default_model="openai/gpt-5.3-codex",
+    ),
+    "swe_agent": TerminalBenchConditionSpec(
+        agent_import_path="swe_agent:MiniSweAgent",
+        default_model="anthropic/claude-opus-4-6",
     ),
 }
 
@@ -224,6 +228,8 @@ def build_terminalbench_command(
         agent_kwargs = {"agent_timeout": agent_timeout_sec}
         if effective_effort is not None:
             agent_kwargs["reasoning_effort"] = effective_effort
+    elif condition == "swe_agent":
+        agent_kwargs = {"budget": budget, "agent_timeout": agent_timeout_sec}
 
     for key, value in agent_kwargs.items():
         rendered = str(value).lower() if isinstance(value, bool) else str(value)
@@ -417,6 +423,8 @@ def _copy_spell_trace_dir(
 
 def _normalize_record_model(condition: str, model: str | None) -> str:
     raw = (model or "").strip()
+    if condition == "swe_agent":
+        return raw
     if condition == "codex":
         return normalize_codex_model(raw, raw)
     if "/" in raw:
@@ -431,6 +439,8 @@ def _condition_provider(condition: str, model: str | None) -> str | None:
         return "claude_code"
     if condition == "codex":
         return "codex"
+    if condition == "swe_agent" and model and "/" in model:
+        return model.split("/", 1)[0] or None
     if not model or ":" not in model:
         return None
     provider, _ = model.split(":", 1)
