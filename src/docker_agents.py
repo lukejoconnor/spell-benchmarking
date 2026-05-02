@@ -1594,8 +1594,19 @@ def _load_swe_agent_trajectory(container: DockerWorkspaceContainer, stdout: str)
         if match:
             candidate_paths.setdefault(match.group(1), None)
 
+    search_roots = " ".join(
+        shlex.quote(root)
+        for root in [
+            container.container_workdir,
+            "/root/.config/mini-swe-agent",
+        ]
+    )
     find_result = container.exec_run(
-        f"find {shlex.quote(container.container_workdir)} -type f -name '*.traj.json' -printf '%T@\\t%p\\n'",
+        "for base in "
+        f"{search_roots}; do "
+        "[ -d \"$base\" ] || continue; "
+        "find \"$base\" -type f -name '*.traj.json' -printf '%T@\\t%p\\n'; "
+        "done",
         timeout=60,
         workdir="/",
     )

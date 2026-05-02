@@ -1374,6 +1374,34 @@ EOF
         self.assertEqual(usage.cost_usd, 0.42)
         self.assertEqual(usage.cost_source, "reported")
 
+    def test_load_swe_agent_trajectory_searches_mini_config_dir(self) -> None:
+        class FakeContainer:
+            container_workdir = "/workspace"
+
+            def __init__(self) -> None:
+                self.commands: list[str] = []
+
+            def exec_run(self, cmd: str, **kwargs):
+                del kwargs
+                self.commands.append(cmd)
+                return ExecOutput(
+                    exit_code=0,
+                    stdout="300.0\t/root/.config/mini-swe-agent/last_mini_run.traj.json\n",
+                    stderr="",
+                )
+
+            def read_text(self, path: str) -> str:
+                if path != "/root/.config/mini-swe-agent/last_mini_run.traj.json":
+                    raise AssertionError(path)
+                return '{"answer":"root"}'
+
+        container = FakeContainer()
+        path, traj = _load_swe_agent_trajectory(container, "")
+
+        self.assertEqual(path, Path("/root/.config/mini-swe-agent/last_mini_run.traj.json"))
+        self.assertEqual(traj, {"answer": "root"})
+        self.assertIn("/root/.config/mini-swe-agent", container.commands[0])
+
     @patch("src.docker_agents._install_agent_runtime", return_value=True)
     def test_codex_run_in_container_attaches_rollout_metadata(self, _install_runtime) -> None:
         rollout_text = "\n".join(
