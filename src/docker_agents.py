@@ -1542,6 +1542,34 @@ def _extract_swe_agent_token_usage(traj: dict[str, Any]) -> UsageBreakdown | Non
     )
 
 
+def _swe_agent_usage_from_trajectory(traj: dict[str, Any], model: str | None = None) -> UsageBreakdown | None:
+    reported_cost = _extract_swe_agent_cost(traj)
+    token_usage = _extract_swe_agent_token_usage(traj)
+    if token_usage is None:
+        if reported_cost is None or reported_cost <= 0:
+            return None
+        return UsageBreakdown(cost_usd=reported_cost, cost_source="reported")
+
+    pricing_model = _swe_agent_pricing_model(_extract_swe_agent_model(traj) or model)
+    estimated_cost = estimate_cost(pricing_model, token_usage)
+    if reported_cost is not None and reported_cost > 0:
+        cost_usd = reported_cost
+        cost_source = "reported"
+    else:
+        cost_usd = estimated_cost
+        cost_source = "estimated" if estimated_cost is not None else None
+
+    return UsageBreakdown(
+        uncached_input_tokens=token_usage.uncached_input_tokens,
+        cached_input_tokens=token_usage.cached_input_tokens,
+        cache_write_input_tokens=token_usage.cache_write_input_tokens,
+        visible_output_tokens=token_usage.visible_output_tokens,
+        reasoning_output_tokens=token_usage.reasoning_output_tokens,
+        cost_usd=cost_usd,
+        cost_source=cost_source,
+    )
+
+
 def _extract_swe_agent_response(traj: dict[str, Any]) -> str:
     for key in ("final_response", "final_message", "response_text", "result", "answer", "output"):
         text = _extract_swe_agent_text(traj.get(key))
@@ -1566,8 +1594,19 @@ def _load_swe_agent_trajectory(container: DockerWorkspaceContainer, stdout: str)
         if match:
             candidate_paths.setdefault(match.group(1), None)
 
+    search_roots = " ".join(
+        shlex.quote(root)
+        for root in [
+            container.container_workdir,
+            "/root/.config/mini-swe-agent",
+        ]
+    )
     find_result = container.exec_run(
-        f"find {shlex.quote(container.container_workdir)} -type f -name '*.traj.json' -printf '%T@\\t%p\\n'",
+        "for base in "
+        f"{search_roots}; do "
+        "[ -d \"$base\" ] || continue; "
+        "find \"$base\" -type f -name '*.traj.json' -printf '%T@\\t%p\\n'; "
+        "done",
         timeout=60,
         workdir="/",
     )
@@ -1603,36 +1642,12 @@ def _load_swe_agent_trajectory(container: DockerWorkspaceContainer, stdout: str)
     return None, None
 
 
-def swe_agent_parse_usage(stdout: str, container: DockerWorkspaceContainer) -> UsageBreakdown | None:
+def swe_agent_parse_usage(stdout: str, container: DockerWorkspaceContainer, model: str | None = None) -> UsageBreakdown | None:
     _path, traj = _load_swe_agent_trajectory(container, stdout)
     if not traj:
         return None
 
-    reported_cost = _extract_swe_agent_cost(traj)
-    token_usage = _extract_swe_agent_token_usage(traj)
-    if token_usage is None:
-        if reported_cost is None or reported_cost <= 0:
-            return None
-        return UsageBreakdown(cost_usd=reported_cost, cost_source="reported")
-
-    model = _swe_agent_pricing_model(_extract_swe_agent_model(traj))
-    estimated_cost = estimate_cost(model, token_usage)
-    if reported_cost is not None and reported_cost > 0:
-        cost_usd = reported_cost
-        cost_source = "reported"
-    else:
-        cost_usd = estimated_cost
-        cost_source = "estimated" if estimated_cost is not None else None
-
-    return UsageBreakdown(
-        uncached_input_tokens=token_usage.uncached_input_tokens,
-        cached_input_tokens=token_usage.cached_input_tokens,
-        cache_write_input_tokens=token_usage.cache_write_input_tokens,
-        visible_output_tokens=token_usage.visible_output_tokens,
-        reasoning_output_tokens=token_usage.reasoning_output_tokens,
-        cost_usd=cost_usd,
-        cost_source=cost_source,
-    )
+    return _swe_agent_usage_from_trajectory(traj, model)
 
 
 def resolve_spell_model(model_name: str | None) -> str:
@@ -2211,7 +2226,7 @@ def run_agent_in_container(
             env=env,
         )
         traj_path, traj = _load_swe_agent_trajectory(container, output.stdout)
-        usage = swe_agent_parse_usage(output.stdout, container)
+        usage = swe_agent_parse_usage(output.stdout, container, model=resolved_model)
         response_text = _extract_swe_agent_response(traj) if traj else output.stdout.strip()
         trace_file: str | None = None
         if trace_dir is not None and traj_path is not None:
@@ -2226,6 +2241,9 @@ def run_agent_in_container(
             "trajectory": traj,
         }
         raw = {k: v for k, v in raw.items() if v is not None}
+        metadata = {}
+        if usage and usage.cost_source:
+            metadata["cost_source"] = usage.cost_source
         return AgentRunResult(
             output=output,
             usage=usage,
@@ -2234,6 +2252,7 @@ def run_agent_in_container(
             error_type="mini_cli_error" if output.exit_code != 0 else ("parse_error" if traj is None else None),
             raw=raw or None,
             trace_dir=trace_file,
+            metadata=metadata or None,
         )
 
     resolved_model = resolve_spell_model(model_spec)
