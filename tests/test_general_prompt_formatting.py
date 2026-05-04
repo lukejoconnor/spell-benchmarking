@@ -42,7 +42,6 @@ bench = _import_bench_with_stubbed_client()
 from src.unified_adapters import build_spell_init
 from src.datasets import (
     BenchmarkItem,
-    LONGBENCH_SEARCH_GUIDANCE,
     format_benchmark_prompt,
 )
 
@@ -86,7 +85,7 @@ class GeneralPromptFormattingTest(unittest.TestCase):
 
         self.assertIn("Return the answer with no explanation", prompt)
 
-    def test_longbench_prompt_includes_search_guidance_for_context_files(self) -> None:
+    def test_longbench_prompt_with_context_file_has_no_strategy_guidance(self) -> None:
         item = BenchmarkItem(
             id="lb_1",
             dataset="longbench_short",
@@ -98,7 +97,10 @@ class GeneralPromptFormattingTest(unittest.TestCase):
         prompt = format_benchmark_prompt(item, context_file="/tmp/context.txt")
 
         self.assertIn("Document path: /tmp/context.txt", prompt)
-        self.assertIn(LONGBENCH_SEARCH_GUIDANCE, prompt)
+        self.assertIn("Document size: 19 chars", prompt)
+        self.assertIn("Question:\nFind the answer.", prompt)
+        self.assertNotIn("Strategy:", prompt)
+        self.assertNotIn("overflow your context window", prompt)
         self.assertNotIn("!peek", prompt)
         self.assertNotIn("io/read-lines", prompt)
         self.assertNotIn("(think", prompt)

@@ -668,17 +668,6 @@ def load_babilong(context_size: str = '32k', tasks: list[str] = None) -> list[Be
     return items
 
 
-LONGBENCH_SEARCH_GUIDANCE = (
-    "The document may be very large — some documents exceed 1M tokens, "
-    "which will overflow your context window if read in full.\n\n"
-    "Strategy: Work through the document incrementally in small chunks or "
-    "sections. After each chunk, briefly summarize what you found and keep "
-    "notes on any lines or facts that seem relevant to the question. Once "
-    "you have enough evidence, synthesize your answer from those notes "
-    "rather than rereading the whole document."
-)
-
-
 def format_benchmark_prompt(item: BenchmarkItem, context_file: str | None = None) -> str:
     """Format a benchmark item without execution-condition-specific wording."""
     parts = []
@@ -690,8 +679,6 @@ def format_benchmark_prompt(item: BenchmarkItem, context_file: str | None = None
             f'Document size: {doc_len:,} chars',
             '',
         ])
-        if item.dataset in ('longbench', 'longbench_sampled', 'longbench_short'):
-            parts.extend([LONGBENCH_SEARCH_GUIDANCE, ''])
         if item.dataset == 'browsecomp_plus':
             from .browsecomp_plus import build_prompt_preamble
             n_docs = (item.metadata or {}).get('n_docs', 1000)
