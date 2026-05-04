@@ -174,6 +174,28 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertEqual(payload["reasoning_effort"], "high")
         self.assertNotIn("thinking", payload)
 
+    def test_spell_run_command_threads_deepseek_v4_pro_fireworks_reasoning_effort(self) -> None:
+        cmd = spell_run_command(
+            prompt="Solve it",
+            model_name="fireworks:deepseek-v4-pro",
+            reasoning_effort="high",
+        )
+
+        payload_text = cmd.split("<<'SPELL_PAYLOAD'\n", 1)[1].split("\nSPELL_PAYLOAD", 1)[0]
+        payload = json.loads(payload_text)
+        self.assertEqual(payload["reasoning_effort"], "high")
+
+    def test_spell_run_command_threads_deepseek_v4_pro_fireworks_tc_reasoning_effort(self) -> None:
+        cmd = spell_run_command(
+            prompt="Solve it",
+            model_name="fireworks-tc:deepseek-v4-pro",
+            reasoning_effort="high",
+        )
+
+        payload_text = cmd.split("<<'SPELL_PAYLOAD'\n", 1)[1].split("\nSPELL_PAYLOAD", 1)[0]
+        payload = json.loads(payload_text)
+        self.assertEqual(payload["reasoning_effort"], "high")
+
     def test_spell_run_command_drops_unsupported_fireworks_tc_reasoning_effort(self) -> None:
         cmd = spell_run_command(
             prompt="Solve it",
@@ -949,6 +971,19 @@ EOF
         self.assertIn("-c agent.output_path=.mini-swe-agent/latest.traj.json", cmd)
         self.assertIn("-m fireworks_ai/accounts/fireworks/models/glm-5p1", cmd)
         self.assertIn("-l 1.5", cmd)
+        self.assertNotIn("model.model_kwargs.reasoning_effort", cmd)
+
+    def test_swe_agent_run_command_threads_reasoning_effort_as_model_kwarg(self) -> None:
+        cmd = swe_agent_run_command(
+            "Fix this",
+            model="fireworks_ai/accounts/fireworks/models/deepseek-v4-pro",
+            budget=1.5,
+            workdir="/testbed",
+            reasoning_effort="high",
+        )
+
+        self.assertIn("-c model.model_name=fireworks_ai/accounts/fireworks/models/deepseek-v4-pro", cmd)
+        self.assertIn("-c model.model_kwargs.reasoning_effort=high", cmd)
 
     def test_swe_agent_env_vars_derives_fireworks_ai_alias_from_fireworks_key(self) -> None:
         with patch.dict(os.environ, {"FIREWORKS_API_KEY": "fw-test"}, clear=True):
@@ -1066,6 +1101,48 @@ EOF
         self.assertEqual(usage.visible_output_tokens, 100)
         self.assertEqual(usage.cost_source, "estimated")
         self.assertAlmostEqual(usage.cost_usd or 0.0, 0.001555, places=9)
+
+    def test_swe_agent_usage_estimates_deepseek_v4_pro_and_preserves_reasoning_tokens(self) -> None:
+        traj = {
+            "info": {"model_stats": {"instance_cost": 0.0}},
+            "messages": [
+                {
+                    "extra": {
+                        "response": {
+                            "usage": {
+                                "prompt_tokens": 1000,
+                                "completion_tokens": 100,
+                                "prompt_tokens_details": {"cached_tokens": 250},
+                                "completion_tokens_details": {"reasoning_tokens": 20},
+                            }
+                        }
+                    }
+                }
+            ],
+        }
+
+        pricing = {
+            "accounts/fireworks/models/deepseek-v4-pro": {
+                "input": 1.74,
+                "cache-read-input": 0.145,
+                "cache-write-input": 2.175,
+                "output": 3.48,
+            }
+        }
+        with patch("src.usage_accounting.load_pricing_table", return_value=pricing):
+            usage = _swe_agent_usage_from_trajectory(
+                traj,
+                "fireworks_ai/accounts/fireworks/models/deepseek-v4-pro",
+            )
+
+        self.assertIsNotNone(usage)
+        assert usage is not None
+        self.assertEqual(usage.uncached_input_tokens, 750)
+        self.assertEqual(usage.cached_input_tokens, 250)
+        self.assertEqual(usage.visible_output_tokens, 80)
+        self.assertEqual(usage.reasoning_output_tokens, 20)
+        self.assertEqual(usage.cost_source, "estimated")
+        self.assertAlmostEqual(usage.cost_usd or 0.0, 0.00168925, places=9)
 
     def test_swe_agent_usage_ignores_zero_reported_cost_without_tokens(self) -> None:
         traj = {"info": {"model_stats": {"instance_cost": 0.0}}}

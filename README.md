@@ -244,10 +244,10 @@ Selected via `--split` and `--task-ids`. Tasks are loaded from the FeatureBench 
 `--reasoning-effort` is support-matrix driven rather than purely condition-driven:
 - `codex`: forwarded and recorded.
 - `claude_code`: forwarded via `claude --effort` and recorded.
-- `spell` / `one_shot`: forwarded and recorded for `openai-tc`, `codex-tc`, `anthropic-pf`, `anthropic-tc`, and the Fireworks thinking models `glm-5p1` and `qwen3p6-plus` on `fireworks` or `fireworks-tc`. For `fireworks:qwen3p6-plus` and `fireworks-tc:qwen3p6-plus`, `high` resolves to Fireworks `reasoning_effort=32000`.
-- `swe_agent`: not currently benchmark-wired, so records leave the field empty.
+- `spell` / `one_shot`: forwarded and recorded for `openai-tc`, `codex-tc`, `anthropic-pf`, `anthropic-tc`, and the Fireworks thinking models `deepseek-v4-pro`, `glm-5p1`, and `qwen3p6-plus` on `fireworks` or `fireworks-tc`. For `fireworks:qwen3p6-plus` and `fireworks-tc:qwen3p6-plus`, `high` resolves to Fireworks `reasoning_effort=32000`.
+- `swe_agent`: forwarded and recorded for `fireworks_ai/accounts/fireworks/models/deepseek-v4-pro`; unsupported mini-swe-agent models still leave the field empty.
 
-For mini-swe-agent through LiteLLM/Fireworks, pass the LiteLLM model string directly, for example `--swe-agent-model fireworks_ai/accounts/fireworks/models/glm-5p1`. The harness forwards both `FIREWORKS_API_KEY` and `FIREWORKS_AI_API_KEY`, deriving either alias from the other when only one is set. It also sets mini-swe-agent cost tracking to ignore LiteLLM pricing errors; when mini reports only a zero-cost placeholder, the harness estimates cost from trajectory token counts and the shared `data/pricing.edn` table.
+For mini-swe-agent through LiteLLM/Fireworks, pass the LiteLLM model string directly, for example `--swe-agent-model fireworks_ai/accounts/fireworks/models/deepseek-v4-pro` or `--swe-agent-model fireworks_ai/accounts/fireworks/models/glm-5p1`. The harness forwards both `FIREWORKS_API_KEY` and `FIREWORKS_AI_API_KEY`, deriving either alias from the other when only one is set. It also sets mini-swe-agent cost tracking to ignore LiteLLM pricing errors; when mini reports only a zero-cost placeholder, the harness estimates cost from trajectory token counts and the shared `data/pricing.edn` table. DeepSeek V4 Pro pricing is keyed as `accounts/fireworks/models/deepseek-v4-pro` with 1.74 input / 0.145 cached-input / 3.48 output per-million-token rates; cache-write input follows the shared 1.25x input convention.
 
 ## One-Off Files
 
@@ -267,8 +267,8 @@ The `--model` flag uses a `provider:model` format that determines both the trans
 | `anthropic-pf` | Anthropic prefill | `io-pf.agent.edn` | `anthropic-pf:claude-opus-4-5-20251101` |
 | `anthropic-tc` | Anthropic tool-call | `io-tc.agent.edn` | `anthropic-tc:claude-opus-4-5-20251101` |
 | `codex-tc` | Codex tool-call | `io-tc.agent.edn` | `codex-tc:gpt-5.3-codex` |
-| `fireworks` | Fireworks completions prefill | `io-pf.agent.edn` | `fireworks:glm-5p1` |
-| `fireworks-tc` | Fireworks Anthropic-compatible tool-call | `io-tc.agent.edn` | `fireworks-tc:kimi-k2p6` |
+| `fireworks` | Fireworks completions prefill | `io-pf.agent.edn` | `fireworks:deepseek-v4-pro` |
+| `fireworks-tc` | Fireworks Anthropic-compatible tool-call | `io-tc.agent.edn` | `fireworks-tc:deepseek-v4-pro` |
 | `openai-tc` | OpenAI tool-call | `io-tc.agent.edn` | `openai-tc:gpt-5.4` |
 
 ### Model Aliases
