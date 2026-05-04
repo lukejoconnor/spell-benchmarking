@@ -22,6 +22,7 @@ from .docker_agents import (
     swe_agent_run_command,
     _extract_swe_agent_cost,
     _extract_swe_agent_response,
+    _swe_agent_usage_from_trajectory,
 )
 from .codex_usage import (
     extract_codex_thread_id,
@@ -330,6 +331,11 @@ class SweAgentAdapter:
     def run(self, req: RunRequest) -> RunResponse:
         model = req.model_spec or self.model
         budget = req.budget if req.budget is not None else self.budget
+        reasoning_effort = effective_reasoning_effort(
+            self.condition,
+            model,
+            req.reasoning_effort or DEFAULT_REASONING_EFFORT,
+        )
         env = os.environ.copy()
         env.update(swe_agent_env_vars())
 
@@ -341,6 +347,7 @@ class SweAgentAdapter:
                     model=model,
                     budget=budget,
                     workdir=str(run_cwd),
+                    reasoning_effort=reasoning_effort,
                 )
                 proc = subprocess.run(
                     cmd,
@@ -356,7 +363,8 @@ class SweAgentAdapter:
                 stderr = (proc.stderr or "").strip()
                 traj_path, traj = _load_swe_agent_trajectory(run_cwd)
                 response_text = _extract_swe_agent_response(traj) if traj else stdout
-                cost_usd = _extract_swe_agent_cost(traj) if traj else None
+                usage = _swe_agent_usage_from_trajectory(traj, model) if traj else None
+                cost_usd = usage.cost_usd if usage else (_extract_swe_agent_cost(traj) if traj else None)
 
                 trace_file: Path | None = None
                 if req.trace_dir is not None:
@@ -380,6 +388,7 @@ class SweAgentAdapter:
                     "trace_file": str(trace_file) if trace_file else None,
                     "stdout_tail": stdout[-4000:],
                     "stderr_tail": stderr[-4000:],
+                    "cost_source": usage.cost_source if usage and usage.cost_source else None,
                 }
                 metadata = {k: v for k, v in metadata.items() if v is not None}
 
@@ -387,7 +396,7 @@ class SweAgentAdapter:
                     return RunResponse(
                         status="ok",
                         response_text=response_text or None,
-                        usage=None,
+                        usage=usage,
                         cost_usd=cost_usd,
                         latency_ms=latency_ms,
                         metadata=metadata,
@@ -401,7 +410,7 @@ class SweAgentAdapter:
                 return RunResponse(
                     status="error",
                     response_text=response_text or None,
-                    usage=None,
+                    usage=usage,
                     cost_usd=cost_usd,
                     latency_ms=latency_ms,
                     error_message=error_message,

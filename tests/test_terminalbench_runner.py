@@ -220,6 +220,29 @@ class TerminalBenchRunnerTests(unittest.TestCase):
         self.assertIn("-k agent_timeout=1800", rendered)
         self.assertNotIn("reasoning_effort", rendered)
 
+    def test_build_terminalbench_command_threads_deepseek_swe_agent_reasoning_effort(self) -> None:
+        cmd = build_terminalbench_command(
+            condition="swe_agent",
+            run_id="swe_agent_demo",
+            model="fireworks_ai/accounts/fireworks/models/deepseek-v4-pro",
+            dataset="terminal-bench-core==0.1.1",
+            task_ids=("hello-world",),
+            n_tasks=1,
+            n_concurrent=1,
+            budget=2.5,
+            cleanup=False,
+            reasoning_effort="high",
+            agent_timeout_sec=1800,
+            test_timeout_sec=None,
+            agent_file=None,
+            trailing=None,
+            trace=False,
+        )
+
+        rendered = " ".join(cmd)
+        self.assertIn("--model fireworks_ai/accounts/fireworks/models/deepseek-v4-pro", rendered)
+        self.assertIn("-k reasoning_effort=high", rendered)
+
     def test_terminalbench_dry_run_threads_test_timeout_cli_option(self) -> None:
         import bench
 
@@ -296,6 +319,31 @@ class TerminalBenchRunnerTests(unittest.TestCase):
         self.assertIn("fireworks_ai/accounts/fireworks/models/glm-5p1", result.output)
         self.assertIn("swe_agent_terminalbench_demo", result.output)
         self.assertNotIn("reasoning_effort=high", result.output)
+
+    def test_terminalbench_dry_run_threads_deepseek_swe_agent_reasoning_effort(self) -> None:
+        import bench
+
+        result = CliRunner().invoke(
+            bench.cli,
+            [
+                "terminalbench",
+                "--condition",
+                "swe_agent",
+                "--swe-agent-model",
+                "fireworks_ai/accounts/fireworks/models/deepseek-v4-pro",
+                "--dataset",
+                "old-core",
+                "-t",
+                "hello-world",
+                "--run-id",
+                "terminalbench_demo",
+                "--dry-run",
+            ],
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("fireworks_ai/accounts/fireworks/models/deepseek-v4-pro", result.output)
+        self.assertIn("reasoning_effort=high", result.output)
 
     def test_terminalbench_swe_agent_requires_model(self) -> None:
         import bench
@@ -532,6 +580,46 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             self.assertIsNone(records[0].reasoning_effort)
             self.assertEqual(records[0].cost_usd, 0.12)
             self.assertEqual(records[0].metadata["cost_source"], "reported")
+
+    def test_terminalbench_records_deepseek_swe_agent_reasoning_effort(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir) / "results" / "swe_agent_demo"
+            trial_dir = run_dir / "hello-world" / "hello-world.1-of-1.swe_agent_demo"
+            agent_log_dir = trial_dir / "agent-logs"
+            agent_log_dir.mkdir(parents=True)
+            (agent_log_dir / "usage.json").write_text(
+                json.dumps({"cost_usd": 0.12, "cost_source": "reported"}),
+                encoding="utf-8",
+            )
+            (run_dir / "results.json").write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "trial_name": "hello-world.1-of-1.swe_agent_demo",
+                                "task_id": "hello-world",
+                                "is_resolved": True,
+                                "failure_mode": "none",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            records = terminalbench_records_from_run(
+                run_dir=run_dir,
+                run_id="terminalbench_demo",
+                condition="swe_agent",
+                dataset="old-core",
+                model_spec="fireworks_ai/accounts/fireworks/models/deepseek-v4-pro",
+                name=None,
+                agent_file=None,
+                requested_dataset="old-core",
+                reasoning_effort="high",
+            )
+
+            self.assertEqual(records[0].reasoning_effort, "high")
 
     def test_terminalbench_records_extract_recovery_caveat_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

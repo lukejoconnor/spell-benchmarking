@@ -231,6 +231,8 @@ def build_terminalbench_command(
             agent_kwargs["reasoning_effort"] = effective_effort
     elif condition == "swe_agent":
         agent_kwargs = {"budget": budget, "agent_timeout": agent_timeout_sec}
+        if effective_effort is not None:
+            agent_kwargs["reasoning_effort"] = effective_effort
 
     for key, value in agent_kwargs.items():
         rendered = str(value).lower() if isinstance(value, bool) else str(value)

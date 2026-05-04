@@ -452,6 +452,58 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
             self.assertEqual(payload["item_id"], "item-1")
             self.assertEqual(payload["trajectory"]["info"]["model_stats"]["instance_cost"], 0.42)
 
+    @patch("src.unified_adapters.subprocess.run")
+    def test_swe_agent_adapter_threads_deepseek_reasoning_effort_and_estimates_cost(self, run_mock):
+        run_mock.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+        adapter = SweAgentAdapter(model="fireworks_ai/accounts/fireworks/models/deepseek-v4-pro", budget=2.5)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir) / "workspace"
+            workspace.mkdir()
+            trajectory = {
+                "info": {
+                    "model_stats": {"instance_cost": 0.0},
+                    "config": {
+                        "model": {
+                            "model_name": "fireworks_ai/accounts/fireworks/models/deepseek-v4-pro"
+                        }
+                    },
+                },
+                "messages": [
+                    {
+                        "extra": {
+                            "response": {
+                                "usage": {
+                                    "prompt_tokens": 1000,
+                                    "completion_tokens": 100,
+                                    "prompt_tokens_details": {"cached_tokens": 250},
+                                }
+                            }
+                        }
+                    }
+                ],
+            }
+            (workspace / "run.traj.json").write_text(json.dumps(trajectory), encoding="utf-8")
+
+            response = adapter.run(
+                RunRequest(
+                    benchmark="general",
+                    dataset="gsm8k",
+                    item_id="item-1",
+                    condition="swe_agent",
+                    prompt="Return 42.",
+                    model_spec="fireworks_ai/accounts/fireworks/models/deepseek-v4-pro",
+                    timeout=5,
+                    workspace=workspace,
+                    reasoning_effort="high",
+                )
+            )
+
+            self.assertEqual(response.status, "ok")
+            self.assertIn("model.model_kwargs.reasoning_effort=high", run_mock.call_args.args[0])
+            self.assertEqual(response.metadata["cost_source"], "estimated")
+            self.assertAlmostEqual(response.cost_usd or 0.0, 0.001688, places=9)
+
     @patch("src.unified_adapters.SpellBenchmarkClient.run")
     def test_spell_adapter_applies_default_format_for_nonsoftware(self, client_run_mock):
         client_run_mock.return_value = SimpleNamespace(
