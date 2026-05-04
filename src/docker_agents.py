@@ -1515,6 +1515,7 @@ def swe_agent_run_command(
     config_dir: str | None = None,
     cache_root: str | None = None,
     trajectory_dir: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> str:
     resolved_home = runtime_home or f"{runtime_root}/home"
     resolved_config_root = config_root or f"{runtime_root}/config"
@@ -1548,6 +1549,8 @@ def swe_agent_run_command(
         "-m", shlex.quote(model),
         "-y", "--exit-immediately",
     ])
+    if reasoning_effort:
+        parts.extend(["-c", shlex.quote(f"model.model_kwargs.reasoning_effort={reasoning_effort}")])
     if budget is not None:
         parts.extend(["-l", str(budget)])
     return " ".join(parts)
@@ -1651,24 +1654,32 @@ def _swe_usage_int(value: Any) -> int:
 def _extract_swe_agent_token_usage(traj: dict[str, Any]) -> UsageBreakdown | None:
     total_input_tokens = 0
     total_output_tokens = 0
+    reasoning_output_tokens = 0
     cached_input_tokens = 0
     cache_write_input_tokens = 0
 
     for dict_value in iter_dicts(traj):
         prompt_tokens = _swe_usage_int(dict_value.get("prompt_tokens"))
         completion_tokens = _swe_usage_int(dict_value.get("completion_tokens"))
-        if prompt_tokens == 0 and completion_tokens == 0:
+        completion_details = dict_value.get("completion_tokens_details")
+        reasoning_tokens = (
+            _swe_usage_int(completion_details.get("reasoning_tokens"))
+            if isinstance(completion_details, dict)
+            else 0
+        )
+        if prompt_tokens == 0 and completion_tokens == 0 and reasoning_tokens == 0:
             continue
 
         total_input_tokens += prompt_tokens
-        total_output_tokens += completion_tokens
+        total_output_tokens += completion_tokens if completion_tokens else reasoning_tokens
+        reasoning_output_tokens += reasoning_tokens
 
         prompt_details = dict_value.get("prompt_tokens_details")
         if isinstance(prompt_details, dict):
             cached_input_tokens += _swe_usage_int(prompt_details.get("cached_tokens"))
             cache_write_input_tokens += _swe_usage_int(prompt_details.get("cache_creation_tokens"))
 
-    if total_input_tokens == 0 and total_output_tokens == 0:
+    if total_input_tokens == 0 and total_output_tokens == 0 and reasoning_output_tokens == 0:
         return None
 
     return usage_from_totals(
@@ -1676,6 +1687,7 @@ def _extract_swe_agent_token_usage(traj: dict[str, Any]) -> UsageBreakdown | Non
         total_output_tokens=total_output_tokens,
         cached_input_tokens=cached_input_tokens,
         cache_write_input_tokens=cache_write_input_tokens,
+        reasoning_output_tokens=reasoning_output_tokens,
     )
 
 
@@ -2353,7 +2365,10 @@ def run_agent_in_container(
         )
 
     if condition == "swe_agent":
+        from .reasoning_effort import effective_reasoning_effort
+
         resolved_model = model_spec or "anthropic/claude-opus-4-6"
+        resolved_reasoning_effort = effective_reasoning_effort("swe_agent", resolved_model, reasoning_effort)
         env = swe_agent_env_vars()
         output = container.exec_run(
             swe_agent_run_command(
@@ -2361,6 +2376,7 @@ def run_agent_in_container(
                 model=resolved_model,
                 budget=budget,
                 workdir=container.container_workdir,
+                reasoning_effort=resolved_reasoning_effort,
             ),
             timeout=timeout,
             env=env,

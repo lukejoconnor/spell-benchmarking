@@ -69,6 +69,7 @@ class MiniSweAgent(DockerExecAgent):
         model_name: str | None = None,
         budget: float = 5.0,
         agent_timeout: int = 600,
+        reasoning_effort: str | None = None,
         **kwargs,
     ):
         super().__init__(
@@ -78,6 +79,7 @@ class MiniSweAgent(DockerExecAgent):
         )
         self._budget = budget
         self._mini_bundle: bytes | None = None
+        self._reasoning_effort = reasoning_effort
 
     @staticmethod
     def name() -> str:
@@ -155,6 +157,7 @@ class MiniSweAgent(DockerExecAgent):
             model=self._model_name or "anthropic/claude-opus-4-6",
             budget=self._budget,
             workdir=workdir,
+            reasoning_effort=self._reasoning_effort,
         )
 
     def _trajectory_container(self, container, workdir: str | None):

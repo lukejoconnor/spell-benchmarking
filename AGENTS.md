@@ -200,15 +200,15 @@ Terminal-Bench scoring caveat:
 
 Condition semantics:
 - `one_shot`: single LLM call (text-only). Use any provider/model via `--model` (including Codex-backed single-call models).
-  - `reasoning_effort` currently applies to `openai-tc`, `codex-tc`, `anthropic-pf`, `anthropic-tc`, and the Fireworks thinking models `glm-5p1` and `qwen3p6-plus` on `fireworks` or `fireworks-tc`.
+  - `reasoning_effort` currently applies to `openai-tc`, `codex-tc`, `anthropic-pf`, `anthropic-tc`, and the Fireworks thinking models `deepseek-v4-pro`, `glm-5p1`, and `qwen3p6-plus` on `fireworks` or `fireworks-tc`.
 - `codex`: Codex CLI harness (agent loop). Default model is `codex` via `--codex-model codex`.
   - In the harness adapter, `codex` resolves to `gpt-5-codex` for stable Codex CLI compatibility.
 - `claude_code`: Claude Code CLI harness. `--reasoning-effort` maps to the CLI's `--effort` flag.
-- `swe_agent`: mini-swe-agent comparator. It does not currently expose a benchmark-wired reasoning-effort control, so records should leave this field empty. For Fireworks/LiteLLM, pass the full LiteLLM model string such as `fireworks_ai/accounts/fireworks/models/glm-5p1`; the harness forwards both `FIREWORKS_API_KEY` and `FIREWORKS_AI_API_KEY`, deriving either alias from the other when only one is set. It sets mini-swe-agent cost tracking to ignore LiteLLM pricing errors; when mini reports only a zero-cost placeholder, the harness estimates cost from trajectory token counts and the shared `data/pricing.edn` table.
+- `swe_agent`: mini-swe-agent comparator. `reasoning_effort` is wired for `fireworks_ai/accounts/fireworks/models/deepseek-v4-pro` via mini-swe-agent/LiteLLM `model_kwargs`; unsupported mini models should leave this field empty. For Fireworks/LiteLLM, pass the full LiteLLM model string such as `fireworks_ai/accounts/fireworks/models/deepseek-v4-pro` or `fireworks_ai/accounts/fireworks/models/glm-5p1`; the harness forwards both `FIREWORKS_API_KEY` and `FIREWORKS_AI_API_KEY`, deriving either alias from the other when only one is set. It sets mini-swe-agent cost tracking to ignore LiteLLM pricing errors; when mini reports only a zero-cost placeholder, the harness estimates cost from trajectory token counts and the shared `data/pricing.edn` table.
   - The mini runtime is built once in a Linux Docker container, cached on the host under `/tmp/bench-agent-runtime/mini-bundles` by default, and copied into task containers at `/opt/mini`. The in-container install script only verifies `/opt/mini/bin/mini` and `/opt/mini/bin/pty-run`.
   - Mutable mini state must stay out of task workspaces and `$HOME`: config, cache, and trajectories live under `/tmp/bench-agent-runtime/mini`. Terminal-Bench install stdout/stderr is preserved in the harness artifact `agent-logs/install.log`.
 - `spell` (including SWE-bench workspaces): adapter injects local `-Sdeps` so `spell.benchmark-api` resolves even when `cwd` is a cloned repo workspace.
-  - `reasoning_effort` currently applies to `openai-tc`, `codex-tc`, `anthropic-pf`, `anthropic-tc`, and the Fireworks thinking models `glm-5p1` and `qwen3p6-plus` on `fireworks` or `fireworks-tc`.
+  - `reasoning_effort` currently applies to `openai-tc`, `codex-tc`, `anthropic-pf`, `anthropic-tc`, and the Fireworks thinking models `deepseek-v4-pro`, `glm-5p1`, and `qwen3p6-plus` on `fireworks` or `fireworks-tc`.
   - For `fireworks:qwen3p6-plus` and `fireworks-tc:qwen3p6-plus`, benchmark `high` is resolved to Fireworks `reasoning_effort=32000` because the documented Qwen control is an integer reasoning token limit.
 
 Spell `--model` specs (provider prefix + model name from `.provider.edn`):

@@ -20,8 +20,12 @@ ANTHROPIC_THINKING_BUDGET: dict[str, int | None] = {
 ANTHROPIC_PROVIDER_PREFIXES = {"anthropic-pf", "anthropic-tc"}
 FIREWORKS_QWEN_HIGH_REASONING_BUDGET = "32000"
 FIREWORKS_REASONING_MODEL_MARKERS = {
+    "deepseek-v4-pro",
     "glm-5p1",
     "qwen3p6-plus",
+}
+FIREWORKS_SWE_AGENT_REASONING_MODEL_MARKERS = {
+    "deepseek-v4-pro",
 }
 
 
@@ -56,6 +60,12 @@ def _fireworks_supports_reasoning(model: str | None) -> bool:
     return any(marker in model for marker in FIREWORKS_REASONING_MODEL_MARKERS)
 
 
+def _fireworks_swe_agent_supports_reasoning(model: str | None) -> bool:
+    if not model:
+        return False
+    return any(marker in model for marker in FIREWORKS_SWE_AGENT_REASONING_MODEL_MARKERS)
+
+
 def _provider_prefix(model_spec: str | None) -> str | None:
     if not model_spec or ":" not in model_spec:
         return None
@@ -74,7 +84,7 @@ def supports_reasoning_effort(condition: str, model_spec: str | None) -> bool:
     if condition in {"claude_code", "codex"}:
         return True
     if condition == "swe_agent":
-        return False
+        return _fireworks_swe_agent_supports_reasoning(_model_name(model_spec))
     if condition in {"one_shot", "spell"}:
         provider = _provider_prefix(model_spec)
         if provider in SUPPORTED_SPELL_PROVIDER_PREFIXES:
