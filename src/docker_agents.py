@@ -1378,20 +1378,22 @@ set -euo pipefail
 rm -rf {MINI_RUNTIME_PREFIX}
 mkdir -p {MINI_RUNTIME_PREFIX}/python
 cp -a /usr/local/. {MINI_RUNTIME_PREFIX}/python/
-export LD_LIBRARY_PATH="{MINI_RUNTIME_PREFIX}/python/lib:${{LD_LIBRARY_PATH:-}}"
+mkdir -p {MINI_RUNTIME_PREFIX}/lib
+cp -a /usr/lib/*/libssl.so* /usr/lib/*/libcrypto.so* {MINI_RUNTIME_PREFIX}/lib/
+export LD_LIBRARY_PATH="{MINI_RUNTIME_PREFIX}/lib:{MINI_RUNTIME_PREFIX}/python/lib:${{LD_LIBRARY_PATH:-}}"
 {MINI_RUNTIME_PREFIX}/python/bin/python -m venv --copies {MINI_RUNTIME_PREFIX}/venv
 {MINI_RUNTIME_PREFIX}/venv/bin/python -m pip install -q --disable-pip-version-check --upgrade pip
 {MINI_RUNTIME_PREFIX}/venv/bin/python -m pip install -q --disable-pip-version-check {quoted_package}
 mkdir -p {MINI_RUNTIME_BIN}
 cat > {MINI_RUNTIME_BIN}/mini <<'EOF'
 #!/bin/sh
-export LD_LIBRARY_PATH="/opt/mini/python/lib:${{LD_LIBRARY_PATH:-}}"
+export LD_LIBRARY_PATH="/opt/mini/lib:/opt/mini/python/lib:${{LD_LIBRARY_PATH:-}}"
 exec /opt/mini/venv/bin/mini "$@"
 EOF
 printf %s {quoted_pty} > {MINI_RUNTIME_BIN}/pty-run.py
 cat > {MINI_RUNTIME_BIN}/pty-run <<'EOF'
 #!/bin/sh
-export LD_LIBRARY_PATH="/opt/mini/python/lib:${{LD_LIBRARY_PATH:-}}"
+export LD_LIBRARY_PATH="/opt/mini/lib:/opt/mini/python/lib:${{LD_LIBRARY_PATH:-}}"
 exec /opt/mini/venv/bin/python /opt/mini/bin/pty-run.py "$@"
 EOF
 chmod +x {MINI_RUNTIME_BIN}/mini {MINI_RUNTIME_BIN}/pty-run

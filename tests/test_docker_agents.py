@@ -1012,8 +1012,9 @@ EOF
         script = _mini_runtime_build_script("mini-swe-agent==1.2.3")
 
         self.assertIn(f"cp -a /usr/local/. {MINI_RUNTIME_PREFIX}/python/", script)
+        self.assertIn(f"cp -a /usr/lib/*/libssl.so* /usr/lib/*/libcrypto.so* {MINI_RUNTIME_PREFIX}/lib/", script)
         self.assertIn(f"{MINI_RUNTIME_PREFIX}/python/bin/python -m venv --copies", script)
-        self.assertIn('export LD_LIBRARY_PATH="/opt/mini/python/lib:${LD_LIBRARY_PATH:-}"', script)
+        self.assertIn('export LD_LIBRARY_PATH="/opt/mini/lib:/opt/mini/python/lib:${LD_LIBRARY_PATH:-}"', script)
         self.assertIn("exec /opt/mini/venv/bin/mini", script)
         self.assertIn("exec /opt/mini/venv/bin/python /opt/mini/bin/pty-run.py", script)
 
