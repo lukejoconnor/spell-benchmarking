@@ -290,8 +290,8 @@ class TerminalBenchBaseTests(unittest.TestCase):
                 def _install_script(self) -> str:
                     return "true"
 
-                def _install_agent_cli(self, container) -> bool:
-                    del container
+                def _install_agent_cli(self, container, logging_dir=None) -> bool:
+                    del container, logging_dir
                     return True
 
                 def _run_command(self, instruction: str, workdir: str) -> str:
@@ -317,6 +317,46 @@ class TerminalBenchBaseTests(unittest.TestCase):
 
             self.assertEqual(result.total_input_tokens, 39382)
             self.assertEqual(result.total_output_tokens, 18992)
+        finally:
+            _restore_modules(prior)
+
+    def test_install_agent_cli_writes_install_log(self) -> None:
+        module, prior = _load_base_module()
+        try:
+            class DummyAgent(module.DockerExecAgent):
+                @staticmethod
+                def name() -> str:
+                    return "dummy"
+
+                def _install_script(self) -> str:
+                    return "echo install"
+
+                def _run_command(self, instruction: str, workdir: str) -> str:
+                    del instruction, workdir
+                    return "true"
+
+                def _parse_usage(self, stdout: str, *, container=None, workdir: str | None = None):
+                    del stdout, container, workdir
+                    return None
+
+                def _env_vars(self) -> dict[str, str]:
+                    return {}
+
+            agent = DummyAgent()
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                with patch.object(
+                    agent,
+                    "_container_exec",
+                    return_value=module.ExecOutput(exit_code=1, stdout="full stdout", stderr="full stderr"),
+                ):
+                    ok = agent._install_agent_cli(_FakeContainer(), logging_dir=Path(tmp_dir))
+                log_text = (Path(tmp_dir) / "install.log").read_text(encoding="utf-8")
+
+            self.assertFalse(ok)
+            self.assertIn("== dummy install ==", log_text)
+            self.assertIn("exit_code: 1", log_text)
+            self.assertIn("full stdout", log_text)
+            self.assertIn("full stderr", log_text)
         finally:
             _restore_modules(prior)
 
@@ -439,11 +479,50 @@ class TerminalBenchBaseTests(unittest.TestCase):
             )
 
             self.assertFalse(agent._requires_node())
-            self.assertIn("mini-swe-agent", agent._install_script())
+            self.assertFalse(agent._requires_uv())
+            self.assertIn("/opt/mini", agent._install_script())
             cmd = agent._run_command("Fix it", "/workspace")
             self.assertIn("pty-run mini", cmd)
             self.assertIn("-m fireworks_ai/accounts/fireworks/models/glm-5p1", cmd)
             self.assertIn("-l 1.5", cmd)
+            self.assertNotIn(".mini-swe-agent", cmd)
+            self.assertNotIn("/root/.config", cmd)
+        finally:
+            _restore_modules(prior)
+
+    def test_swe_agent_preinstalls_opt_mini_and_writes_install_log(self) -> None:
+        module, prior = _load_swe_agent_module()
+        try:
+            class FakeContainer(_FakeContainer):
+                def __init__(self) -> None:
+                    self.archives: list[tuple[str, bytes]] = []
+
+                def put_archive(self, dest_dir: str, archive: bytes) -> bool:
+                    self.archives.append((dest_dir, archive))
+                    return True
+
+            agent = module.MiniSweAgent(model_name="fireworks_ai/accounts/fireworks/models/glm-5p1")
+            container = FakeContainer()
+            exec_results = [
+                module.ExecOutput(exit_code=0, stdout="", stderr=""),
+                module.ExecOutput(exit_code=0, stdout="mini runtime verified", stderr=""),
+            ]
+
+            def fake_exec(_container, cmd: str, **kwargs):
+                del _container, cmd, kwargs
+                return exec_results.pop(0)
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                with patch.object(agent, "_build_mini_bundle", return_value=b"bundle"), patch.object(
+                    agent, "_container_exec", side_effect=fake_exec
+                ):
+                    ok = agent._install_agent_cli(container, logging_dir=Path(tmp_dir))
+                log_text = (Path(tmp_dir) / "install.log").read_text(encoding="utf-8")
+
+            self.assertTrue(ok)
+            self.assertEqual(container.archives, [("/opt", b"bundle")])
+            self.assertIn("mini-swe-agent runtime verify", log_text)
+            self.assertIn("mini runtime verified", log_text)
         finally:
             _restore_modules(prior)
 

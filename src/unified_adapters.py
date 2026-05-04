@@ -347,15 +347,21 @@ class SweAgentAdapter:
         )
         env = os.environ.copy()
         env.update(swe_agent_env_vars())
+        runtime_base = Path(os.environ.get("MINI_SWE_AGENT_HOST_RUNTIME_BASE", "/tmp/bench-agent-runtime/mini-host"))
+        runtime_base.mkdir(parents=True, exist_ok=True)
+        host_bin = os.environ.get("MINI_SWE_AGENT_HOST_BIN", str(Path.home() / ".local" / "bin"))
 
         start = time.time()
-        with _benchmark_run_cwd(req.workspace) as run_cwd:
+        with _benchmark_run_cwd(req.workspace) as run_cwd, tempfile.TemporaryDirectory(prefix="run-", dir=runtime_base) as runtime_tmp:
+            runtime_root = Path(runtime_tmp)
             try:
                 cmd = swe_agent_run_command(
                     req.prompt,
                     model=model,
                     budget=budget,
                     workdir=str(run_cwd),
+                    runtime_bin=host_bin,
+                    runtime_root=str(runtime_root),
                     reasoning_effort=reasoning_effort,
                 )
                 proc = subprocess.run(
@@ -379,7 +385,7 @@ class SweAgentAdapter:
                 stderr = _subprocess_output_text(exc.stderr).strip()
                 exit_code = None
 
-            traj_path, traj = _load_swe_agent_trajectory(run_cwd)
+            traj_path, traj = _load_swe_agent_trajectory(runtime_root / "trajectories")
             response_text = _extract_swe_agent_response(traj) if traj else stdout
             usage = _swe_agent_usage_from_trajectory(traj, model) if traj else None
             cost_usd = usage.cost_usd if usage else (_extract_swe_agent_cost(traj) if traj else None)
@@ -436,7 +442,7 @@ class SweAgentAdapter:
             error_message = stderr or f"Exit code {exit_code}"
             error_type = "parse_error" if exit_code == 0 and traj is None else "mini_cli_error"
             if exit_code == 0 and traj is None:
-                error_message = f"No .traj.json file found under {run_cwd}"
+                error_message = f"No .traj.json file found under {runtime_root / 'trajectories'}"
 
             return RunResponse(
                 status="error",

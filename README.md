@@ -249,6 +249,8 @@ Selected via `--split` and `--task-ids`. Tasks are loaded from the FeatureBench 
 
 For mini-swe-agent through LiteLLM/Fireworks, pass the LiteLLM model string directly, for example `--swe-agent-model fireworks_ai/accounts/fireworks/models/deepseek-v4-pro` or `--swe-agent-model fireworks_ai/accounts/fireworks/models/glm-5p1`. The harness forwards both `FIREWORKS_API_KEY` and `FIREWORKS_AI_API_KEY`, deriving either alias from the other when only one is set. It also sets mini-swe-agent cost tracking to ignore LiteLLM pricing errors; when mini reports only a zero-cost placeholder, the harness estimates cost from trajectory token counts and the shared `data/pricing.edn` table. DeepSeek V4 Pro pricing is keyed as `accounts/fireworks/models/deepseek-v4-pro` with 1.74 input / 0.145 cached-input / 3.48 output per-million-token rates; cache-write input follows the shared 1.25x input convention.
 
+The `swe_agent` condition uses a prebuilt mini runtime bundle rather than installing mini-swe-agent inside every trial container. The host cache defaults to `/tmp/bench-agent-runtime/mini-bundles`; the bundle is copied into containers at `/opt/mini`, and the container install script only verifies `/opt/mini/bin/mini` plus `/opt/mini/bin/pty-run`. Mini config, cache, and trajectory files are redirected to `/tmp/bench-agent-runtime/mini` inside the task container so `/app`, `/testbed`, `/workspace`, cloned repos, and `$HOME` stay clean. Terminal-Bench writes full install stdout/stderr to `agent-logs/install.log`.
+
 ## One-Off Files
 
 Exploratory scripts and ad hoc outputs should live under `scratch/batches/` rather than repo root.

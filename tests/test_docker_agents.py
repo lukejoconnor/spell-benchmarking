@@ -20,6 +20,13 @@ from src.docker_agents import (
     CC_PAPER_COMPLIANT_ALLOWED_TOOLS,
     CLAUDE_RUNTIME_NPM_PREFIX,
     CLAUDE_RUNTIME_ROOT,
+    MINI_RUNTIME_BIN,
+    MINI_RUNTIME_CONFIG_DIR,
+    MINI_RUNTIME_CONFIG_ROOT,
+    MINI_RUNTIME_HOME,
+    MINI_RUNTIME_PREFIX,
+    MINI_RUNTIME_ROOT,
+    MINI_RUNTIME_TRAJECTORY_DIR,
     MIN_NODE_MAJOR_VERSION,
     NODE_BINARY_VERSION,
     AgentRunResult,
@@ -39,6 +46,8 @@ from src.docker_agents import (
     _cleanup_nodejs_binary_shell,
     _install_nodejs_binary_shell,
     _install_nodejs_shell,
+    _mini_runtime_build_script,
+    _mini_runtime_cache_path,
     _is_retryable_apt_fetch_failure,
     _is_retryable_install_timeout,
     _is_retryable_pip_hash_mismatch,
@@ -63,6 +72,7 @@ from src.docker_agents import (
     spell_parse_usage_log,
     spell_run_command,
     swe_agent_env_vars,
+    swe_agent_pre_install,
     swe_agent_install_script,
     swe_agent_parse_usage,
     swe_agent_run_command,
@@ -479,6 +489,23 @@ class DockerAgentsTests(unittest.TestCase):
         self.assertIn("npm install -g @anthropic-ai/claude-code@latest", script)
         self.assertEqual(install_script.call_args.kwargs, {"env": expected_env})
 
+    def test_install_agent_runtime_preinstalls_swe_agent_bundle_before_verifier(self) -> None:
+        container = object()
+        with (
+            patch("src.docker_agents.swe_agent_build_bundle", return_value=b"bundle") as build_bundle,
+            patch("src.docker_agents.swe_agent_pre_install", return_value=True) as pre_install,
+            patch("src.docker_agents.run_install_script", return_value=True) as install_script,
+            patch("src.docker_agents.swe_agent_env_vars", return_value={"MSWEA_COST_TRACKING": "ignore_errors"}),
+        ):
+            ok = _install_agent_runtime(container, condition="swe_agent", version="1.2.3")
+
+        self.assertTrue(ok)
+        build_bundle.assert_called_once_with(version="1.2.3")
+        pre_install.assert_called_once_with(container, b"bundle")
+        install_script.assert_called_once()
+        self.assertIn("/opt/mini", install_script.call_args.args[1])
+        self.assertEqual(install_script.call_args.kwargs, {"env": {"MSWEA_COST_TRACKING": "ignore_errors"}})
+
     @patch.dict(
         "os.environ",
         {
@@ -883,6 +910,29 @@ EOF
         self.assertEqual(container.calls[0][1], {"timeout": 321, "env": None, "workdir": None})
         sleep.assert_not_called()
 
+    def test_run_install_script_persists_full_attempt_logs(self) -> None:
+        container = FakeInstallContainer(
+            [
+                ExecOutput(exit_code=1, stdout="first stdout", stderr="Failed to fetch pkg: Connection timed out"),
+                ExecOutput(exit_code=0, stdout="second stdout", stderr="second stderr"),
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_path = Path(tmp_dir) / "agent-logs" / "install.log"
+            with patch("src.docker_agents.time.sleep"):
+                ok = run_install_script(container, "echo install", install_log_path=log_path)
+
+            log_text = log_path.read_text(encoding="utf-8")
+
+        self.assertTrue(ok)
+        self.assertIn("== Install script attempt 1 ==", log_text)
+        self.assertIn("first stdout", log_text)
+        self.assertIn("Failed to fetch pkg: Connection timed out", log_text)
+        self.assertIn("== Install script attempt 2 ==", log_text)
+        self.assertIn("second stdout", log_text)
+        self.assertIn("second stderr", log_text)
+
     def test_run_install_script_stops_after_three_retryable_failures(self) -> None:
         container = FakeInstallContainer(
             [
@@ -936,24 +986,61 @@ EOF
             "python -m pip install -q --disable-pip-version-check numpy",
         )
 
-    def test_swe_agent_install_script_uses_uv_tool_python_311_runtime(self) -> None:
+    def test_swe_agent_install_script_only_verifies_opt_mini_runtime(self) -> None:
         script = swe_agent_install_script()
 
-        self.assertIn('export PATH="$HOME/.local/bin:$PATH"', script)
-        self.assertIn('UV_UNMANAGED_INSTALL="$HOME/.local/bin"', script)
-        self.assertIn('"$uv_bin" python install 3.11', script)
-        self.assertIn('"$uv_bin" tool install -q --managed-python --python 3.11 mini-swe-agent', script)
+        self.assertIn(f'export PATH="{MINI_RUNTIME_BIN}:$PATH"', script)
+        self.assertIn(f'[ ! -x "{MINI_RUNTIME_BIN}/mini" ]', script)
+        self.assertIn(f'[ ! -x "{MINI_RUNTIME_BIN}/pty-run" ]', script)
+        self.assertIn("mini --help >/dev/null", script)
+        self.assertIn(f"mini runtime verified at {MINI_RUNTIME_PREFIX}", script)
+        self.assertNotIn("astral.sh/uv", script)
+        self.assertNotIn("uv tool install", script)
         self.assertNotIn("uv pip install --system", script)
         self.assertNotIn("pip install -q --disable-pip-version-check", script)
 
-    def test_swe_agent_install_script_installs_pty_run_wrapper(self) -> None:
-        script = swe_agent_install_script()
+    def test_swe_agent_pre_install_copies_bundle_to_opt_mini(self) -> None:
+        class FakeContainer:
+            def __init__(self) -> None:
+                self.commands: list[tuple[str, dict[str, object]]] = []
+                self.archives: list[tuple[str, bytes]] = []
 
-        self.assertIn('cat > "$HOME/.local/bin/pty-run"', script)
-        self.assertIn("pty.fork()", script)
-        self.assertIn('os.write(master_fd, b"\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n")', script)
+            def exec_run(self, cmd: str, **kwargs):
+                self.commands.append((cmd, dict(kwargs)))
+                return ExecOutput(exit_code=0, stdout="", stderr="")
 
-    def test_swe_agent_run_command_uses_home_local_bin_config_and_pty_wrapper(self) -> None:
+            def put_tar_archive(self, dest_dir: str, archive_bytes: bytes) -> bool:
+                self.archives.append((dest_dir, archive_bytes))
+                return True
+
+        container = FakeContainer()
+        ok = swe_agent_pre_install(container, b"bundle")
+
+        self.assertTrue(ok)
+        self.assertEqual(
+            container.commands,
+            [(f"mkdir -p /opt && rm -rf {MINI_RUNTIME_PREFIX}", {"timeout": 60, "workdir": "/"})],
+        )
+        self.assertEqual(container.archives, [("/opt", b"bundle")])
+
+    def test_swe_agent_runtime_cache_defaults_to_absolute_tmp_not_home(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            cache_path = _mini_runtime_cache_path()
+
+        self.assertTrue(str(cache_path).startswith("/tmp/bench-agent-runtime/mini-bundles/"))
+        self.assertNotIn(str(Path.home()), str(cache_path))
+
+    def test_swe_agent_runtime_build_script_copies_python_into_opt_mini(self) -> None:
+        script = _mini_runtime_build_script("mini-swe-agent==1.2.3")
+
+        self.assertIn(f"cp -a /usr/local/. {MINI_RUNTIME_PREFIX}/python/", script)
+        self.assertIn(f"cp -a /usr/lib/*/libssl.so* /usr/lib/*/libcrypto.so* {MINI_RUNTIME_PREFIX}/lib/", script)
+        self.assertIn(f"{MINI_RUNTIME_PREFIX}/python/bin/python -m venv --copies", script)
+        self.assertIn('export LD_LIBRARY_PATH="/opt/mini/lib:/opt/mini/python/lib:${LD_LIBRARY_PATH:-}"', script)
+        self.assertIn("exec /opt/mini/venv/bin/mini", script)
+        self.assertIn("exec /opt/mini/venv/bin/python /opt/mini/bin/pty-run.py", script)
+
+    def test_swe_agent_run_command_uses_opt_mini_and_tmp_runtime_state(self) -> None:
         cmd = swe_agent_run_command(
             "Fix this",
             model="fireworks_ai/accounts/fireworks/models/glm-5p1",
@@ -961,15 +1048,22 @@ EOF
             workdir="/testbed",
         )
 
-        self.assertIn('export PATH="$HOME/.local/bin:$PATH"', cmd)
+        self.assertIn(f"export MINI_RUNTIME_ROOT={MINI_RUNTIME_ROOT}", cmd)
+        self.assertIn(f"export HOME={MINI_RUNTIME_HOME}", cmd)
+        self.assertIn(f"export XDG_CONFIG_HOME={MINI_RUNTIME_CONFIG_ROOT}", cmd)
+        self.assertIn(f'export PATH="{MINI_RUNTIME_BIN}:$PATH"', cmd)
         self.assertIn('printf "MSWEA_MODEL_NAME=%s\\n" fireworks_ai/accounts/fireworks/models/glm-5p1', cmd)
         self.assertIn('printf "MSWEA_CONFIGURED=true\\n"', cmd)
         self.assertIn("FIREWORKS_API_KEY FIREWORKS_AI_API_KEY", cmd)
-        self.assertIn("cd /testbed && mkdir -p .mini-swe-agent && pty-run mini", cmd)
+        self.assertIn(f"> {MINI_RUNTIME_CONFIG_DIR}/.env", cmd)
+        self.assertIn("cd /testbed && pty-run mini", cmd)
         self.assertIn("-c mini.yaml", cmd)
         self.assertIn("-c model.model_name=fireworks_ai/accounts/fireworks/models/glm-5p1", cmd)
-        self.assertIn("-c agent.output_path=.mini-swe-agent/latest.traj.json", cmd)
+        self.assertIn(f"-c agent.output_path={MINI_RUNTIME_TRAJECTORY_DIR}/latest.traj.json", cmd)
         self.assertIn("-m fireworks_ai/accounts/fireworks/models/glm-5p1", cmd)
+        self.assertNotIn(".mini-swe-agent", cmd)
+        self.assertNotIn("/root/.config", cmd)
+        self.assertNotIn("traces", cmd)
         self.assertIn("-l 1.5", cmd)
         self.assertNotIn("model.model_kwargs.reasoning_effort", cmd)
 
@@ -1389,21 +1483,21 @@ EOF
                 return ExecOutput(
                     exit_code=0,
                     stdout=(
-                        "100.0\t/workspace/older.traj.json\n"
-                        "200.0\t/workspace/newer.traj.json\n"
+                        f"100.0\t{MINI_RUNTIME_TRAJECTORY_DIR}/older.traj.json\n"
+                        f"200.0\t{MINI_RUNTIME_TRAJECTORY_DIR}/newer.traj.json\n"
                     ),
                     stderr="",
                 )
 
             def read_text(self, path: str) -> str:
                 return {
-                    "/workspace/older.traj.json": '{"answer":"old"}',
-                    "/workspace/newer.traj.json": '{"answer":"new"}',
+                    f"{MINI_RUNTIME_TRAJECTORY_DIR}/older.traj.json": '{"answer":"old"}',
+                    f"{MINI_RUNTIME_TRAJECTORY_DIR}/newer.traj.json": '{"answer":"new"}',
                 }[path]
 
         path, traj = _load_swe_agent_trajectory(FakeContainer(), "")
 
-        self.assertEqual(path, Path("/workspace/newer.traj.json"))
+        self.assertEqual(path, Path(f"{MINI_RUNTIME_TRAJECTORY_DIR}/newer.traj.json"))
         self.assertEqual(traj, {"answer": "new"})
 
     def test_swe_agent_parse_usage_estimates_cost_from_tokens_when_litellm_cost_is_zero(self) -> None:
@@ -1496,7 +1590,7 @@ EOF
         self.assertEqual(usage.cost_usd, 0.42)
         self.assertEqual(usage.cost_source, "reported")
 
-    def test_load_swe_agent_trajectory_searches_mini_config_dir(self) -> None:
+    def test_load_swe_agent_trajectory_searches_tmp_mini_runtime_dirs(self) -> None:
         class FakeContainer:
             container_workdir = "/workspace"
 
@@ -1508,21 +1602,24 @@ EOF
                 self.commands.append(cmd)
                 return ExecOutput(
                     exit_code=0,
-                    stdout="300.0\t/root/.config/mini-swe-agent/last_mini_run.traj.json\n",
+                    stdout=f"300.0\t{MINI_RUNTIME_CONFIG_DIR}/last_mini_run.traj.json\n",
                     stderr="",
                 )
 
             def read_text(self, path: str) -> str:
-                if path != "/root/.config/mini-swe-agent/last_mini_run.traj.json":
+                if path != f"{MINI_RUNTIME_CONFIG_DIR}/last_mini_run.traj.json":
                     raise AssertionError(path)
-                return '{"answer":"root"}'
+                return '{"answer":"tmp"}'
 
         container = FakeContainer()
         path, traj = _load_swe_agent_trajectory(container, "")
 
-        self.assertEqual(path, Path("/root/.config/mini-swe-agent/last_mini_run.traj.json"))
-        self.assertEqual(traj, {"answer": "root"})
-        self.assertIn("/root/.config/mini-swe-agent", container.commands[0])
+        self.assertEqual(path, Path(f"{MINI_RUNTIME_CONFIG_DIR}/last_mini_run.traj.json"))
+        self.assertEqual(traj, {"answer": "tmp"})
+        self.assertIn(MINI_RUNTIME_TRAJECTORY_DIR, container.commands[0])
+        self.assertIn(MINI_RUNTIME_CONFIG_DIR, container.commands[0])
+        self.assertNotIn("/workspace", container.commands[0])
+        self.assertNotIn("/root/.config/mini-swe-agent", container.commands[0])
 
     @patch("src.docker_agents._install_agent_runtime", return_value=True)
     def test_codex_run_in_container_attaches_rollout_metadata(self, _install_runtime) -> None:

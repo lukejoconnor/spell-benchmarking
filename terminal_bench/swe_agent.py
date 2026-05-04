@@ -16,8 +16,10 @@ from terminal_bench.agents.failure_mode import FailureMode
 
 try:
     from src.docker_agents import (
+        MINI_RUNTIME_PREFIX,
         _extract_swe_agent_response,
         _load_swe_agent_trajectory,
+        swe_agent_build_bundle,
         swe_agent_env_vars,
         swe_agent_install_script,
         swe_agent_parse_usage,
@@ -26,8 +28,10 @@ try:
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from src.docker_agents import (
+        MINI_RUNTIME_PREFIX,
         _extract_swe_agent_response,
         _load_swe_agent_trajectory,
+        swe_agent_build_bundle,
         swe_agent_env_vars,
         swe_agent_install_script,
         swe_agent_parse_usage,
@@ -74,6 +78,7 @@ class MiniSweAgent(DockerExecAgent):
             **kwargs,
         )
         self._budget = budget
+        self._mini_bundle: bytes | None = None
         self._reasoning_effort = reasoning_effort
 
     @staticmethod
@@ -83,8 +88,65 @@ class MiniSweAgent(DockerExecAgent):
     def _requires_node(self) -> bool:
         return False
 
+    def _requires_uv(self) -> bool:
+        return False
+
     def _install_script(self) -> str:
         return swe_agent_install_script()
+
+    def _build_mini_bundle(self) -> bytes:
+        return swe_agent_build_bundle()
+
+    def _install_agent_cli(self, container, logging_dir: Path | None = None) -> bool:
+        try:
+            if self._mini_bundle is None:
+                self._mini_bundle = self._build_mini_bundle()
+        except Exception as exc:
+            self._write_install_log(
+                logging_dir,
+                ExecOutput(exit_code=1, stdout="", stderr=f"Failed to build mini-swe-agent runtime bundle: {exc}"),
+                label="mini-swe-agent runtime build",
+            )
+            logger.error("Failed to build mini-swe-agent runtime bundle: %s", exc)
+            return False
+
+        prep = self._container_exec(container, f"mkdir -p /opt && rm -rf {MINI_RUNTIME_PREFIX}", timeout=60)
+        if prep.exit_code != 0:
+            self._write_install_log(logging_dir, prep, label="mini-swe-agent /opt prepare")
+            logger.error("Failed to prepare /opt/mini in container: %s", prep.stderr[:1000])
+            return False
+
+        try:
+            copied = container.put_archive("/opt", self._mini_bundle)
+        except Exception as exc:
+            self._write_install_log(
+                logging_dir,
+                ExecOutput(exit_code=1, stdout="", stderr=f"Failed to copy mini-swe-agent runtime bundle into container: {exc}"),
+                label="mini-swe-agent runtime copy",
+            )
+            logger.error("Failed to copy mini-swe-agent runtime bundle into container: %s", exc)
+            return False
+        if not copied:
+            self._write_install_log(
+                logging_dir,
+                ExecOutput(exit_code=1, stdout="", stderr="Docker put_archive returned False while copying mini-swe-agent runtime bundle"),
+                label="mini-swe-agent runtime copy",
+            )
+            logger.error("Docker put_archive returned False while copying mini-swe-agent runtime bundle")
+            return False
+
+        result = self._container_exec(
+            container,
+            self._install_script(),
+            timeout=300,
+            env=self._env_vars(),
+        )
+        self._write_install_log(logging_dir, result, label="mini-swe-agent runtime verify")
+        if result.exit_code != 0:
+            logger.error("mini-swe-agent runtime verification failed:\n%s", result.stderr[:1000])
+            return False
+        logger.info("mini-swe-agent runtime verified")
+        return True
 
     def _env_vars(self) -> dict[str, str]:
         return swe_agent_env_vars()

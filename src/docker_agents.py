@@ -72,6 +72,15 @@ CODEX_RUNTIME_NVM_DIR = f"{CODEX_RUNTIME_ROOT}/nvm"
 CODEX_RUNTIME_NPM_PREFIX = f"{CODEX_RUNTIME_ROOT}/npm-global"
 CODEX_RUNTIME_NPM_CACHE = f"{CODEX_RUNTIME_ROOT}/npm-cache"
 UV_RUNTIME_BIN = "/tmp/bench-agent-runtime/uv-bin"
+MINI_RUNTIME_PREFIX = "/opt/mini"
+MINI_RUNTIME_BIN = f"{MINI_RUNTIME_PREFIX}/bin"
+MINI_RUNTIME_ROOT = "/tmp/bench-agent-runtime/mini"
+MINI_RUNTIME_HOME = f"{MINI_RUNTIME_ROOT}/home"
+MINI_RUNTIME_CONFIG_ROOT = f"{MINI_RUNTIME_ROOT}/config"
+MINI_RUNTIME_CONFIG_DIR = f"{MINI_RUNTIME_CONFIG_ROOT}/mini-swe-agent"
+MINI_RUNTIME_CACHE_ROOT = f"{MINI_RUNTIME_ROOT}/cache"
+MINI_RUNTIME_TRAJECTORY_DIR = f"{MINI_RUNTIME_ROOT}/trajectories"
+MINI_RUNTIME_BUNDLE_BASE_IMAGE = "python:3.11-slim-bullseye"
 APT_FETCH_RETRY_MAX_ATTEMPTS = 3
 APT_FETCH_RETRY_SLEEP_SECONDS = 5
 INSTALL_TIMEOUT_CLEANUP_TIMEOUT_SECONDS = 30
@@ -749,6 +758,26 @@ def _exec_output_excerpt(result: ExecOutput, *, limit: int = 500) -> str:
     return message[:limit]
 
 
+def _format_install_attempt_log(label: str, attempt: int, result: ExecOutput) -> str:
+    return (
+        f"== {label} attempt {attempt} ==\n"
+        f"exit_code: {result.exit_code}\n"
+        f"timed_out: {str(result.timed_out).lower()}\n"
+        "-- stdout --\n"
+        f"{result.stdout}"
+        f"{'' if result.stdout.endswith(chr(10)) or not result.stdout else chr(10)}"
+        "-- stderr --\n"
+        f"{result.stderr}"
+        f"{'' if result.stderr.endswith(chr(10)) or not result.stderr else chr(10)}"
+    )
+
+
+def _append_install_attempt_log(path: Path, label: str, attempt: int, result: ExecOutput) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(_format_install_attempt_log(label, attempt, result))
+
+
 def _is_retryable_install_timeout(result: ExecOutput) -> bool:
     return result.timed_out or result.exit_code == 124
 
@@ -801,12 +830,15 @@ def _run_install_with_apt_retry(
     env: dict[str, str] | None = None,
     workdir: str | None = None,
     label: str,
+    attempt_log_path: Path | None = None,
 ) -> ExecOutput:
     last_result = ExecOutput(exit_code=1, stdout="", stderr="install did not run")
     current_env = dict(env or {})
     for attempt in range(1, APT_FETCH_RETRY_MAX_ATTEMPTS + 1):
         exec_env = dict(current_env) if current_env else None
         last_result = exec_fn(script, timeout=timeout, env=exec_env, workdir=workdir)
+        if attempt_log_path is not None:
+            _append_install_attempt_log(attempt_log_path, label, attempt, last_result)
         if last_result.exit_code == 0:
             return last_result
         retryable_timeout = _is_retryable_install_timeout(last_result)
@@ -976,7 +1008,11 @@ def run_install_script(
     env: dict[str, str] | None = None,
     timeout: int = 300,
     workdir: str | None = None,
+    install_log_path: Path | None = None,
 ) -> bool:
+    if install_log_path is not None:
+        Path(install_log_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(install_log_path).write_text("", encoding="utf-8")
     result = _run_install_with_apt_retry(
         container.exec_run,
         script,
@@ -984,6 +1020,7 @@ def run_install_script(
         env=env,
         workdir=workdir,
         label="Install script",
+        attempt_log_path=Path(install_log_path) if install_log_path is not None else None,
     )
     if result.exit_code != 0:
         logger.error("Install script failed: %s", _exec_output_excerpt(result))
@@ -1286,57 +1323,26 @@ def _read_codex_rollout_from_container(
     return _read_codex_rollout_from_exec(container.exec_run, thread_id)
 
 
-def swe_agent_install_script() -> str:
-    return r"""
-set -euo pipefail
-export PATH="$HOME/.local/bin:$PATH"
+def _mini_runtime_package_spec(version: str | None = None) -> str:
+    resolved_version = version or os.environ.get("MINI_SWE_AGENT_VERSION")
+    if resolved_version and resolved_version != "latest":
+        return f"mini-swe-agent=={resolved_version}"
+    return "mini-swe-agent"
 
-if ! command -v uv >/dev/null 2>&1; then
-  if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
-    if command -v apt-get >/dev/null 2>&1; then
-      export DEBIAN_FRONTEND=noninteractive
-      apt-get -o Acquire::AllowInsecureRepositories=true update -qq
-      apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq ca-certificates curl >/dev/null
-    elif command -v apk >/dev/null 2>&1; then
-      apk add --no-cache ca-certificates curl >/dev/null
-    elif command -v dnf >/dev/null 2>&1; then
-      dnf install -y -q ca-certificates curl >/dev/null
-    elif command -v yum >/dev/null 2>&1; then
-      yum install -y -q ca-certificates curl >/dev/null
-    else
-      echo "Unable to install uv: curl/wget unavailable and unsupported package manager" >&2
-      exit 1
-    fi
-  fi
 
-  if command -v curl >/dev/null 2>&1; then
-    curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh >/dev/null
-  else
-    wget -qO- https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh >/dev/null
-  fi
-fi
+def _mini_runtime_cache_path(version: str | None = None) -> Path:
+    cache_root = Path(os.environ.get("MINI_SWE_AGENT_BUNDLE_CACHE_DIR", "/tmp/bench-agent-runtime/mini-bundles"))
+    package_version = (version or os.environ.get("MINI_SWE_AGENT_VERSION") or "latest").replace("/", "_")
+    image_key = MINI_RUNTIME_BUNDLE_BASE_IMAGE.replace("/", "_").replace(":", "_")
+    return cache_root / f"mini-swe-agent-{package_version}-{image_key}.tar"
 
-uv_bin="$(command -v uv || true)"
-if [ -z "$uv_bin" ] && [ -x "$HOME/.local/bin/uv" ]; then
-  uv_bin="$HOME/.local/bin/uv"
-fi
-if [ -z "$uv_bin" ]; then
-  echo "uv not available after installation" >&2
-  exit 1
-fi
-"$uv_bin" python install 3.11 >/dev/null
-"$uv_bin" tool install -q --managed-python --python 3.11 mini-swe-agent >/dev/null
 
-# Create pty-run wrapper: mini has an interactive setup wizard that checks
-# isatty(0) and aborts without a TTY. This wrapper allocates a real PTY and
-# sends newlines to auto-answer the wizard prompts with empty values.
-UV_PYTHON=$("$uv_bin" python find 3.11 2>/dev/null || echo python3)
-cat > "$HOME/.local/bin/pty-run" << PYEOF
-#!${UV_PYTHON}
-import os
+def _pty_run_script() -> str:
+    return r"""import os
 import pty
 import sys
 import time
+
 
 def main():
     argv = sys.argv[1:]
@@ -1359,11 +1365,126 @@ def main():
     _, status = os.waitpid(pid, 0)
     sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
 
+
 main()
-PYEOF
-chmod +x "$HOME/.local/bin/pty-run"
-echo "mini installed: $(mini --help >/dev/null 2>&1 && echo ok || echo missing)"
 """
+
+
+def _mini_runtime_build_script(package_spec: str) -> str:
+    quoted_package = shlex.quote(package_spec)
+    quoted_pty = shlex.quote(_pty_run_script())
+    return f"""
+set -euo pipefail
+rm -rf {MINI_RUNTIME_PREFIX}
+mkdir -p {MINI_RUNTIME_PREFIX}/python
+cp -a /usr/local/. {MINI_RUNTIME_PREFIX}/python/
+mkdir -p {MINI_RUNTIME_PREFIX}/lib
+cp -a /usr/lib/*/libssl.so* /usr/lib/*/libcrypto.so* {MINI_RUNTIME_PREFIX}/lib/
+export LD_LIBRARY_PATH="{MINI_RUNTIME_PREFIX}/lib:{MINI_RUNTIME_PREFIX}/python/lib:${{LD_LIBRARY_PATH:-}}"
+{MINI_RUNTIME_PREFIX}/python/bin/python -m venv --copies {MINI_RUNTIME_PREFIX}/venv
+{MINI_RUNTIME_PREFIX}/venv/bin/python -m pip install -q --disable-pip-version-check --upgrade pip
+{MINI_RUNTIME_PREFIX}/venv/bin/python -m pip install -q --disable-pip-version-check {quoted_package}
+mkdir -p {MINI_RUNTIME_BIN}
+cat > {MINI_RUNTIME_BIN}/mini <<'EOF'
+#!/bin/sh
+export LD_LIBRARY_PATH="/opt/mini/lib:/opt/mini/python/lib:${{LD_LIBRARY_PATH:-}}"
+exec /opt/mini/venv/bin/mini "$@"
+EOF
+printf %s {quoted_pty} > {MINI_RUNTIME_BIN}/pty-run.py
+cat > {MINI_RUNTIME_BIN}/pty-run <<'EOF'
+#!/bin/sh
+export LD_LIBRARY_PATH="/opt/mini/lib:/opt/mini/python/lib:${{LD_LIBRARY_PATH:-}}"
+exec /opt/mini/venv/bin/python /opt/mini/bin/pty-run.py "$@"
+EOF
+chmod +x {MINI_RUNTIME_BIN}/mini {MINI_RUNTIME_BIN}/pty-run
+{MINI_RUNTIME_BIN}/mini --help >/dev/null
+tar -C /opt -cf /tmp/mini-runtime.tar mini
+""".strip()
+
+
+def swe_agent_build_bundle(version: str | None = None) -> bytes:
+    explicit_bundle = os.environ.get("MINI_SWE_AGENT_BUNDLE")
+    if explicit_bundle:
+        return Path(explicit_bundle).read_bytes()
+
+    cache_path = _mini_runtime_cache_path(version)
+    if cache_path.exists():
+        return cache_path.read_bytes()
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    container_id: str | None = None
+    try:
+        start = subprocess.run(
+            ["docker", "run", "-d", "--rm", MINI_RUNTIME_BUNDLE_BASE_IMAGE, "sleep", "infinity"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if start.returncode != 0:
+            raise RuntimeError(f"Failed to start mini runtime build container: {start.stderr.strip()}")
+        container_id = start.stdout.strip()
+
+        build = subprocess.run(
+            [
+                "docker",
+                "exec",
+                container_id,
+                "bash",
+                "-lc",
+                _mini_runtime_build_script(_mini_runtime_package_spec(version)),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+        if build.returncode != 0:
+            raise RuntimeError(
+                "Failed to build mini-swe-agent runtime bundle: "
+                + _exec_output_excerpt(ExecOutput(build.returncode, build.stdout, build.stderr), limit=2000)
+            )
+
+        tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+        cp = subprocess.run(
+            ["docker", "cp", f"{container_id}:/tmp/mini-runtime.tar", str(tmp_path)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if cp.returncode != 0:
+            tmp_path.unlink(missing_ok=True)
+            raise RuntimeError(f"Failed to copy mini runtime bundle from build container: {cp.stderr.strip()}")
+        tmp_path.replace(cache_path)
+        return cache_path.read_bytes()
+    finally:
+        if container_id:
+            subprocess.run(["docker", "rm", "-f", container_id], capture_output=True, text=True, timeout=60)
+
+
+def swe_agent_pre_install(
+    container: DockerWorkspaceContainer,
+    bundle: bytes,
+) -> bool:
+    prep = container.exec_run(f"mkdir -p /opt && rm -rf {MINI_RUNTIME_PREFIX}", timeout=60, workdir="/")
+    if prep.exit_code != 0:
+        return False
+    return container.put_tar_archive("/opt", bundle)
+
+
+def swe_agent_install_script() -> str:
+    return f"""
+set -euo pipefail
+export PATH="{MINI_RUNTIME_BIN}:$PATH"
+if [ ! -x "{MINI_RUNTIME_BIN}/mini" ]; then
+  echo "mini runtime missing at {MINI_RUNTIME_BIN}/mini" >&2
+  exit 1
+fi
+if [ ! -x "{MINI_RUNTIME_BIN}/pty-run" ]; then
+  echo "mini pty wrapper missing at {MINI_RUNTIME_BIN}/pty-run" >&2
+  exit 1
+fi
+mini --help >/dev/null
+echo "mini runtime verified at {MINI_RUNTIME_PREFIX}"
+""".strip()
 
 
 def swe_agent_env_vars() -> dict[str, str]:
@@ -1387,27 +1508,43 @@ def swe_agent_run_command(
     model: str,
     budget: float | None = None,
     workdir: str | None = None,
+    runtime_bin: str = MINI_RUNTIME_BIN,
+    runtime_root: str = MINI_RUNTIME_ROOT,
+    runtime_home: str | None = None,
+    config_root: str | None = None,
+    config_dir: str | None = None,
+    cache_root: str | None = None,
+    trajectory_dir: str | None = None,
     reasoning_effort: str | None = None,
 ) -> str:
+    resolved_home = runtime_home or f"{runtime_root}/home"
+    resolved_config_root = config_root or f"{runtime_root}/config"
+    resolved_config_dir = config_dir or f"{resolved_config_root}/mini-swe-agent"
+    resolved_cache_root = cache_root or f"{runtime_root}/cache"
+    resolved_trajectory_dir = trajectory_dir or f"{runtime_root}/trajectories"
+    trajectory_path = f"{resolved_trajectory_dir}/latest.traj.json"
     setup = (
-        'export PATH="$HOME/.local/bin:$PATH" && '
-        'mkdir -p "$HOME/.config/mini-swe-agent" && '
-        'printf "MSWEA_MODEL_NAME=%s\\n" ' + shlex.quote(model) + ' > "$HOME/.config/mini-swe-agent/.env" && '
-        'printf "MSWEA_CONFIGURED=true\\n" >> "$HOME/.config/mini-swe-agent/.env" && '
+        f'export MINI_RUNTIME_ROOT={shlex.quote(runtime_root)} && '
+        f'export HOME={shlex.quote(resolved_home)} && '
+        f'export XDG_CONFIG_HOME={shlex.quote(resolved_config_root)} && '
+        f'export XDG_CACHE_HOME={shlex.quote(resolved_cache_root)} && '
+        f'export PATH="{runtime_bin}:$PATH" && '
+        f'mkdir -p "$HOME" {shlex.quote(resolved_config_dir)} "$XDG_CACHE_HOME" {shlex.quote(resolved_trajectory_dir)} && '
+        'printf "MSWEA_MODEL_NAME=%s\\n" ' + shlex.quote(model) + f' > {shlex.quote(resolved_config_dir + "/.env")} && '
+        f'printf "MSWEA_CONFIGURED=true\\n" >> {shlex.quote(resolved_config_dir + "/.env")} && '
         'for k in OPENAI_API_KEY ANTHROPIC_API_KEY FIREWORKS_API_KEY FIREWORKS_AI_API_KEY; do '
-        '  [ -n "${!k:-}" ] && printf "%s=%s\\n" "$k" "${!k}" >> "$HOME/.config/mini-swe-agent/.env"; '
+        f'  [ -n "${{!k:-}}" ] && printf "%s=%s\\n" "$k" "${{!k}}" >> {shlex.quote(resolved_config_dir + "/.env")}; '
         'done; true'
     )
     parts: list[str] = [setup, "&&"]
     if workdir:
         parts.extend(["cd", shlex.quote(workdir), "&&"])
-    parts.extend(["mkdir", "-p", ".mini-swe-agent", "&&"])
     parts.extend([
         "pty-run",
         "mini",
         "-c", "mini.yaml",
         "-c", "model.model_name=" + shlex.quote(model),
-        "-c", "agent.output_path=.mini-swe-agent/latest.traj.json",
+        "-c", "agent.output_path=" + shlex.quote(trajectory_path),
         "-t", shlex.quote(prompt),
         "-m", shlex.quote(model),
         "-y", "--exit-immediately",
@@ -1609,8 +1746,8 @@ def _load_swe_agent_trajectory(container: DockerWorkspaceContainer, stdout: str)
     search_roots = " ".join(
         shlex.quote(root)
         for root in [
-            container.container_workdir,
-            "/root/.config/mini-swe-agent",
+            MINI_RUNTIME_TRAJECTORY_DIR,
+            MINI_RUNTIME_CONFIG_DIR,
         ]
     )
     find_result = container.exec_run(
@@ -2088,6 +2225,9 @@ def _install_agent_runtime(
             return False
         return run_install_script(container, codex_install_script(version=version), env=env)
     if condition == "swe_agent":
+        bundle = swe_agent_build_bundle(version=version)
+        if not swe_agent_pre_install(container, bundle):
+            return False
         return run_install_script(container, swe_agent_install_script(), env=swe_agent_env_vars())
     if condition == "spell":
         spell_root = discover_spell_root()

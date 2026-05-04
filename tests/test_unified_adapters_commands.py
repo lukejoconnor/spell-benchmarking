@@ -411,7 +411,14 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
 
     @patch("src.unified_adapters.subprocess.run")
     def test_swe_agent_adapter_reads_trajectory_and_writes_trace(self, run_mock):
-        run_mock.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+        def fake_run(cmd, **kwargs):
+            del kwargs
+            trajectory_path = cmd.split("agent.output_path=", 1)[1].split()[0].strip("'")
+            Path(trajectory_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(trajectory_path).write_text(json.dumps(trajectory), encoding="utf-8")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        run_mock.side_effect = fake_run
         adapter = SweAgentAdapter(model="anthropic/claude-opus-4-6", budget=2.5)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -442,8 +449,14 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
             self.assertEqual(response.status, "ok")
             self.assertEqual(response.response_text, "final answer")
             self.assertEqual(response.cost_usd, 0.42)
-            self.assertIn("pty-run mini", run_mock.call_args.args[0])
-            self.assertIn("-t 'Return 42.'", run_mock.call_args.args[0])
+            cmd = run_mock.call_args.args[0]
+            self.assertIn("pty-run mini", cmd)
+            self.assertIn("-t 'Return 42.'", cmd)
+            self.assertIn("/tmp/bench-agent-runtime/mini-host/", cmd)
+            self.assertIn("/trajectories/latest.traj.json", cmd)
+            self.assertNotIn(str(workspace / ".mini-swe-agent"), cmd)
+            self.assertFalse((workspace / ".mini-swe-agent").exists())
+            self.assertFalse((workspace / "traces").exists())
             trace_file = response.metadata.get("trace_file")
             self.assertTrue(trace_file)
             trace_path = Path(trace_file)
@@ -455,7 +468,6 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
 
     @patch("src.unified_adapters.subprocess.run")
     def test_swe_agent_adapter_threads_deepseek_reasoning_effort_and_estimates_cost(self, run_mock):
-        run_mock.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
         adapter = SweAgentAdapter(model="fireworks_ai/accounts/fireworks/models/deepseek-v4-pro", budget=2.5)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -484,35 +496,48 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
                     }
                 ],
             }
-            (workspace / "run.traj.json").write_text(json.dumps(trajectory), encoding="utf-8")
 
-            response = adapter.run(
-                RunRequest(
-                    benchmark="general",
-                    dataset="gsm8k",
-                    item_id="item-1",
-                    condition="swe_agent",
-                    prompt="Return 42.",
-                    model_spec="fireworks_ai/accounts/fireworks/models/deepseek-v4-pro",
-                    timeout=5,
-                    workspace=workspace,
-                    reasoning_effort="high",
+            def fake_run(cmd, **kwargs):
+                del kwargs
+                trajectory_path = cmd.split("agent.output_path=", 1)[1].split()[0].strip("'")
+                Path(trajectory_path).parent.mkdir(parents=True, exist_ok=True)
+                Path(trajectory_path).write_text(json.dumps(trajectory), encoding="utf-8")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            run_mock.side_effect = fake_run
+            pricing = {
+                "accounts/fireworks/models/deepseek-v4-pro": {
+                    "input": 1.74,
+                    "cache-read-input": 0.145,
+                    "cache-write-input": 2.175,
+                    "output": 3.48,
+                }
+            }
+
+            with patch("src.usage_accounting.load_pricing_table", return_value=pricing):
+                response = adapter.run(
+                    RunRequest(
+                        benchmark="general",
+                        dataset="gsm8k",
+                        item_id="item-1",
+                        condition="swe_agent",
+                        prompt="Return 42.",
+                        model_spec="fireworks_ai/accounts/fireworks/models/deepseek-v4-pro",
+                        timeout=5,
+                        workspace=workspace,
+                        reasoning_effort="high",
+                    )
                 )
-            )
 
             self.assertEqual(response.status, "ok")
             self.assertIn("model.model_kwargs.reasoning_effort=high", run_mock.call_args.args[0])
+            self.assertIn("/tmp/bench-agent-runtime/mini-host/", run_mock.call_args.args[0])
+            self.assertFalse((workspace / "run.traj.json").exists())
             self.assertEqual(response.metadata["cost_source"], "estimated")
             self.assertAlmostEqual(response.cost_usd or 0.0, 0.00168925, places=9)
 
     @patch("src.unified_adapters.subprocess.run")
     def test_swe_agent_adapter_recovers_timeout_trajectory_cost(self, run_mock):
-        run_mock.side_effect = subprocess.TimeoutExpired(
-            cmd="mini",
-            timeout=5,
-            output="partial stdout",
-            stderr="partial stderr",
-        )
         adapter = SweAgentAdapter(model="fireworks_ai/accounts/fireworks/models/deepseek-v4-pro", budget=2.5)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -541,21 +566,43 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
                     }
                 ],
             }
-            (workspace / "run.traj.json").write_text(json.dumps(trajectory), encoding="utf-8")
 
-            response = adapter.run(
-                RunRequest(
-                    benchmark="general",
-                    dataset="gsm8k",
-                    item_id="item-1",
-                    condition="swe_agent",
-                    prompt="Return 42.",
-                    model_spec="fireworks_ai/accounts/fireworks/models/deepseek-v4-pro",
+            def fake_timeout(cmd, **kwargs):
+                del kwargs
+                trajectory_path = cmd.split("agent.output_path=", 1)[1].split()[0].strip("'")
+                Path(trajectory_path).parent.mkdir(parents=True, exist_ok=True)
+                Path(trajectory_path).write_text(json.dumps(trajectory), encoding="utf-8")
+                raise subprocess.TimeoutExpired(
+                    cmd="mini",
                     timeout=5,
-                    workspace=workspace,
-                    reasoning_effort="high",
+                    output="partial stdout",
+                    stderr="partial stderr",
                 )
-            )
+
+            run_mock.side_effect = fake_timeout
+            pricing = {
+                "accounts/fireworks/models/deepseek-v4-pro": {
+                    "input": 1.74,
+                    "cache-read-input": 0.145,
+                    "cache-write-input": 2.175,
+                    "output": 3.48,
+                }
+            }
+
+            with patch("src.usage_accounting.load_pricing_table", return_value=pricing):
+                response = adapter.run(
+                    RunRequest(
+                        benchmark="general",
+                        dataset="gsm8k",
+                        item_id="item-1",
+                        condition="swe_agent",
+                        prompt="Return 42.",
+                        model_spec="fireworks_ai/accounts/fireworks/models/deepseek-v4-pro",
+                        timeout=5,
+                        workspace=workspace,
+                        reasoning_effort="high",
+                    )
+                )
 
             self.assertEqual(response.status, "timeout")
             self.assertEqual(response.error_type, "timeout")
