@@ -1124,7 +1124,7 @@ EOF
         pricing = {
             "accounts/fireworks/models/deepseek-v4-pro": {
                 "input": 1.74,
-                "cache-read-input": 0.14,
+                "cache-read-input": 0.145,
                 "cache-write-input": 2.175,
                 "output": 3.48,
             }
@@ -1142,7 +1142,7 @@ EOF
         self.assertEqual(usage.visible_output_tokens, 80)
         self.assertEqual(usage.reasoning_output_tokens, 20)
         self.assertEqual(usage.cost_source, "estimated")
-        self.assertAlmostEqual(usage.cost_usd or 0.0, 0.001688, places=9)
+        self.assertAlmostEqual(usage.cost_usd or 0.0, 0.00168925, places=9)
 
     def test_swe_agent_usage_ignores_zero_reported_cost_without_tokens(self) -> None:
         traj = {"info": {"model_stats": {"instance_cost": 0.0}}}

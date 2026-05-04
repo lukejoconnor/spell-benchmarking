@@ -88,6 +88,15 @@ def _benchmark_run_cwd(workspace: Path | None):
     with tempfile.TemporaryDirectory(prefix="spell-bench-") as tmp_dir:
         yield Path(tmp_dir)
 
+
+def _subprocess_output_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
 def _default_format_for_spell(req: "RunRequest") -> dict[str, list[str]] | None:
     if req.benchmark in SOFTWARE_BENCHMARKS:
         return None
@@ -340,8 +349,8 @@ class SweAgentAdapter:
         env.update(swe_agent_env_vars())
 
         start = time.time()
-        try:
-            with _benchmark_run_cwd(req.workspace) as run_cwd:
+        with _benchmark_run_cwd(req.workspace) as run_cwd:
+            try:
                 cmd = swe_agent_run_command(
                     req.prompt,
                     model=model,
@@ -358,74 +367,86 @@ class SweAgentAdapter:
                     env=env,
                     shell=True,
                 )
+                timed_out = False
                 latency_ms = (time.time() - start) * 1000
                 stdout = (proc.stdout or "").strip()
                 stderr = (proc.stderr or "").strip()
-                traj_path, traj = _load_swe_agent_trajectory(run_cwd)
-                response_text = _extract_swe_agent_response(traj) if traj else stdout
-                usage = _swe_agent_usage_from_trajectory(traj, model) if traj else None
-                cost_usd = usage.cost_usd if usage else (_extract_swe_agent_cost(traj) if traj else None)
+                exit_code = proc.returncode
+            except subprocess.TimeoutExpired as exc:
+                timed_out = True
+                latency_ms = (time.time() - start) * 1000
+                stdout = _subprocess_output_text(exc.stdout).strip()
+                stderr = _subprocess_output_text(exc.stderr).strip()
+                exit_code = None
 
-                trace_file: Path | None = None
-                if req.trace_dir is not None:
-                    trace_payload = {
-                        "item_id": req.item_id,
-                        "condition": self.condition,
-                        "timestamp": datetime.now(UTC).isoformat(),
-                        "model": model,
-                        "prompt": req.prompt,
-                        "stdout": stdout,
-                        "stderr": stderr,
-                        "exit_code": proc.returncode,
-                        "latency_ms": latency_ms,
-                        "trajectory_path": str(traj_path) if traj_path else None,
-                        "trajectory": traj,
-                    }
-                    trace_file = _write_trace(req.trace_dir, req.item_id, self.condition, trace_payload)
+            traj_path, traj = _load_swe_agent_trajectory(run_cwd)
+            response_text = _extract_swe_agent_response(traj) if traj else stdout
+            usage = _swe_agent_usage_from_trajectory(traj, model) if traj else None
+            cost_usd = usage.cost_usd if usage else (_extract_swe_agent_cost(traj) if traj else None)
 
-                metadata = {
+            trace_file: Path | None = None
+            if req.trace_dir is not None:
+                trace_payload = {
+                    "item_id": req.item_id,
+                    "condition": self.condition,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "model": model,
+                    "prompt": req.prompt,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "exit_code": exit_code,
+                    "timed_out": timed_out,
+                    "latency_ms": latency_ms,
                     "trajectory_path": str(traj_path) if traj_path else None,
-                    "trace_file": str(trace_file) if trace_file else None,
-                    "stdout_tail": stdout[-4000:],
-                    "stderr_tail": stderr[-4000:],
-                    "cost_source": usage.cost_source if usage and usage.cost_source else None,
+                    "trajectory": traj,
                 }
-                metadata = {k: v for k, v in metadata.items() if v is not None}
+                trace_file = _write_trace(req.trace_dir, req.item_id, self.condition, trace_payload)
 
-                if proc.returncode == 0 and traj is not None:
-                    return RunResponse(
-                        status="ok",
-                        response_text=response_text or None,
-                        usage=usage,
-                        cost_usd=cost_usd,
-                        latency_ms=latency_ms,
-                        metadata=metadata,
-                    )
+            metadata = {
+                "trajectory_path": str(traj_path) if traj_path else None,
+                "trace_file": str(trace_file) if trace_file else None,
+                "stdout_tail": stdout[-4000:],
+                "stderr_tail": stderr[-4000:],
+                "cost_source": usage.cost_source if usage and usage.cost_source else None,
+            }
+            metadata = {k: v for k, v in metadata.items() if v is not None}
 
-                error_message = stderr or f"Exit code {proc.returncode}"
-                error_type = "parse_error" if proc.returncode == 0 and traj is None else "mini_cli_error"
-                if proc.returncode == 0 and traj is None:
-                    error_message = f"No .traj.json file found under {run_cwd}"
-
+            if timed_out:
                 return RunResponse(
-                    status="error",
+                    status="timeout",
+                    response_text=response_text or "",
+                    usage=usage,
+                    cost_usd=cost_usd,
+                    latency_ms=latency_ms,
+                    error_message=f"Timeout ({req.timeout}s)",
+                    error_type="timeout",
+                    metadata=metadata,
+                )
+
+            if exit_code == 0 and traj is not None:
+                return RunResponse(
+                    status="ok",
                     response_text=response_text or None,
                     usage=usage,
                     cost_usd=cost_usd,
                     latency_ms=latency_ms,
-                    error_message=error_message,
-                    error_type=error_type,
                     metadata=metadata,
                 )
-        except subprocess.TimeoutExpired:
+
+            error_message = stderr or f"Exit code {exit_code}"
+            error_type = "parse_error" if exit_code == 0 and traj is None else "mini_cli_error"
+            if exit_code == 0 and traj is None:
+                error_message = f"No .traj.json file found under {run_cwd}"
+
             return RunResponse(
-                status="timeout",
-                response_text="",
-                usage=None,
-                cost_usd=None,
-                latency_ms=(time.time() - start) * 1000,
-                error_message=f"Timeout ({req.timeout}s)",
-                error_type="timeout",
+                status="error",
+                response_text=response_text or None,
+                usage=usage,
+                cost_usd=cost_usd,
+                latency_ms=latency_ms,
+                error_message=error_message,
+                error_type=error_type,
+                metadata=metadata,
             )
 
 
