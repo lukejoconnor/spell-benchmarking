@@ -332,15 +332,21 @@ class SweAgentAdapter:
         budget = req.budget if req.budget is not None else self.budget
         env = os.environ.copy()
         env.update(swe_agent_env_vars())
+        runtime_base = Path(os.environ.get("MINI_SWE_AGENT_HOST_RUNTIME_BASE", "/tmp/bench-agent-runtime/mini-host"))
+        runtime_base.mkdir(parents=True, exist_ok=True)
+        host_bin = os.environ.get("MINI_SWE_AGENT_HOST_BIN", str(Path.home() / ".local" / "bin"))
 
         start = time.time()
         try:
-            with _benchmark_run_cwd(req.workspace) as run_cwd:
+            with _benchmark_run_cwd(req.workspace) as run_cwd, tempfile.TemporaryDirectory(prefix="run-", dir=runtime_base) as runtime_tmp:
+                runtime_root = Path(runtime_tmp)
                 cmd = swe_agent_run_command(
                     req.prompt,
                     model=model,
                     budget=budget,
                     workdir=str(run_cwd),
+                    runtime_bin=host_bin,
+                    runtime_root=str(runtime_root),
                 )
                 proc = subprocess.run(
                     cmd,
@@ -354,7 +360,7 @@ class SweAgentAdapter:
                 latency_ms = (time.time() - start) * 1000
                 stdout = (proc.stdout or "").strip()
                 stderr = (proc.stderr or "").strip()
-                traj_path, traj = _load_swe_agent_trajectory(run_cwd)
+                traj_path, traj = _load_swe_agent_trajectory(runtime_root / "trajectories")
                 response_text = _extract_swe_agent_response(traj) if traj else stdout
                 cost_usd = _extract_swe_agent_cost(traj) if traj else None
 

@@ -1032,7 +1032,7 @@ EOF
         self.assertIn('printf "MSWEA_MODEL_NAME=%s\\n" fireworks_ai/accounts/fireworks/models/glm-5p1', cmd)
         self.assertIn('printf "MSWEA_CONFIGURED=true\\n"', cmd)
         self.assertIn("FIREWORKS_API_KEY FIREWORKS_AI_API_KEY", cmd)
-        self.assertIn(f'> "{MINI_RUNTIME_CONFIG_DIR}/.env"', cmd)
+        self.assertIn(f"> {MINI_RUNTIME_CONFIG_DIR}/.env", cmd)
         self.assertIn("cd /testbed && pty-run mini", cmd)
         self.assertIn("-c mini.yaml", cmd)
         self.assertIn("-c model.model_name=fireworks_ai/accounts/fireworks/models/glm-5p1", cmd)

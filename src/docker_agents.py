@@ -1506,19 +1506,31 @@ def swe_agent_run_command(
     model: str,
     budget: float | None = None,
     workdir: str | None = None,
+    runtime_bin: str = MINI_RUNTIME_BIN,
+    runtime_root: str = MINI_RUNTIME_ROOT,
+    runtime_home: str | None = None,
+    config_root: str | None = None,
+    config_dir: str | None = None,
+    cache_root: str | None = None,
+    trajectory_dir: str | None = None,
 ) -> str:
-    trajectory_path = f"{MINI_RUNTIME_TRAJECTORY_DIR}/latest.traj.json"
+    resolved_home = runtime_home or f"{runtime_root}/home"
+    resolved_config_root = config_root or f"{runtime_root}/config"
+    resolved_config_dir = config_dir or f"{resolved_config_root}/mini-swe-agent"
+    resolved_cache_root = cache_root or f"{runtime_root}/cache"
+    resolved_trajectory_dir = trajectory_dir or f"{runtime_root}/trajectories"
+    trajectory_path = f"{resolved_trajectory_dir}/latest.traj.json"
     setup = (
-        f'export MINI_RUNTIME_ROOT={shlex.quote(MINI_RUNTIME_ROOT)} && '
-        f'export HOME={shlex.quote(MINI_RUNTIME_HOME)} && '
-        f'export XDG_CONFIG_HOME={shlex.quote(MINI_RUNTIME_CONFIG_ROOT)} && '
-        f'export XDG_CACHE_HOME={shlex.quote(MINI_RUNTIME_CACHE_ROOT)} && '
-        f'export PATH="{MINI_RUNTIME_BIN}:$PATH" && '
-        f'mkdir -p "$HOME" "{MINI_RUNTIME_CONFIG_DIR}" "$XDG_CACHE_HOME" "{MINI_RUNTIME_TRAJECTORY_DIR}" && '
-        'printf "MSWEA_MODEL_NAME=%s\\n" ' + shlex.quote(model) + f' > "{MINI_RUNTIME_CONFIG_DIR}/.env" && '
-        f'printf "MSWEA_CONFIGURED=true\\n" >> "{MINI_RUNTIME_CONFIG_DIR}/.env" && '
+        f'export MINI_RUNTIME_ROOT={shlex.quote(runtime_root)} && '
+        f'export HOME={shlex.quote(resolved_home)} && '
+        f'export XDG_CONFIG_HOME={shlex.quote(resolved_config_root)} && '
+        f'export XDG_CACHE_HOME={shlex.quote(resolved_cache_root)} && '
+        f'export PATH="{runtime_bin}:$PATH" && '
+        f'mkdir -p "$HOME" {shlex.quote(resolved_config_dir)} "$XDG_CACHE_HOME" {shlex.quote(resolved_trajectory_dir)} && '
+        'printf "MSWEA_MODEL_NAME=%s\\n" ' + shlex.quote(model) + f' > {shlex.quote(resolved_config_dir + "/.env")} && '
+        f'printf "MSWEA_CONFIGURED=true\\n" >> {shlex.quote(resolved_config_dir + "/.env")} && '
         'for k in OPENAI_API_KEY ANTHROPIC_API_KEY FIREWORKS_API_KEY FIREWORKS_AI_API_KEY; do '
-        f'  [ -n "${{!k:-}}" ] && printf "%s=%s\\n" "$k" "${{!k}}" >> "{MINI_RUNTIME_CONFIG_DIR}/.env"; '
+        f'  [ -n "${{!k:-}}" ] && printf "%s=%s\\n" "$k" "${{!k}}" >> {shlex.quote(resolved_config_dir + "/.env")}; '
         'done; true'
     )
     parts: list[str] = [setup, "&&"]
