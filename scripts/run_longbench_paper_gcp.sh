@@ -9,6 +9,10 @@ GCP_LAUNCHER="$SPELL_ROOT/scripts/gcp-benchmark.sh"
 DATASET="${DATASET:-longbench}"
 MODEL="${MODEL:-openai-tc:gpt-5.4}"
 CODEX_MODEL="${CODEX_MODEL:-gpt-5.4}"
+SPELL_TRAILING="${SPELL_TRAILING:-}"
+if [[ -z "$SPELL_TRAILING" ]]; then
+  SPELL_TRAILING="'(!extend)"
+fi
 REASONING_EFFORT="${REASONING_EFFORT:-medium}"
 PARALLEL="${PARALLEL:-4}"
 PILOT_N="${PILOT_N:-4}"
@@ -17,8 +21,8 @@ REST_START="${REST_START:-4}"
 SPELL_REF="${SPELL_REF:-paper}"
 BENCHMARKING_REF="${BENCHMARKING_REF:-paper}"
 DATE_TAG="${DATE_TAG:-$(date -u +%Y%m%d)}"
-RUN_GROUP="${RUN_GROUP:-longbench-paper-gpt54-med-${DATE_TAG}}"
-VM_PREFIX="${VM_PREFIX:-lbp54m-${DATE_TAG}}"
+RUN_GROUP="${RUN_GROUP:-longbench-paper-gpt54-med-simple-trailing-${DATE_TAG}}"
+VM_PREFIX="${VM_PREFIX:-lbp54m-simple-${DATE_TAG}}"
 MACHINE_TYPE="${MACHINE_TYPE:-e2-standard-4}"
 DISK_SIZE_GB="${DISK_SIZE_GB:-100}"
 MAX_RUN_DURATION="${MAX_RUN_DURATION:-168h}"
@@ -27,10 +31,14 @@ usage() {
   cat <<'EOF'
 Usage:
   scripts/run_longbench_paper_gcp.sh pilot
+  scripts/run_longbench_paper_gcp.sh pilot-spell
   scripts/run_longbench_paper_gcp.sh print-pilot
+  scripts/run_longbench_paper_gcp.sh print-pilot-spell
   scripts/run_longbench_paper_gcp.sh wait-pilot
   scripts/run_longbench_paper_gcp.sh rest
+  scripts/run_longbench_paper_gcp.sh rest-spell
   scripts/run_longbench_paper_gcp.sh print-rest
+  scripts/run_longbench_paper_gcp.sh print-rest-spell
   scripts/run_longbench_paper_gcp.sh wait-rest
   scripts/run_longbench_paper_gcp.sh status
   scripts/run_longbench_paper_gcp.sh pull
@@ -40,10 +48,12 @@ Runs the LongBench v2 Spell vs Codex GPT-5.4/medium paper replication on GCP.
 Both remote checkouts default to paper/paper. The pilot runs the first 4 items.
 The rest phase runs items 5-200 from the same ordered LongBench v2 subset used
 for the paper-facing 200-item result.
+Use pilot-spell/rest-spell for the simple-trailing Spell-only paper rerun.
 
 Useful overrides:
   RUN_GROUP=... VM_PREFIX=... PARALLEL=4 SPELL_REF=paper BENCHMARKING_REF=paper
-  MODEL=openai-tc:gpt-5.4 CODEX_MODEL=gpt-5.4 MACHINE_TYPE=e2-standard-4
+  MODEL=openai-tc:gpt-5.4 CODEX_MODEL=gpt-5.4 SPELL_TRAILING="'(!extend)"
+  MACHINE_TYPE=e2-standard-4
 EOF
 }
 
@@ -93,7 +103,7 @@ bench_command() {
     spell)
       args+=(--model "$MODEL"
         --agent config/agents/io-tc.agent.edn
-        --trailing "'(!describe io)"
+        --trailing "$SPELL_TRAILING"
         --timeout 1200
         --budget 3)
       ;;
@@ -165,9 +175,16 @@ case "${1:-}" in
     dispatch_one spell pilot
     dispatch_one codex pilot
     ;;
+  pilot-spell)
+    require_launcher
+    dispatch_one spell pilot
+    ;;
   print-pilot)
     printf 'spell pilot:\n%s\n\n' "$(bench_command spell pilot lb-paper-pilot-spell)"
     printf 'codex pilot:\n%s\n' "$(bench_command codex pilot lb-paper-pilot-codex)"
+    ;;
+  print-pilot-spell)
+    printf 'spell pilot:\n%s\n' "$(bench_command spell pilot lb-paper-pilot-spell)"
     ;;
   wait-pilot)
     require_launcher
@@ -178,9 +195,16 @@ case "${1:-}" in
     dispatch_one spell rest
     dispatch_one codex rest
     ;;
+  rest-spell)
+    require_launcher
+    dispatch_one spell rest
+    ;;
   print-rest)
     printf 'spell rest:\n%s\n\n' "$(bench_command spell rest lb-paper-rest-spell)"
     printf 'codex rest:\n%s\n' "$(bench_command codex rest lb-paper-rest-codex)"
+    ;;
+  print-rest-spell)
+    printf 'spell rest:\n%s\n' "$(bench_command spell rest lb-paper-rest-spell)"
     ;;
   wait-rest)
     require_launcher

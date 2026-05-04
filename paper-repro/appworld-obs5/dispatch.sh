@@ -7,12 +7,14 @@
 #
 # Conditions:
 #   Spell: openai-tc:gpt-5.4, config/agents/io-tc.agent.edn, medium effort,
-#          trailing `'(!describe io reminders :coding)`.
+#          trailing `'(!extend)`.
 #   Codex: Codex CLI gpt-5.4, medium effort.
 #
 # Usage from benchmarking/:
 #   paper-repro/appworld-obs5/dispatch.sh pilot
+#   paper-repro/appworld-obs5/dispatch.sh pilot-spell
 #   paper-repro/appworld-obs5/dispatch.sh full
+#   paper-repro/appworld-obs5/dispatch.sh full-spell
 #   paper-repro/appworld-obs5/dispatch.sh full-cond spell
 #   paper-repro/appworld-obs5/dispatch.sh full-cond codex
 #
@@ -41,7 +43,7 @@ EFFORT="${EFFORT:-medium}"
 DATASET="${DATASET:-appworld-dev}"
 SPELL_TRAILING="${SPELL_TRAILING:-}"
 if [[ -z "$SPELL_TRAILING" ]]; then
-  SPELL_TRAILING="'(!describe io reminders :coding)"
+  SPELL_TRAILING="'(!extend)"
 fi
 SPELL_AGENT="${SPELL_AGENT:-config/agents/io-tc.agent.edn}"
 
@@ -90,7 +92,7 @@ dispatch_condition() {
 }
 
 cmd_pilot() {
-  RUN_GROUP="${RUN_GROUP_OVERRIDE:-paper-appworld-gpt54-med-pilot-$(date -u +%Y%m%d)}"
+  RUN_GROUP="${RUN_GROUP_OVERRIDE:-paper-appworld-gpt54-med-simple-trailing-pilot-$(date -u +%Y%m%d)}"
   dispatch_condition spell "$SCRIPT_DIR/pilot-items.txt" pilot
   dispatch_condition codex "$SCRIPT_DIR/pilot-items.txt" pilot
   echo
@@ -98,8 +100,16 @@ cmd_pilot() {
   echo "Monitor:   ${GCP} wait --run-group ${RUN_GROUP} --finish"
 }
 
+cmd_pilot_spell() {
+  RUN_GROUP="${RUN_GROUP_OVERRIDE:-paper-appworld-gpt54-med-simple-trailing-pilot-$(date -u +%Y%m%d)}"
+  dispatch_condition spell "$SCRIPT_DIR/pilot-items.txt" pilot
+  echo
+  echo "Run group: ${RUN_GROUP}"
+  echo "Monitor:   ${GCP} wait --run-group ${RUN_GROUP} --finish"
+}
+
 cmd_full() {
-  RUN_GROUP="${RUN_GROUP_OVERRIDE:-paper-appworld-gpt54-med-full-$(date -u +%Y%m%d)}"
+  RUN_GROUP="${RUN_GROUP_OVERRIDE:-paper-appworld-gpt54-med-simple-trailing-full-$(date -u +%Y%m%d)}"
   dispatch_condition spell "$SCRIPT_DIR/appworld-dev-items.txt" full
   dispatch_condition codex "$SCRIPT_DIR/appworld-dev-items.txt" full
   echo
@@ -109,7 +119,7 @@ cmd_full() {
 
 cmd_full_cond() {
   local condition="$1"
-  RUN_GROUP="${RUN_GROUP_OVERRIDE:-paper-appworld-gpt54-med-full-$(date -u +%Y%m%d)}"
+  RUN_GROUP="${RUN_GROUP_OVERRIDE:-paper-appworld-gpt54-med-simple-trailing-full-$(date -u +%Y%m%d)}"
   dispatch_condition "$condition" "$SCRIPT_DIR/appworld-dev-items.txt" full
   echo
   echo "Run group: ${RUN_GROUP}"
@@ -120,15 +130,21 @@ case "${1:-}" in
   pilot)
     cmd_pilot
     ;;
+  pilot-spell)
+    cmd_pilot_spell
+    ;;
   full)
     cmd_full
+    ;;
+  full-spell)
+    cmd_full_cond spell
     ;;
   full-cond)
     [[ $# -eq 2 ]] || { echo "Usage: $0 full-cond <spell|codex>" >&2; exit 2; }
     cmd_full_cond "$2"
     ;;
   *)
-    echo "Usage: $0 {pilot|full|full-cond <spell|codex>}" >&2
+    echo "Usage: $0 {pilot|pilot-spell|full|full-spell|full-cond <spell|codex>}" >&2
     exit 2
     ;;
 esac

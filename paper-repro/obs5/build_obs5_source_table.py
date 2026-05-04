@@ -127,12 +127,12 @@ SPECS = (
         benchmark="LongBench v2",
         system="Spell",
         patterns=(
-            "benchmarking/results/gcp/lbp54m-20260501-pilot-spell/unified/*.jsonl",
-            "benchmarking/results/gcp/lbp54m-20260501-rest-spell/unified/*.jsonl",
+            "benchmarking/results/gcp/lbp54m-simple-20260501-pilot-spell/unified/*.jsonl",
+            "benchmarking/results/gcp/lbp54m-simple-20260501-rest-spell/unified/*.jsonl",
         ),
         scorer="correct",
-        source="benchmarking/results/gcp/lbp54m-20260501-{pilot,rest}-spell/unified/*.jsonl",
-        note="GPT-5.4 medium paper/paper rerun; chunked LongBench prompt from benchmarking paper branch; no benchmark-harness exclusions applied.",
+        source="benchmarking/results/gcp/lbp54m-simple-20260501-{pilot,rest}-spell/unified/*.jsonl",
+        note="GPT-5.4 medium paper/paper rerun with plain `'(!extend)` trailing; no benchmark-harness exclusions applied.",
     ),
     ArtifactSpec(
         benchmark="LongBench v2",
@@ -148,10 +148,10 @@ SPECS = (
     ArtifactSpec(
         benchmark="AppWorld dev",
         system="Spell",
-        patterns=("benchmarking/results/gcp/appworld-full-spell/terminal-bench/*.jsonl",),
+        patterns=("benchmarking/results/gcp/appworld-full-spell/terminal-bench/terminalbench_20260501_200559_*.jsonl",),
         scorer="correct",
-        source="benchmarking/results/gcp/appworld-full-spell/terminal-bench/*.jsonl",
-        note="GPT-5.4 medium paper/paper full dev-set rerun; no benchmark-harness exclusions applied.",
+        source="benchmarking/results/gcp/appworld-full-spell/terminal-bench/terminalbench_20260501_200559_*.jsonl",
+        note="GPT-5.4 medium paper/paper full dev-set rerun with plain `'(!extend)` trailing; filename-pinned to the simple-trailing rerun (older `:coding` artifact coexists in the same directory); no benchmark-harness exclusions applied.",
     ),
     ArtifactSpec(
         benchmark="AppWorld dev",
