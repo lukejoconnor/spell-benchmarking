@@ -298,6 +298,8 @@ class UnifiedSWEBenchRunnerTest(unittest.TestCase):
 
 
 class SweAgentContainerRunnerTest(unittest.TestCase):
+    @patch("src.docker_agents.swe_agent_pre_install", return_value=True)
+    @patch("src.docker_agents.swe_agent_build_bundle", return_value=b"bundle")
     @patch("src.docker_agents.run_install_script", return_value=True)
     @patch("src.docker_agents.swe_agent_env_vars", return_value={})
     @patch("src.docker_agents.swe_agent_run_command", return_value="mini -t 'prompt' -m 'anthropic/claude-opus-4-6' -y --exit-immediately")
@@ -310,6 +312,8 @@ class SweAgentContainerRunnerTest(unittest.TestCase):
         run_command_mock,
         env_vars_mock,
         install_mock,
+        build_bundle_mock,
+        pre_install_mock,
     ):
         container = MagicMock()
         container.container_workdir = "/workspace"
@@ -340,6 +344,8 @@ class SweAgentContainerRunnerTest(unittest.TestCase):
             )
 
         install_mock.assert_called_once()
+        build_bundle_mock.assert_called_once()
+        pre_install_mock.assert_called_once_with(container, b"bundle")
         self.assertGreaterEqual(env_vars_mock.call_count, 2)
         run_command_mock.assert_called_once()
         container.exec_run.assert_called_once()

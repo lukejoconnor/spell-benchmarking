@@ -110,13 +110,40 @@ class DockerExecAgent(BaseAgent):
         logger.info("Node runtime ready")
         return True
 
-    def _install_agent_cli(self, container) -> bool:
+    def _write_install_log(
+        self,
+        logging_dir: Path | None,
+        result: ExecOutput,
+        *,
+        label: str | None = None,
+    ) -> None:
+        if logging_dir is None:
+            return
+        logging_dir.mkdir(parents=True, exist_ok=True)
+        install_label = label or f"{self.name()} install"
+        (logging_dir / "install.log").write_text(
+            (
+                f"== {install_label} ==\n"
+                f"exit_code: {result.exit_code}\n"
+                f"timed_out: {str(result.timed_out).lower()}\n"
+                "-- stdout --\n"
+                f"{result.stdout}"
+                f"{'' if result.stdout.endswith(chr(10)) or not result.stdout else chr(10)}"
+                "-- stderr --\n"
+                f"{result.stderr}"
+                f"{'' if result.stderr.endswith(chr(10)) or not result.stderr else chr(10)}"
+            ),
+            encoding="utf-8",
+        )
+
+    def _install_agent_cli(self, container, logging_dir: Path | None = None) -> bool:
         """Install the agent-specific CLI. Returns True on success."""
         script = self._install_script()
         logger.info(f"Installing {self.name()} CLI...")
         result = self._container_exec(
             container, script, timeout=300, env=self._env_vars(),
         )
+        self._write_install_log(logging_dir, result)
         if result.exit_code != 0:
             logger.error(f"{self.name()} install failed:\n{result.stderr[:1000]}")
             return False
@@ -279,7 +306,7 @@ class DockerExecAgent(BaseAgent):
             return AgentResult(failure_mode=FailureMode.AGENT_INSTALLATION_FAILED)
 
         # Install agent CLI
-        if not self._install_agent_cli(container):
+        if not self._install_agent_cli(container, logging_dir=logging_dir):
             return AgentResult(failure_mode=FailureMode.AGENT_INSTALLATION_FAILED)
 
         # Run agent

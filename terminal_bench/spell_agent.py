@@ -98,7 +98,7 @@ class SpellAgent(DockerExecAgent):
     def _build_spell_bundle(self) -> bytes:
         return spell_build_bundle(self._spell_root)
 
-    def _install_agent_cli(self, container) -> bool:
+    def _install_agent_cli(self, container, logging_dir: Path | None = None) -> bool:
         """Copy Spell runtime into the container, then install Java/Clojure deps."""
         try:
             if self._spell_bundle is None:
@@ -129,6 +129,7 @@ class SpellAgent(DockerExecAgent):
             timeout=600,
             env=self._env_vars(),
         )
+        self._write_install_log(logging_dir, result, label="Spell runtime install")
         if result.exit_code != 0:
             logger.error(f"Spell runtime install failed:\n{result.stderr[:1000]}")
             return False
