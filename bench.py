@@ -1721,6 +1721,7 @@ def run_swebench(
                     "claude_model": claude_model,
                     "codex_model": codex_model,
                     "swe_agent_model": swe_agent_model,
+                    "reasoning_effort": reasoning_effort,
                     "items": sorted(requested_ids) if requested_ids else None,
                     "budget": budget,
                     "depth": depth,
