@@ -1210,6 +1210,48 @@ EOF
         self.assertEqual(usage.cost_source, "estimated")
         self.assertAlmostEqual(usage.cost_usd or 0.0, 0.001555, places=9)
 
+    def test_swe_agent_usage_parses_responses_api_tokens(self) -> None:
+        traj = {
+            "info": {
+                "model_stats": {"instance_cost": 0.0168675},
+                "config": {"model": {"model_name": "openai/gpt-5.4"}},
+            },
+            "messages": [
+                {
+                    "object": "response",
+                    "usage": {
+                        "input_tokens": 781,
+                        "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+                        "output_tokens": 309,
+                        "output_tokens_details": {"reasoning_tokens": 242},
+                        "total_tokens": 1090,
+                    },
+                },
+                {
+                    "object": "response",
+                    "usage": {
+                        "input_tokens": 1169,
+                        "input_tokens_details": {"cached_tokens": 200, "cache_write_tokens": 100},
+                        "output_tokens": 156,
+                        "output_tokens_details": {"reasoning_tokens": 32},
+                        "total_tokens": 1325,
+                    },
+                },
+            ],
+        }
+
+        usage = _swe_agent_usage_from_trajectory(traj, "openai/gpt-5.4")
+
+        self.assertIsNotNone(usage)
+        assert usage is not None
+        self.assertEqual(usage.uncached_input_tokens, 1650)
+        self.assertEqual(usage.cached_input_tokens, 200)
+        self.assertEqual(usage.cache_write_input_tokens, 100)
+        self.assertEqual(usage.visible_output_tokens, 191)
+        self.assertEqual(usage.reasoning_output_tokens, 274)
+        self.assertEqual(usage.cost_usd, 0.0168675)
+        self.assertEqual(usage.cost_source, "reported")
+
     def test_swe_agent_usage_estimates_deepseek_v4_pro_and_preserves_reasoning_tokens(self) -> None:
         traj = {
             "info": {"model_stats": {"instance_cost": 0.0}},

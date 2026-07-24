@@ -1671,6 +1671,23 @@ def _extract_swe_agent_token_usage(traj: dict[str, Any]) -> UsageBreakdown | Non
             if isinstance(completion_details, dict)
             else 0
         )
+        prompt_details = dict_value.get("prompt_tokens_details")
+
+        if prompt_tokens == 0 and completion_tokens == 0 and reasoning_tokens == 0:
+            # mini-swe-agent's LiteLLM Responses model saves Responses API
+            # usage keys rather than Chat Completions usage keys.
+            if _swe_usage_int(dict_value.get("total_tokens")) == 0:
+                continue
+            prompt_tokens = _swe_usage_int(dict_value.get("input_tokens"))
+            completion_tokens = _swe_usage_int(dict_value.get("output_tokens"))
+            completion_details = dict_value.get("output_tokens_details")
+            reasoning_tokens = (
+                _swe_usage_int(completion_details.get("reasoning_tokens"))
+                if isinstance(completion_details, dict)
+                else 0
+            )
+            prompt_details = dict_value.get("input_tokens_details")
+
         if prompt_tokens == 0 and completion_tokens == 0 and reasoning_tokens == 0:
             continue
 
@@ -1678,10 +1695,11 @@ def _extract_swe_agent_token_usage(traj: dict[str, Any]) -> UsageBreakdown | Non
         total_output_tokens += completion_tokens if completion_tokens else reasoning_tokens
         reasoning_output_tokens += reasoning_tokens
 
-        prompt_details = dict_value.get("prompt_tokens_details")
         if isinstance(prompt_details, dict):
             cached_input_tokens += _swe_usage_int(prompt_details.get("cached_tokens"))
-            cache_write_input_tokens += _swe_usage_int(prompt_details.get("cache_creation_tokens"))
+            cache_write_input_tokens += _swe_usage_int(
+                prompt_details.get("cache_creation_tokens", prompt_details.get("cache_write_tokens"))
+            )
 
     if total_input_tokens == 0 and total_output_tokens == 0 and reasoning_output_tokens == 0:
         return None
