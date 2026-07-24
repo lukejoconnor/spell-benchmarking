@@ -23,6 +23,7 @@ class AgentPolicyTests(unittest.TestCase):
         self.assertEqual(detect_spell_mode("codex-tc:gpt-5.3-codex"), "tc")
         self.assertEqual(detect_spell_mode("anthropic-tc:claude-sonnet-4-5-20250929"), "tc")
         self.assertEqual(detect_spell_mode("openai-tc:gpt-5.4"), "tc")
+        self.assertEqual(detect_spell_mode("fireworks-tc:glm-5p2"), "tc")
         self.assertEqual(detect_spell_mode("anthropic-pf:claude-sonnet-4-5-20250929"), "msg")
         self.assertEqual(detect_spell_mode("gpt-5.3-codex"), "msg")
 
@@ -52,7 +53,7 @@ class AgentPolicyTests(unittest.TestCase):
         self.assertEqual(resolved.family, "general_longcontext")
         self.assertEqual(resolved.source, "default")
         self.assertEqual(resolved.policy_key, "tc:tc")
-        self.assertTrue(resolved.agent_file.endswith("config/agents/io-tc.agent.edn"))
+        self.assertTrue(resolved.agent_file.endswith("config/agent-profiles/io-tc.agent.edn"))
 
     def test_resolve_default_general_longcontext_openai_tc(self) -> None:
         resolved = resolve_spell_agent(
@@ -65,7 +66,7 @@ class AgentPolicyTests(unittest.TestCase):
         self.assertEqual(resolved.family, "general_longcontext")
         self.assertEqual(resolved.source, "default")
         self.assertEqual(resolved.policy_key, "tc:tc")
-        self.assertTrue(resolved.agent_file.endswith("config/agents/io-tc.agent.edn"))
+        self.assertTrue(resolved.agent_file.endswith("config/agent-profiles/io-tc.agent.edn"))
 
     def test_resolve_default_general_fireworks_uses_prefill_agent(self) -> None:
         resolved = resolve_spell_agent(
@@ -78,7 +79,7 @@ class AgentPolicyTests(unittest.TestCase):
         self.assertEqual(resolved.family, "general_longcontext")
         self.assertEqual(resolved.source, "default")
         self.assertEqual(resolved.policy_key, "pf:msg")
-        self.assertTrue(resolved.agent_file.endswith("config/agents/io-pf.agent.edn"))
+        self.assertTrue(resolved.agent_file.endswith("config/agent-profiles/io-pf.agent.edn"))
 
     def test_override_precedence(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".agent.edn", delete=False) as tf:

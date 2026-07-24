@@ -17,9 +17,9 @@ ProviderFamily = Literal["pf", "msg", "tc"]
 PREFILL_PROVIDER_PREFIXES = {"anthropic-pf", "fireworks"}
 
 DEFAULT_AGENT_POLICY: dict[tuple[ProviderFamily, SpellMode], str] = {
-    ("pf", "msg"): "config/agents/io-pf.agent.edn",
-    ("msg", "msg"): "config/agents/io-msg.agent.edn",
-    ("tc", "tc"): "config/agents/io-tc.agent.edn",
+    ("pf", "msg"): "config/agent-profiles/io-pf.agent.edn",
+    ("msg", "msg"): "config/agent-profiles/io-msg.agent.edn",
+    ("tc", "tc"): "config/agent-profiles/io-tc.agent.edn",
 }
 
 
@@ -38,7 +38,7 @@ def detect_spell_mode(model_spec: str | None) -> SpellMode:
     if ":" not in spec:
         return "msg"
     prefix, _ = spec.split(":", 1)
-    return "tc" if prefix in {"codex-tc", "anthropic-tc", "openai-tc"} else "msg"
+    return "tc" if prefix in {"codex-tc", "anthropic-tc", "openai-tc", "fireworks-tc"} else "msg"
 
 
 def _provider_prefix(model_spec: str | None) -> str | None:
