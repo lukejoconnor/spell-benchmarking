@@ -1079,6 +1079,20 @@ EOF
         self.assertIn("-c model.model_name=fireworks_ai/accounts/fireworks/models/deepseek-v4-pro", cmd)
         self.assertIn("-c model.model_kwargs.reasoning_effort=high", cmd)
 
+    def test_swe_agent_run_command_uses_responses_api_for_gpt54(self) -> None:
+        cmd = swe_agent_run_command(
+            "Fix this",
+            model="openai/gpt-5.4",
+            budget=1.5,
+            workdir="/testbed",
+            reasoning_effort="medium",
+        )
+
+        self.assertIn("-m openai/gpt-5.4", cmd)
+        self.assertIn("--model-class litellm_response", cmd)
+        self.assertIn("-c model.model_kwargs.reasoning.effort=medium", cmd)
+        self.assertNotIn("model.model_kwargs.reasoning_effort", cmd)
+
     def test_swe_agent_env_vars_derives_fireworks_ai_alias_from_fireworks_key(self) -> None:
         with patch.dict(os.environ, {"FIREWORKS_API_KEY": "fw-test"}, clear=True):
             env = swe_agent_env_vars()

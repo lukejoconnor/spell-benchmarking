@@ -1517,6 +1517,7 @@ def swe_agent_run_command(
     trajectory_dir: str | None = None,
     reasoning_effort: str | None = None,
 ) -> str:
+    use_responses_api = model == "openai/gpt-5.4"
     resolved_home = runtime_home or f"{runtime_root}/home"
     resolved_config_root = config_root or f"{runtime_root}/config"
     resolved_config_dir = config_dir or f"{resolved_config_root}/mini-swe-agent"
@@ -1549,8 +1550,11 @@ def swe_agent_run_command(
         "-m", shlex.quote(model),
         "-y", "--exit-immediately",
     ])
+    if use_responses_api:
+        parts.extend(["--model-class", "litellm_response"])
     if reasoning_effort:
-        parts.extend(["-c", shlex.quote(f"model.model_kwargs.reasoning_effort={reasoning_effort}")])
+        reasoning_key = "reasoning.effort" if use_responses_api else "reasoning_effort"
+        parts.extend(["-c", shlex.quote(f"model.model_kwargs.{reasoning_key}={reasoning_effort}")])
     if budget is not None:
         parts.extend(["-l", str(budget)])
     return " ".join(parts)
