@@ -42,6 +42,7 @@ from src.docker_agents import (
     NVM_NODE_INSTALL,
     UV_BOOTSTRAP_COMMAND,
     UV_RUNTIME_BIN,
+    _mini_runtime_temp_path,
     _install_agent_runtime,
     _cleanup_nodejs_binary_shell,
     _install_nodejs_binary_shell,
@@ -1029,6 +1030,18 @@ EOF
 
         self.assertTrue(str(cache_path).startswith("/tmp/bench-agent-runtime/mini-bundles/"))
         self.assertNotIn(str(Path.home()), str(cache_path))
+
+    def test_swe_agent_runtime_temp_paths_are_unique_siblings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_path = Path(tmpdir) / "mini-runtime.tar"
+            first = _mini_runtime_temp_path(cache_path)
+            second = _mini_runtime_temp_path(cache_path)
+
+        self.assertEqual(first.parent, cache_path.parent)
+        self.assertEqual(second.parent, cache_path.parent)
+        self.assertNotEqual(first, second)
+        self.assertFalse(first.exists())
+        self.assertFalse(second.exists())
 
     def test_swe_agent_runtime_build_script_copies_python_into_opt_mini(self) -> None:
         script = _mini_runtime_build_script("mini-swe-agent==1.2.3")

@@ -1337,6 +1337,19 @@ def _mini_runtime_cache_path(version: str | None = None) -> Path:
     return cache_root / f"mini-swe-agent-{package_version}-{image_key}.tar"
 
 
+def _mini_runtime_temp_path(cache_path: Path) -> Path:
+    """Reserve a process-unique sibling path for an atomic cache write."""
+    fd, name = tempfile.mkstemp(
+        dir=cache_path.parent,
+        prefix=f".{cache_path.name}.",
+        suffix=".tmp",
+    )
+    os.close(fd)
+    tmp_path = Path(name)
+    tmp_path.unlink()
+    return tmp_path
+
+
 def _pty_run_script() -> str:
     return r"""import os
 import pty
@@ -1443,17 +1456,19 @@ def swe_agent_build_bundle(version: str | None = None) -> bytes:
                 + _exec_output_excerpt(ExecOutput(build.returncode, build.stdout, build.stderr), limit=2000)
             )
 
-        tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
-        cp = subprocess.run(
-            ["docker", "cp", f"{container_id}:/tmp/mini-runtime.tar", str(tmp_path)],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        if cp.returncode != 0:
+        tmp_path = _mini_runtime_temp_path(cache_path)
+        try:
+            cp = subprocess.run(
+                ["docker", "cp", f"{container_id}:/tmp/mini-runtime.tar", str(tmp_path)],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if cp.returncode != 0:
+                raise RuntimeError(f"Failed to copy mini runtime bundle from build container: {cp.stderr.strip()}")
+            tmp_path.replace(cache_path)
+        finally:
             tmp_path.unlink(missing_ok=True)
-            raise RuntimeError(f"Failed to copy mini runtime bundle from build container: {cp.stderr.strip()}")
-        tmp_path.replace(cache_path)
         return cache_path.read_bytes()
     finally:
         if container_id:
