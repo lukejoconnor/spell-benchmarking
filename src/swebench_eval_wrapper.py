@@ -120,6 +120,7 @@ def _maybe_patch_swebench_builder() -> None:
 
 
 _PIP_PIN_APPLIED = False
+_LEGACY_SETUPTOOLS_SCM_REPOS = {"matplotlib/matplotlib"}
 
 
 def _branch_clone_with_fallback(repo: str, repo_directory: str, branch: str) -> str:
@@ -154,6 +155,13 @@ def _patch_repo_setup_commands(
     for i, cmd in enumerate(patched):
         if cmd.startswith("conda activate "):
             patched.insert(i + 1, "python -m pip install 'pip<24' -qq")
+            if repo in _LEGACY_SETUPTOOLS_SCM_REPOS:
+                # Current conda environments can install setuptools-scm 10 first,
+                # then the SWE-bench spec downgrades it to 7.1 without removing
+                # its new vcs-versioning dependency.  The orphaned entry points
+                # are incompatible with setuptools-scm 7 and break Matplotlib's
+                # editable install before the agent runs.
+                patched.insert(i + 2, "python -m pip uninstall -y vcs-versioning")
             break
 
     if not branch:
