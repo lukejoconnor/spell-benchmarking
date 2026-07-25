@@ -188,6 +188,25 @@ class TerminalBenchRunnerTests(unittest.TestCase):
 
         self.assertIn("-k reasoning_effort=medium", " ".join(cmd))
 
+    def test_build_terminalbench_command_includes_supported_fireworks_spell_effort(self) -> None:
+        cmd = build_terminalbench_command(
+            condition="spell",
+            run_id="spell_demo",
+            model="fireworks-tc:qwen3p7-plus",
+            dataset="terminal-bench-core==0.1.1",
+            task_ids=("hello-world",),
+            n_tasks=1,
+            n_concurrent=1,
+            budget=7.5,
+            cleanup=False,
+            reasoning_effort="high",
+            agent_file=None,
+            trailing=None,
+            trace=False,
+        )
+
+        self.assertIn("-k reasoning_effort=high", " ".join(cmd))
+
     def test_terminalbench_run_id_sanitizes_name(self) -> None:
         self.assertEqual(
             terminalbench_condition_run_id("terminalbench_demo", "spell", name="io/tc"),

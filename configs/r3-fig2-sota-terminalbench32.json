@@ -1,0 +1,103 @@
+{
+  "dataset": "terminal-bench-core==0.1.1",
+  "selection": "Exact 32-task subset used by the current Figure 2",
+  "n": 32,
+  "items": [
+    "blind-maze-explorer-5x5",
+    "blind-maze-explorer-algorithm",
+    "blind-maze-explorer-algorithm.easy",
+    "blind-maze-explorer-algorithm.hard",
+    "build-linux-kernel-qemu",
+    "configure-git-webserver",
+    "count-dataset-tokens",
+    "crack-7z-hash",
+    "crack-7z-hash.easy",
+    "create-bucket",
+    "download-youtube",
+    "eval-mteb",
+    "extract-safely",
+    "fibonacci-server",
+    "gpt2-codegolf",
+    "grid-pattern-transform",
+    "intrusion-detection",
+    "nginx-request-logging",
+    "openssl-selfsigned-cert",
+    "path-tracing-reverse",
+    "play-zork",
+    "polyglot-rust-c",
+    "processing-pipeline",
+    "pytorch-model-cli.easy",
+    "qemu-startup",
+    "run-pdp11-code",
+    "sanitize-git-repo",
+    "sqlite-db-truncate",
+    "swe-bench-astropy-1",
+    "swe-bench-astropy-2",
+    "swe-bench-langcodes",
+    "train-fasttext"
+  ],
+  "models": [
+    {
+      "label": "GPT-5.4",
+      "model": "openai-tc:gpt-5.4",
+      "reasoning_effort": "medium",
+      "generation": "old"
+    },
+    {
+      "label": "Opus 4.6",
+      "model": "anthropic-tc:claude-opus-4-6",
+      "reasoning_effort": "medium",
+      "generation": "old"
+    },
+    {
+      "label": "GLM-5.1",
+      "model": "fireworks-tc:glm-5p1",
+      "reasoning_effort": "high",
+      "generation": "old"
+    },
+    {
+      "label": "Kimi-K2.6",
+      "model": "fireworks-tc:kimi-k2p6",
+      "reasoning_effort": null,
+      "generation": "old"
+    },
+    {
+      "label": "Qwen3.7 Plus",
+      "model": "fireworks-tc:qwen3p7-plus",
+      "reasoning_effort": "high",
+      "generation": "replacement"
+    },
+    {
+      "label": "GLM-5.2",
+      "model": "fireworks-tc:glm-5p2",
+      "reasoning_effort": "high",
+      "generation": "new"
+    },
+    {
+      "label": "Kimi-K2.7 Code",
+      "model": "fireworks-tc:kimi-k2p7-code",
+      "reasoning_effort": "high",
+      "generation": "new"
+    },
+    {
+      "label": "GPT-5.6 Sol",
+      "model": "openai-tc:gpt-5.6-sol",
+      "reasoning_effort": "medium",
+      "generation": "new"
+    },
+    {
+      "label": "Fable 5",
+      "model": "anthropic-tc:claude-fable-5",
+      "reasoning_effort": "medium",
+      "generation": "new"
+    }
+  ],
+  "settings": {
+    "condition": "spell",
+    "budget_usd_per_item": 5,
+    "agent_timeout_seconds_per_item": 3600,
+    "n_concurrent": 4,
+    "trace": true,
+    "coding_prompt": false
+  }
+}

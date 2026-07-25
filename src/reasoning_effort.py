@@ -7,6 +7,7 @@ SUPPORTED_SPELL_PROVIDER_PREFIXES = {
     "openai-tc",
     "anthropic-pf",
     "anthropic-tc",
+    "fireworks-tc",
 }
 
 # Anthropic uses budget_tokens (thinking) instead of reasoning_effort.
