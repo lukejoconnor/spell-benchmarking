@@ -27,6 +27,7 @@ from src.docker_agents import (
     MINI_RUNTIME_PREFIX,
     MINI_RUNTIME_ROOT,
     MINI_RUNTIME_TRAJECTORY_DIR,
+    MINI_SWE_AGENT_VERSION,
     MIN_NODE_MAJOR_VERSION,
     NODE_BINARY_VERSION,
     AgentRunResult,
@@ -49,6 +50,7 @@ from src.docker_agents import (
     _install_nodejs_shell,
     _mini_runtime_build_script,
     _mini_runtime_cache_path,
+    _mini_runtime_package_spec,
     _is_retryable_apt_fetch_failure,
     _is_retryable_install_timeout,
     _is_retryable_pip_hash_mismatch,
@@ -1029,7 +1031,14 @@ EOF
             cache_path = _mini_runtime_cache_path()
 
         self.assertTrue(str(cache_path).startswith("/tmp/bench-agent-runtime/mini-bundles/"))
+        self.assertIn(f"mini-swe-agent-{MINI_SWE_AGENT_VERSION}-", cache_path.name)
         self.assertNotIn(str(Path.home()), str(cache_path))
+
+    def test_swe_agent_runtime_package_is_pinned_by_default(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            package_spec = _mini_runtime_package_spec()
+
+        self.assertEqual(package_spec, f"mini-swe-agent=={MINI_SWE_AGENT_VERSION}")
 
     def test_swe_agent_runtime_temp_paths_are_unique_siblings(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

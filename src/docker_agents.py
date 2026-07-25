@@ -81,6 +81,7 @@ MINI_RUNTIME_CONFIG_DIR = f"{MINI_RUNTIME_CONFIG_ROOT}/mini-swe-agent"
 MINI_RUNTIME_CACHE_ROOT = f"{MINI_RUNTIME_ROOT}/cache"
 MINI_RUNTIME_TRAJECTORY_DIR = f"{MINI_RUNTIME_ROOT}/trajectories"
 MINI_RUNTIME_BUNDLE_BASE_IMAGE = "python:3.11-slim-bullseye"
+MINI_SWE_AGENT_VERSION = "2.4.6"
 APT_FETCH_RETRY_MAX_ATTEMPTS = 3
 APT_FETCH_RETRY_SLEEP_SECONDS = 5
 INSTALL_TIMEOUT_CLEANUP_TIMEOUT_SECONDS = 30
@@ -1324,7 +1325,7 @@ def _read_codex_rollout_from_container(
 
 
 def _mini_runtime_package_spec(version: str | None = None) -> str:
-    resolved_version = version or os.environ.get("MINI_SWE_AGENT_VERSION")
+    resolved_version = version or os.environ.get("MINI_SWE_AGENT_VERSION") or MINI_SWE_AGENT_VERSION
     if resolved_version and resolved_version != "latest":
         return f"mini-swe-agent=={resolved_version}"
     return "mini-swe-agent"
@@ -1332,7 +1333,7 @@ def _mini_runtime_package_spec(version: str | None = None) -> str:
 
 def _mini_runtime_cache_path(version: str | None = None) -> Path:
     cache_root = Path(os.environ.get("MINI_SWE_AGENT_BUNDLE_CACHE_DIR", "/tmp/bench-agent-runtime/mini-bundles"))
-    package_version = (version or os.environ.get("MINI_SWE_AGENT_VERSION") or "latest").replace("/", "_")
+    package_version = (version or os.environ.get("MINI_SWE_AGENT_VERSION") or MINI_SWE_AGENT_VERSION).replace("/", "_")
     image_key = MINI_RUNTIME_BUNDLE_BASE_IMAGE.replace("/", "_").replace(":", "_")
     return cache_root / f"mini-swe-agent-{package_version}-{image_key}.tar"
 
