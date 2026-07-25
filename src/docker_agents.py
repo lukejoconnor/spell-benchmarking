@@ -43,7 +43,7 @@ ParsedUsage = UsageBreakdown
 
 DEFAULT_IMAGE = "python:3.11-slim"
 DEFAULT_WORKDIR = "/workspace"
-SPELL_AGENT_IN_CONTAINER = "/opt/spell/config/agents/io-tc.agent.edn"
+SPELL_AGENT_IN_CONTAINER = "/opt/spell/config/agent-profiles/io-tc.agent.edn"
 SPELL_SDEPS = '{:deps {local/spell {:local/root "/opt/spell"}}}'
 SPELL_BUNDLE_PATHS = ("deps.edn", "src", "config", "data")
 HARBOR_SPELL_BUNDLE_PATHS = ("deps.edn", "src", "config", "data/pricing.edn")
@@ -1391,7 +1391,7 @@ def swe_agent_parse_usage(stdout: str, container: DockerWorkspaceContainer) -> U
 def resolve_spell_model(model_name: str | None) -> str:
     if model_name is None:
         return "anthropic-tc:opus46"
-    if any(model_name.startswith(prefix + ":") for prefix in ("anthropic-tc", "anthropic-pf", "fireworks", "openai-tc", "codex-tc")):
+    if any(model_name.startswith(prefix + ":") for prefix in ("anthropic-tc", "anthropic-pf", "fireworks", "fireworks-tc", "openai-tc", "codex-tc")):
         return model_name
     if model_name in LITELLM_TO_SPELL_MODEL:
         return LITELLM_TO_SPELL_MODEL[model_name]
@@ -1404,7 +1404,7 @@ def _is_spell_root(path: Path) -> bool:
     return (
         (path / "deps.edn").exists()
         and (path / "src" / "spell" / "benchmark_api.clj").exists()
-        and (path / "config" / "agents").exists()
+        and (path / "config" / "agent-profiles").exists()
     )
 
 
@@ -1506,7 +1506,7 @@ def spell_build_bundle(
     if resolved_root is None:
         raise RuntimeError(
             "Could not locate Spell source tree. Set SPELL_ROOT to the spell repo root "
-            "(must contain deps.edn, src/spell/benchmark_api.clj, and config/agents)."
+            "(must contain deps.edn, src/spell/benchmark_api.clj, and config/agent-profiles)."
         )
 
     missing = [rel for rel in bundle_paths if not (resolved_root / rel).exists()]
@@ -1585,7 +1585,7 @@ def _resolve_agent_for_container(agent_file: str | None, *, spell_root: Path | N
         if spell_relative.exists():
             candidate_agent = spell_relative
     resolved_agent = candidate_agent.resolve()
-    bundled_agents_dir = (resolved_root / "config" / "agents").resolve()
+    bundled_agents_dir = (resolved_root / "config" / "agent-profiles").resolve()
     try:
         resolved_agent.relative_to(bundled_agents_dir)
     except ValueError:

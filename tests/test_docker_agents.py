@@ -97,6 +97,9 @@ class DockerAgentsTests(unittest.TestCase):
     def test_resolve_spell_model_preserves_fireworks_prefix(self) -> None:
         self.assertEqual(resolve_spell_model("fireworks:glm-5"), "fireworks:glm-5")
 
+    def test_resolve_spell_model_preserves_fireworks_toolcall_prefix(self) -> None:
+        self.assertEqual(resolve_spell_model("fireworks-tc:glm-5p2"), "fireworks-tc:glm-5p2")
+
     def test_build_spell_init_defaults_to_extend(self) -> None:
         init = build_spell_init("Solve it")
 
