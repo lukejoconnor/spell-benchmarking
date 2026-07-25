@@ -1616,7 +1616,7 @@ def spell_run_command(
         "mode": "spell",
         "model": model_name,
         "budget": budget,
-        "agent": _resolve_agent_for_container(agent_file),
+        "agent_profile": _resolve_agent_for_container(agent_file),
         "depth": depth,
         "max_tokens": max_tokens,
         "reasoning_effort": reasoning_effort,

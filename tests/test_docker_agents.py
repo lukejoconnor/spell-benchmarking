@@ -121,6 +121,10 @@ class DockerAgentsTests(unittest.TestCase):
 
         payload_text = cmd.split("<<'SPELL_PAYLOAD'\n", 1)[1].split("\nSPELL_PAYLOAD", 1)[0]
         payload = json.loads(payload_text)
+        self.assertEqual(
+            payload["agent_profile"],
+            "/opt/spell/config/agent-profiles/io-tc.agent.edn",
+        )
         self.assertEqual(payload["usage_log_path"], "/logs/agent/spell-usage.json")
 
     def test_spell_parse_usage_log_reads_live_snapshot(self) -> None:
