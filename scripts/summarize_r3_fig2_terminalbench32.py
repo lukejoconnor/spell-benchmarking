@@ -41,6 +41,44 @@ def result_files(results_root: Path) -> list[Path]:
     return sorted(results_root.glob("r3tb32-*/terminal-bench/*.jsonl"))
 
 
+def contains_provider_refusal(value: object) -> bool:
+    """Return whether a decoded agent payload contains an explicit refusal event."""
+    if isinstance(value, str):
+        compact = "".join(value.split())
+        return (
+            '"stop_reason":"refusal"' in compact
+            or '"type":"refusal"' in compact
+        )
+    if isinstance(value, dict):
+        return any(contains_provider_refusal(item) for item in value.values())
+    if isinstance(value, list):
+        return any(contains_provider_refusal(item) for item in value)
+    return False
+
+
+def is_provider_refusal(source_file: Path, record: dict) -> bool:
+    metadata = record.get("metadata") or {}
+    run_dir = Path(metadata.get("tb_run_dir") or "").name
+    trial_name = metadata.get("trial_name")
+    if not run_dir or not trial_name:
+        return False
+    stdout_path = (
+        source_file.parent
+        / run_dir
+        / record["item_id"]
+        / trial_name
+        / "agent-logs"
+        / "stdout.txt"
+    )
+    if not stdout_path.exists():
+        return False
+    try:
+        payload = json.loads(stdout_path.read_text())
+    except json.JSONDecodeError:
+        return False
+    return contains_provider_refusal(payload)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", type=Path, required=True)
@@ -106,6 +144,9 @@ def main() -> None:
         model = model_entry["model"].split(":", 1)[1]
         original_path, original_records = originals[model]
         canonical = {record["item_id"]: record for record in original_records}
+        canonical_sources = {
+            record["item_id"]: original_path for record in original_records
+        }
         replacement_sources: set[str] = set()
 
         for item_id in expected_retries.get(model, set()):
@@ -114,6 +155,7 @@ def main() -> None:
                 raise ValueError(f"Missing valid retry candidate for {model}/{item_id}")
             _, replacement_path, replacement = candidate
             canonical[item_id] = replacement
+            canonical_sources[item_id] = replacement_path
             replacement_sources.add(str(replacement_path))
 
         if set(canonical) != expected_items or len(canonical) != manifest["n"]:
@@ -132,6 +174,11 @@ def main() -> None:
         )
         known_costs = [
             record["cost_usd"] for record in records if record.get("cost_usd") is not None
+        ]
+        provider_refusal_items = [
+            item_id
+            for item_id in manifest["items"]
+            if is_provider_refusal(canonical_sources[item_id], canonical[item_id])
         ]
         total = len(records)
 
@@ -155,6 +202,8 @@ def main() -> None:
                     for record in records
                 ),
                 "error_types": dict(sorted(error_counts.items())),
+                "provider_refusals": len(provider_refusal_items),
+                "provider_refusal_items": provider_refusal_items,
                 "replacement_count": len(expected_retries.get(model, set())),
                 "known_cost_usd": sum(known_costs),
                 "records_with_unknown_cost": total - len(known_costs),
