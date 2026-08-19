@@ -158,7 +158,7 @@ class HarborCodexAgent(_HarborCodex):  # type: ignore[misc, valid-type]
             try:
                 await self.exec_as_agent(
                     environment,
-                    command='rm -rf /tmp/codex-secrets "$CODEX_HOME/auth.json" "$CODEX_HOME/tmp"',
+                    command='rm -rf /tmp/codex-secrets "$CODEX_HOME/auth.json" "$CODEX_HOME/.tmp"',
                     env={"CODEX_HOME": EnvironmentPaths.agent_dir.as_posix()},
                 )
             except Exception:
