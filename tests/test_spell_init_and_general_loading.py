@@ -191,7 +191,7 @@ class GeneralLoadingRegressionTest(unittest.TestCase):
             split=None,
             item_id="item-1",
             condition="spell",
-            model_spec="anthropic-tc:opus46",
+            model_spec="ollama:llama3.1",
             agent_file=None,
             response=RunResponse(
                 status="ok",
