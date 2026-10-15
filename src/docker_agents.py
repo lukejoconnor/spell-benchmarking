@@ -148,7 +148,7 @@ LITELLM_TO_SPELL_MODEL = {
 }
 
 
-def _nvm_source_with_tmp_npm_prefix() -> str:
+def _nvm_source_with_tmp_npm_prefix(*, after_source: str = "") -> str:
     return r"""
 if [ "${NPM_CONFIG_PREFIX+x}" = x ]; then
     NPM_CONFIG_PREFIX_SAVED="$NPM_CONFIG_PREFIX"
@@ -161,11 +161,12 @@ unset NPM_CONFIG_PREFIX
 if [ -s "$NVM_DIR/nvm.sh" ]; then
     source "$NVM_DIR/nvm.sh"
 fi
+%s
 if [ -n "${NPM_CONFIG_PREFIX_WAS_SET:-}" ]; then
     export NPM_CONFIG_PREFIX="$NPM_CONFIG_PREFIX_SAVED"
 fi
 unset NPM_CONFIG_PREFIX_SAVED NPM_CONFIG_PREFIX_WAS_SET
-""".strip()
+""".strip() % after_source
 
 
 def _install_curl_shell() -> str:
@@ -370,12 +371,11 @@ fi
 export PROFILE=/dev/null
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash
 %s
-nvm install 22
 echo "node installed: $(node --version)"
 """ % (
     _nvm_source_with_tmp_npm_prefix(),
     _install_curl_shell(),
-    _nvm_source_with_tmp_npm_prefix(),
+    _nvm_source_with_tmp_npm_prefix(after_source="nvm install 22"),
 )
 
 SPELL_RUNTIME_INSTALL = r"""
