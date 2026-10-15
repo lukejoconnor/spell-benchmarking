@@ -28,11 +28,11 @@
 
 set -euo pipefail
 
-SPELL_REPO="${SPELL_REPO:-$HOME/Dropbox/GitHub/spell}"
+SPELL_REPO="${SPELL_REPO:-${SPELL_ROOT:?Set SPELL_ROOT to the Spell v0.1.0 checkout}}"
 GCP="$SPELL_REPO/scripts/gcp-benchmark.sh"
 SHARD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../sbl-shards" && pwd)"
 
-SPELL_REF="${SPELL_REF:-paper}"
+SPELL_REF="${SPELL_REF:-v0.1.0}"
 BENCH_REF="${BENCH_REF:-paper}"
 RUN_GROUP="${RUN_GROUP:-paper-sbl-opus46-med}"
 MACHINE_TYPE="${MACHINE_TYPE:-e2-standard-16}"

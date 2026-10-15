@@ -838,7 +838,7 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
     def test_one_shot_adapter_injects_spell_repo_for_benchmark_api(self):
         adapter = OneShotAdapter(project_root=PROJECT_ROOT, model_spec="anthropic-tc:opus46")
 
-        self.assertEqual(adapter.client.clj_cmd[0:4], ["clj", "-Sdeps", adapter.client.clj_cmd[2], "-M"])
+        self.assertEqual(adapter.client.clj_cmd[0:4], ["clojure", "-Sdeps", adapter.client.clj_cmd[2], "-M"])
         self.assertIn(str(PROJECT_ROOT), adapter.client.clj_cmd[2])
         self.assertEqual(adapter.client.clj_cmd[-2:], ["-m", "spell.benchmark-api"])
 

@@ -222,11 +222,11 @@ def build_terminalbench_command(
         if trailing is not None:
             agent_kwargs["trailing"] = trailing
     elif condition == "claude_code":
-        agent_kwargs = {"max_budget_usd": budget, "agent_timeout": agent_timeout_sec}
+        agent_kwargs = {"max_budget_usd": budget, "agent_timeout": agent_timeout_sec, "version": "2.1.107"}
         if effective_effort is not None:
             agent_kwargs["reasoning_effort"] = effective_effort
     elif condition == "codex":
-        agent_kwargs = {"agent_timeout": agent_timeout_sec}
+        agent_kwargs = {"agent_timeout": agent_timeout_sec, "version": "0.120.0"}
         if effective_effort is not None:
             agent_kwargs["reasoning_effort"] = effective_effort
     elif condition == "swe_agent":
@@ -239,17 +239,6 @@ def build_terminalbench_command(
         cmd.extend(["-k", f"{key}={rendered}"])
 
     return cmd
-
-
-def prune_terminalbench_docker(env: dict[str, str]) -> None:
-    subprocess.run(
-        ["docker", "system", "prune", "-af", "--volumes"],
-        cwd=None,
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
 
 
 def load_terminalbench_results(run_dir: Path) -> dict[str, Any]:

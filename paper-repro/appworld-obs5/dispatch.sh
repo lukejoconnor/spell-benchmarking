@@ -25,10 +25,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 BENCH_ROOT="$(cd -- "$SCRIPT_DIR/../.." >/dev/null 2>&1 && pwd)"
-SPELL_REPO="${SPELL_REPO:-$(cd -- "$BENCH_ROOT/.." >/dev/null 2>&1 && pwd)}"
+SPELL_REPO="${SPELL_REPO:-${SPELL_ROOT:?Set SPELL_ROOT to the Spell v0.1.0 checkout}}"
 GCP="${GCP:-$SPELL_REPO/scripts/gcp-benchmark.sh}"
 
-SPELL_REF="${SPELL_REF:-paper}"
+SPELL_REF="${SPELL_REF:-v0.1.0}"
 BENCH_REF="${BENCH_REF:-paper}"
 RUN_GROUP_OVERRIDE="${RUN_GROUP:-}"
 MACHINE_TYPE="${MACHINE_TYPE:-e2-standard-16}"

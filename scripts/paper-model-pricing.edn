@@ -1,0 +1,6 @@
+;; USD per million tokens. Additional Figure 2 model rates from the public
+;; Spell pricing table at commit 29cc920158124747022a6e5bc607c59ffd1e89ff.
+;; All other rates remain those of the published v0.1.0 runtime.
+{"gpt-5.6-sol" {"input" 5.00 "cache-read-input" 0.50 "cache-write-input" 5.00 "output" 30.00}
+ "claude-fable-5" {"input" 10.00 "cache-read-input" 1.00 "cache-write-input" 12.50 "output" 50.00}
+ "accounts/fireworks/models/qwen3p7-plus" {"input" 0.40 "cache-read-input" 0.08 "cache-write-input" 0.40 "output" 1.60}}

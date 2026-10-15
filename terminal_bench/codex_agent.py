@@ -71,7 +71,7 @@ class CodexAgent(DockerExecAgent):
         return resolve_codex_model(self._model_name)
 
     def _install_script(self) -> str:
-        return codex_install_script(version=self.version or "latest")
+        return codex_install_script(version=self.version)
 
     def _env_vars(self) -> dict[str, str]:
         return codex_env_vars()

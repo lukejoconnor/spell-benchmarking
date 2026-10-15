@@ -271,7 +271,7 @@ def run_clojure_extractor(spell_root: Path, trace_rows: list[dict]) -> list[dict
         script.write_text(CLOJURE_EXTRACTOR)
         dirs_file.write_text("\n".join(row["trace_dir"] for row in trace_rows) + "\n")
         cmd = [
-            "clj",
+            os.environ.get("CLOJURE_COMMAND", "clojure"),
             "-M",
             "-i",
             str(script),
@@ -384,9 +384,27 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--spell-root", type=Path, default=Path(os.environ.get("SPELL_ROOT", BENCH_ROOT.parent)))
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--trace-root", action="append", type=Path,
+                        help="Fresh run's trace root; repeat to pool selected roots")
+    parser.add_argument("--benchmark", choices=("swe-lite", "terminal-bench"))
+    parser.add_argument("--effort", choices=("low", "medium", "high"))
     args = parser.parse_args()
 
-    trace_rows, warnings = collect_trace_dirs()
+    if args.trace_root:
+        if not args.benchmark or not args.effort:
+            parser.error("--trace-root requires --benchmark and --effort")
+        paths = set()
+        for root in args.trace_root:
+            if not root.exists():
+                parser.error(f"Trace root does not exist: {root}")
+            paths.update(path.resolve() for path in root.rglob("trace.edn"))
+        trace_rows = [{"run_id": "fresh", "benchmark": args.benchmark,
+                       "label": "SWE-bench Lite" if args.benchmark == "swe-lite" else "Terminal-Bench 1.1",
+                       "effort": args.effort, "item": str(path.parent),
+                       "trace_dir": str(path.parent), "jsonl_path": ""} for path in sorted(paths)]
+        warnings = []
+    else:
+        trace_rows, warnings = collect_trace_dirs()
     if not trace_rows:
         raise SystemExit("No matching trace directories found")
     extracted_rows = run_clojure_extractor(args.spell_root.resolve(), trace_rows)

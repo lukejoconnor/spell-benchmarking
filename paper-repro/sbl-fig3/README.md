@@ -5,7 +5,7 @@ Reproducibility artifacts for the Figure 3 SWE-bench Lite full-300 reruns.
 ## Conditions
 
 - 6 method × effort cells:
-  - Spell × {low, medium, high} (Spell paper branch, `openai-tc:gpt-5.4`)
+  - Spell × {low, medium, high} (Spell v0.1.0, `openai-tc:gpt-5.4`)
   - Codex CLI × {low, medium, high} (`--codex-model gpt-5.4`)
 - Sharding: 3 shards × 100 SWE-bench Lite items, deterministic split of the
   alphabetically sorted official SBL instance_ids (see `../sbl-shards/`).
@@ -16,11 +16,10 @@ Reproducibility artifacts for the Figure 3 SWE-bench Lite full-300 reruns.
 ## Repro
 
 ```bash
-cd $SPELL_REPO/benchmarking/paper-repro/sbl-fig3
-./dispatch.sh full          # 18 VMs
+./paper-repro/sbl-fig3/dispatch.sh full          # 18 VMs
 
 # monitor
-$SPELL_REPO/scripts/gcp-benchmark.sh wait --run-group paper-fig3-sbl --finish
+$SPELL_ROOT/scripts/gcp-benchmark.sh wait --run-group paper-fig3-sbl --finish
 ```
 
 VM names: `sbl-{spell,codex}-{low,medium,high}-s{1,2,3}`.
@@ -31,11 +30,10 @@ Run group: `paper-fig3-sbl` (pilot uses `paper-fig3-sbl-pilot`).
 
 ## Refs
 
-- Spell branch: `paper` (head `ae74e5a` at dispatch time).
-- Benchmarking branch: `paper` (head `2ef2551` at dispatch time).
+- Spell reference: `v0.1.0` (`a3ce161a9f83bcb713310d96c26a95ac60978399`).
+- Benchmarking branch: `paper`; record its commit before dispatch.
 
-Both branches must be pushed to origin before launching, since disposable VMs
-clone them at startup.
+The benchmarking revision must be available on origin before dispatch. Spell v0.1.0 is a published tag. Both refs can be overridden explicitly.
 
 ## Scoring
 

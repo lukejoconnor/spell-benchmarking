@@ -18,7 +18,7 @@ replaces the Codex CLI comparator.
 | Compliance           | `--prewarm-envs --paper-compliant`                       |
 | VMs                  | 6 (3 shards × 2 conditions)                              |
 | Machine type         | `e2-standard-16`, 300 GB boot disk                       |
-| Refs                 | spell `paper`, benchmarking `paper`                      |
+| Refs                 | spell `v0.1.0`, benchmarking `paper`                      |
 | Run group            | `paper-sbl-opus46-med` (pilot: `paper-sbl-opus46-med-pilot`) |
 
 Shards reuse `paper-repro/sbl-shards/shard{1,2,3}.txt` (deterministic split of

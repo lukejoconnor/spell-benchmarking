@@ -1,0 +1,1 @@
+Return a sealed-bid auction report for a painting. Ask three independent !llm-self child bidders for one integer bid from 100 to 1000. Then return all bids and the winner or tie.
