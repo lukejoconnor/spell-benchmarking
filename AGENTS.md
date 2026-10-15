@@ -1,5 +1,10 @@
 # Benchmarking
 
+## Terminology
+
+- Paper runtime: Spell v0.1.0 for benchmarks and synchronous games; the explicitly pinned July source revision for asynchronous games.
+- Feature use: a call form in a newly emitted response suffix, excluding inherited prefix text.
+
 ## Workflow
 
 Follow this sequence when running benchmarks:
@@ -204,7 +209,7 @@ Condition semantics:
 - `codex`: Codex CLI harness (agent loop). Default model is `codex` via `--codex-model codex`.
   - In the harness adapter, `codex` resolves to `gpt-5-codex` for stable Codex CLI compatibility.
 - `claude_code`: Claude Code CLI harness. `--reasoning-effort` maps to the CLI's `--effort` flag.
-- `swe_agent`: mini-swe-agent comparator. `reasoning_effort` is wired for `fireworks_ai/accounts/fireworks/models/deepseek-v4-pro` via mini-swe-agent/LiteLLM `model_kwargs`; unsupported mini models should leave this field empty. For Fireworks/LiteLLM, pass the full LiteLLM model string such as `fireworks_ai/accounts/fireworks/models/deepseek-v4-pro` or `fireworks_ai/accounts/fireworks/models/glm-5p1`; the harness forwards both `FIREWORKS_API_KEY` and `FIREWORKS_AI_API_KEY`, deriving either alias from the other when only one is set. It sets mini-swe-agent cost tracking to ignore LiteLLM pricing errors; when mini reports only a zero-cost placeholder, the harness estimates cost from trajectory token counts and the shared `data/pricing.edn` table.
+- `swe_agent`: mini-swe-agent comparator. `openai/gpt-5.4` uses mini-swe-agent's `litellm_response` model class so reasoning and bash calls stay in one Responses API turn; benchmark `reasoning_effort` maps to `model_kwargs.reasoning.effort`. `fireworks_ai/accounts/fireworks/models/deepseek-v4-pro` uses the completion model class and `model_kwargs.reasoning_effort`. Unsupported mini models should leave this field empty. For Fireworks/LiteLLM, pass the full LiteLLM model string such as `fireworks_ai/accounts/fireworks/models/deepseek-v4-pro` or `fireworks_ai/accounts/fireworks/models/glm-5p1`; the harness forwards both `FIREWORKS_API_KEY` and `FIREWORKS_AI_API_KEY`, deriving either alias from the other when only one is set. It sets mini-swe-agent cost tracking to ignore LiteLLM pricing errors; when mini reports only a zero-cost placeholder, the harness estimates cost from trajectory token counts and the shared `data/pricing.edn` table.
   - The mini runtime is built once in a Linux Docker container, cached on the host under `/tmp/bench-agent-runtime/mini-bundles` by default, and copied into task containers at `/opt/mini`. The in-container install script only verifies `/opt/mini/bin/mini` and `/opt/mini/bin/pty-run`.
   - Mutable mini state must stay out of task workspaces and `$HOME`: config, cache, and trajectories live under `/tmp/bench-agent-runtime/mini`. Terminal-Bench install stdout/stderr is preserved in the harness artifact `agent-logs/install.log`.
 - `spell` (including SWE-bench workspaces): adapter injects local `-Sdeps` so `spell.benchmark-api` resolves even when `cwd` is a cloned repo workspace.
@@ -397,7 +402,7 @@ Results go to `data/exercism-results/` (timestamped directories) and `notebook/e
 
 **Terminal-Bench Spell runtime:** SpellAgent now executes inside the task container and copies a minimal Spell runtime bundle (`deps.edn`, `src/`, `config/`) to `/opt/spell` during install. This avoids host-vs-container filesystem asymmetry during scoring.
 
-**Terminal-Bench disk exhaustion:** Each task builds a Docker image. Running many tasks without cleanup fills Colima's VM disk. `bench.py terminalbench --cleanup` threads `tb` cleanup through each run and also prunes Docker between conditions. Never run more than 2 tasks concurrently on Colima with default disk (20GB).
+**Terminal-Bench disk exhaustion:** Each task builds a Docker image. Running many tasks without cleanup fills Colima's VM disk. `bench.py terminalbench --cleanup` threads `tb` cleanup through each run and removes only resources owned by that run. Never run more than 2 tasks concurrently on Colima with default disk (20GB).
 
 **Terminal-Bench empty tool-call error:** Opus 4.6 occasionally returns an empty `spell_suffix` tool_use (`input: {}`), causing a fatal `missing-tool-call` error. This is not currently retried (see TODO #144). Observed on write-compressor.
 

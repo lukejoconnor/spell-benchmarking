@@ -80,7 +80,7 @@ class ClaudeCodeAgent(DockerExecAgent):
         return os.environ.get("ANTHROPIC_MODEL")
 
     def _install_script(self) -> str:
-        return cc_install_script(version=self.version or "latest")
+        return cc_install_script(version=self.version)
 
     def _requires_uv(self) -> bool:
         return True

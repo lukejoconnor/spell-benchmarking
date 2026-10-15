@@ -27,6 +27,7 @@ from src.docker_agents import (
     MINI_RUNTIME_PREFIX,
     MINI_RUNTIME_ROOT,
     MINI_RUNTIME_TRAJECTORY_DIR,
+    MINI_SWE_AGENT_VERSION,
     MIN_NODE_MAJOR_VERSION,
     NODE_BINARY_VERSION,
     AgentRunResult,
@@ -42,12 +43,14 @@ from src.docker_agents import (
     NVM_NODE_INSTALL,
     UV_BOOTSTRAP_COMMAND,
     UV_RUNTIME_BIN,
+    _mini_runtime_temp_path,
     _install_agent_runtime,
     _cleanup_nodejs_binary_shell,
     _install_nodejs_binary_shell,
     _install_nodejs_shell,
     _mini_runtime_build_script,
     _mini_runtime_cache_path,
+    _mini_runtime_package_spec,
     _is_retryable_apt_fetch_failure,
     _is_retryable_install_timeout,
     _is_retryable_pip_hash_mismatch,
@@ -1028,7 +1031,26 @@ EOF
             cache_path = _mini_runtime_cache_path()
 
         self.assertTrue(str(cache_path).startswith("/tmp/bench-agent-runtime/mini-bundles/"))
+        self.assertIn(f"mini-swe-agent-{MINI_SWE_AGENT_VERSION}-", cache_path.name)
         self.assertNotIn(str(Path.home()), str(cache_path))
+
+    def test_swe_agent_runtime_package_is_pinned_by_default(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            package_spec = _mini_runtime_package_spec()
+
+        self.assertEqual(package_spec, f"mini-swe-agent=={MINI_SWE_AGENT_VERSION}")
+
+    def test_swe_agent_runtime_temp_paths_are_unique_siblings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_path = Path(tmpdir) / "mini-runtime.tar"
+            first = _mini_runtime_temp_path(cache_path)
+            second = _mini_runtime_temp_path(cache_path)
+
+        self.assertEqual(first.parent, cache_path.parent)
+        self.assertEqual(second.parent, cache_path.parent)
+        self.assertNotEqual(first, second)
+        self.assertFalse(first.exists())
+        self.assertFalse(second.exists())
 
     def test_swe_agent_runtime_build_script_copies_python_into_opt_mini(self) -> None:
         script = _mini_runtime_build_script("mini-swe-agent==1.2.3")
@@ -1078,6 +1100,20 @@ EOF
 
         self.assertIn("-c model.model_name=fireworks_ai/accounts/fireworks/models/deepseek-v4-pro", cmd)
         self.assertIn("-c model.model_kwargs.reasoning_effort=high", cmd)
+
+    def test_swe_agent_run_command_uses_responses_api_for_gpt54(self) -> None:
+        cmd = swe_agent_run_command(
+            "Fix this",
+            model="openai/gpt-5.4",
+            budget=1.5,
+            workdir="/testbed",
+            reasoning_effort="medium",
+        )
+
+        self.assertIn("-m openai/gpt-5.4", cmd)
+        self.assertIn("--model-class litellm_response", cmd)
+        self.assertIn("-c model.model_kwargs.reasoning.effort=medium", cmd)
+        self.assertNotIn("model.model_kwargs.reasoning_effort", cmd)
 
     def test_swe_agent_env_vars_derives_fireworks_ai_alias_from_fireworks_key(self) -> None:
         with patch.dict(os.environ, {"FIREWORKS_API_KEY": "fw-test"}, clear=True):
@@ -1195,6 +1231,48 @@ EOF
         self.assertEqual(usage.visible_output_tokens, 100)
         self.assertEqual(usage.cost_source, "estimated")
         self.assertAlmostEqual(usage.cost_usd or 0.0, 0.001555, places=9)
+
+    def test_swe_agent_usage_parses_responses_api_tokens(self) -> None:
+        traj = {
+            "info": {
+                "model_stats": {"instance_cost": 0.0168675},
+                "config": {"model": {"model_name": "openai/gpt-5.4"}},
+            },
+            "messages": [
+                {
+                    "object": "response",
+                    "usage": {
+                        "input_tokens": 781,
+                        "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+                        "output_tokens": 309,
+                        "output_tokens_details": {"reasoning_tokens": 242},
+                        "total_tokens": 1090,
+                    },
+                },
+                {
+                    "object": "response",
+                    "usage": {
+                        "input_tokens": 1169,
+                        "input_tokens_details": {"cached_tokens": 200, "cache_write_tokens": 100},
+                        "output_tokens": 156,
+                        "output_tokens_details": {"reasoning_tokens": 32},
+                        "total_tokens": 1325,
+                    },
+                },
+            ],
+        }
+
+        usage = _swe_agent_usage_from_trajectory(traj, "openai/gpt-5.4")
+
+        self.assertIsNotNone(usage)
+        assert usage is not None
+        self.assertEqual(usage.uncached_input_tokens, 1650)
+        self.assertEqual(usage.cached_input_tokens, 200)
+        self.assertEqual(usage.cache_write_input_tokens, 100)
+        self.assertEqual(usage.visible_output_tokens, 191)
+        self.assertEqual(usage.reasoning_output_tokens, 274)
+        self.assertEqual(usage.cost_usd, 0.0168675)
+        self.assertEqual(usage.cost_source, "reported")
 
     def test_swe_agent_usage_estimates_deepseek_v4_pro_and_preserves_reasoning_tokens(self) -> None:
         traj = {

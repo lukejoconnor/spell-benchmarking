@@ -23,9 +23,13 @@ FIREWORKS_REASONING_MODEL_MARKERS = {
     "deepseek-v4-pro",
     "glm-5p1",
     "qwen3p6-plus",
+    "qwen3p7-plus",
 }
 FIREWORKS_SWE_AGENT_REASONING_MODEL_MARKERS = {
     "deepseek-v4-pro",
+}
+OPENAI_SWE_AGENT_REASONING_MODELS = {
+    "openai/gpt-5.4",
 }
 
 
@@ -66,6 +70,10 @@ def _fireworks_swe_agent_supports_reasoning(model: str | None) -> bool:
     return any(marker in model for marker in FIREWORKS_SWE_AGENT_REASONING_MODEL_MARKERS)
 
 
+def _openai_swe_agent_supports_reasoning(model: str | None) -> bool:
+    return model in OPENAI_SWE_AGENT_REASONING_MODELS
+
+
 def _provider_prefix(model_spec: str | None) -> str | None:
     if not model_spec or ":" not in model_spec:
         return None
@@ -84,7 +92,11 @@ def supports_reasoning_effort(condition: str, model_spec: str | None) -> bool:
     if condition in {"claude_code", "codex"}:
         return True
     if condition == "swe_agent":
-        return _fireworks_swe_agent_supports_reasoning(_model_name(model_spec))
+        model = _model_name(model_spec)
+        return (
+            _fireworks_swe_agent_supports_reasoning(model)
+            or _openai_swe_agent_supports_reasoning(model)
+        )
     if condition in {"one_shot", "spell"}:
         provider = _provider_prefix(model_spec)
         if provider in SUPPORTED_SPELL_PROVIDER_PREFIXES:

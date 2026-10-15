@@ -1,0 +1,37 @@
+[
+  {
+    "label": "GPT-5.4",
+    "model": "openai-tc:gpt-5.4",
+    "reasoning_effort": "medium"
+  },
+  {
+    "label": "Opus 4.6",
+    "model": "anthropic-tc:claude-opus-4-6",
+    "reasoning_effort": "medium"
+  },
+  {
+    "label": "GLM-5.1",
+    "model": "fireworks-tc:glm-5p1",
+    "reasoning_effort": "high"
+  },
+  {
+    "label": "Kimi-K2.6",
+    "model": "fireworks-tc:kimi-k2p6",
+    "reasoning_effort": null
+  },
+  {
+    "label": "Qwen3.7 Plus",
+    "model": "fireworks-tc:qwen3p7-plus",
+    "reasoning_effort": "high"
+  },
+  {
+    "label": "GPT-5.6 Sol",
+    "model": "openai-tc:gpt-5.6-sol",
+    "reasoning_effort": "medium"
+  },
+  {
+    "label": "Fable 5",
+    "model": "anthropic-tc:claude-fable-5",
+    "reasoning_effort": "medium"
+  }
+]

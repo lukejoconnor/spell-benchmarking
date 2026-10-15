@@ -96,7 +96,6 @@ from src.terminalbench_runner import (
     build_terminalbench_command,
     parse_terminalbench_conditions,
     prepare_terminalbench_env,
-    prune_terminalbench_docker,
     resolve_terminalbench_dataset_spec,
     resolve_terminalbench_model,
     terminalbench_condition_run_id,
@@ -1443,6 +1442,8 @@ def run_general(
 @click.option("--n", type=int, default=None)
 @click.option("--items", "item_ids", default=None, help="Comma-separated SWE-bench instance IDs to run")
 @click.option("--seed", type=int, default=None, help="Random seed for sampling --n items")
+@click.option("--num-shards", type=click.IntRange(min=1), default=1, show_default=True)
+@click.option("--shard-index", type=int, default=0, show_default=True)
 @click.option("--parallel", type=int, default=1, show_default=True)
 @click.option("--budget", type=float, default=None, help="Spell budget (default: 10 for mini/lite/verified, 80 for pro)")
 @click.option("--agent", default=None, help="Spell agent override")
@@ -1588,6 +1589,8 @@ def run_swebench(
     n: int | None,
     item_ids: str | None,
     seed: int | None,
+    num_shards: int,
+    shard_index: int,
     parallel: int,
     budget: float | None,
     agent: str | None,
@@ -1686,6 +1689,19 @@ def run_swebench(
             all_items = rng.sample(all_items, min(n, len(all_items)))
         else:
             all_items = all_items[:n]
+    if not 0 <= shard_index < num_shards:
+        raise click.ClickException(
+            f"--shard-index must be between 0 and {num_shards - 1} for --num-shards {num_shards}"
+        )
+    if num_shards > 1:
+        before = len(all_items)
+        start = before * shard_index // num_shards
+        end = before * (shard_index + 1) // num_shards
+        all_items = all_items[start:end]
+        click.echo(
+            f"Selected shard {shard_index + 1}/{num_shards}: "
+            f"items {start + 1}-{end} of {before} ({len(all_items)} items)"
+        )
     items = all_items
 
     click.echo(f"Run ID: {run_id}")
@@ -1721,6 +1737,7 @@ def run_swebench(
                     "claude_model": claude_model,
                     "codex_model": codex_model,
                     "swe_agent_model": swe_agent_model,
+                    "reasoning_effort": reasoning_effort,
                     "items": sorted(requested_ids) if requested_ids else None,
                     "budget": budget,
                     "depth": depth,
@@ -2660,11 +2677,6 @@ def run_terminalbench(
             f"{terminalbench_run_dir(run_id, cond, name=name)}"
         )
         _print_summary(output_file, run_id, cond, name=name)
-
-        if cleanup and idx < len(commands) - 1:
-            click.echo("  Pruning Docker before next condition...")
-            prune_terminalbench_docker(env)
-
 
 @cli.command("harbor-terminalbench")
 @click.option("--condition", default="spell", show_default=True, type=click.Choice(["spell", "codex", "all"]))

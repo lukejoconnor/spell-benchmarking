@@ -243,6 +243,29 @@ class TerminalBenchRunnerTests(unittest.TestCase):
         self.assertIn("--model fireworks_ai/accounts/fireworks/models/deepseek-v4-pro", rendered)
         self.assertIn("-k reasoning_effort=high", rendered)
 
+    def test_build_terminalbench_command_threads_gpt54_swe_agent_reasoning_effort(self) -> None:
+        cmd = build_terminalbench_command(
+            condition="swe_agent",
+            run_id="swe_agent_demo",
+            model="openai/gpt-5.4",
+            dataset="terminal-bench-core==0.1.1",
+            task_ids=("hello-world",),
+            n_tasks=1,
+            n_concurrent=1,
+            budget=2.5,
+            cleanup=False,
+            reasoning_effort="medium",
+            agent_timeout_sec=1800,
+            test_timeout_sec=None,
+            agent_file=None,
+            trailing=None,
+            trace=False,
+        )
+
+        rendered = " ".join(cmd)
+        self.assertIn("--model openai/gpt-5.4", rendered)
+        self.assertIn("-k reasoning_effort=medium", rendered)
+
     def test_terminalbench_dry_run_threads_test_timeout_cli_option(self) -> None:
         import bench
 
@@ -344,6 +367,33 @@ class TerminalBenchRunnerTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("fireworks_ai/accounts/fireworks/models/deepseek-v4-pro", result.output)
         self.assertIn("reasoning_effort=high", result.output)
+
+    def test_terminalbench_dry_run_threads_gpt54_swe_agent_reasoning_effort(self) -> None:
+        import bench
+
+        result = CliRunner().invoke(
+            bench.cli,
+            [
+                "terminalbench",
+                "--condition",
+                "swe_agent",
+                "--swe-agent-model",
+                "openai/gpt-5.4",
+                "--reasoning-effort",
+                "medium",
+                "--dataset",
+                "old-core",
+                "-t",
+                "hello-world",
+                "--run-id",
+                "terminalbench_demo",
+                "--dry-run",
+            ],
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("openai/gpt-5.4", result.output)
+        self.assertIn("reasoning_effort=medium", result.output)
 
     def test_terminalbench_swe_agent_requires_model(self) -> None:
         import bench

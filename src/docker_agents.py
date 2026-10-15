@@ -81,6 +81,7 @@ MINI_RUNTIME_CONFIG_DIR = f"{MINI_RUNTIME_CONFIG_ROOT}/mini-swe-agent"
 MINI_RUNTIME_CACHE_ROOT = f"{MINI_RUNTIME_ROOT}/cache"
 MINI_RUNTIME_TRAJECTORY_DIR = f"{MINI_RUNTIME_ROOT}/trajectories"
 MINI_RUNTIME_BUNDLE_BASE_IMAGE = "python:3.11-slim-bullseye"
+MINI_SWE_AGENT_VERSION = "2.4.6"
 APT_FETCH_RETRY_MAX_ATTEMPTS = 3
 APT_FETCH_RETRY_SLEEP_SECONDS = 5
 INSTALL_TIMEOUT_CLEANUP_TIMEOUT_SECONDS = 30
@@ -1029,7 +1030,7 @@ def run_install_script(
 
 
 def cc_install_script(*, version: str | None = None) -> str:
-    resolved_version = version or "latest"
+    resolved_version = version or "2.1.107"
     return f"""
 set -euo pipefail
 {_claude_runtime_shell_setup()}
@@ -1220,7 +1221,7 @@ export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
 
 
 def codex_install_script(*, version: str | None = None) -> str:
-    resolved_version = version or "latest"
+    resolved_version = version or "0.120.0"
     return f"""
 {_codex_runtime_shell_setup()}
 {_nvm_source_with_tmp_npm_prefix()}
@@ -1324,7 +1325,7 @@ def _read_codex_rollout_from_container(
 
 
 def _mini_runtime_package_spec(version: str | None = None) -> str:
-    resolved_version = version or os.environ.get("MINI_SWE_AGENT_VERSION")
+    resolved_version = version or os.environ.get("MINI_SWE_AGENT_VERSION") or MINI_SWE_AGENT_VERSION
     if resolved_version and resolved_version != "latest":
         return f"mini-swe-agent=={resolved_version}"
     return "mini-swe-agent"
@@ -1332,9 +1333,22 @@ def _mini_runtime_package_spec(version: str | None = None) -> str:
 
 def _mini_runtime_cache_path(version: str | None = None) -> Path:
     cache_root = Path(os.environ.get("MINI_SWE_AGENT_BUNDLE_CACHE_DIR", "/tmp/bench-agent-runtime/mini-bundles"))
-    package_version = (version or os.environ.get("MINI_SWE_AGENT_VERSION") or "latest").replace("/", "_")
+    package_version = (version or os.environ.get("MINI_SWE_AGENT_VERSION") or MINI_SWE_AGENT_VERSION).replace("/", "_")
     image_key = MINI_RUNTIME_BUNDLE_BASE_IMAGE.replace("/", "_").replace(":", "_")
     return cache_root / f"mini-swe-agent-{package_version}-{image_key}.tar"
+
+
+def _mini_runtime_temp_path(cache_path: Path) -> Path:
+    """Reserve a process-unique sibling path for an atomic cache write."""
+    fd, name = tempfile.mkstemp(
+        dir=cache_path.parent,
+        prefix=f".{cache_path.name}.",
+        suffix=".tmp",
+    )
+    os.close(fd)
+    tmp_path = Path(name)
+    tmp_path.unlink()
+    return tmp_path
 
 
 def _pty_run_script() -> str:
@@ -1443,17 +1457,19 @@ def swe_agent_build_bundle(version: str | None = None) -> bytes:
                 + _exec_output_excerpt(ExecOutput(build.returncode, build.stdout, build.stderr), limit=2000)
             )
 
-        tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
-        cp = subprocess.run(
-            ["docker", "cp", f"{container_id}:/tmp/mini-runtime.tar", str(tmp_path)],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        if cp.returncode != 0:
+        tmp_path = _mini_runtime_temp_path(cache_path)
+        try:
+            cp = subprocess.run(
+                ["docker", "cp", f"{container_id}:/tmp/mini-runtime.tar", str(tmp_path)],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if cp.returncode != 0:
+                raise RuntimeError(f"Failed to copy mini runtime bundle from build container: {cp.stderr.strip()}")
+            tmp_path.replace(cache_path)
+        finally:
             tmp_path.unlink(missing_ok=True)
-            raise RuntimeError(f"Failed to copy mini runtime bundle from build container: {cp.stderr.strip()}")
-        tmp_path.replace(cache_path)
         return cache_path.read_bytes()
     finally:
         if container_id:
@@ -1517,6 +1533,7 @@ def swe_agent_run_command(
     trajectory_dir: str | None = None,
     reasoning_effort: str | None = None,
 ) -> str:
+    use_responses_api = model == "openai/gpt-5.4"
     resolved_home = runtime_home or f"{runtime_root}/home"
     resolved_config_root = config_root or f"{runtime_root}/config"
     resolved_config_dir = config_dir or f"{resolved_config_root}/mini-swe-agent"
@@ -1549,8 +1566,11 @@ def swe_agent_run_command(
         "-m", shlex.quote(model),
         "-y", "--exit-immediately",
     ])
+    if use_responses_api:
+        parts.extend(["--model-class", "litellm_response"])
     if reasoning_effort:
-        parts.extend(["-c", shlex.quote(f"model.model_kwargs.reasoning_effort={reasoning_effort}")])
+        reasoning_key = "reasoning.effort" if use_responses_api else "reasoning_effort"
+        parts.extend(["-c", shlex.quote(f"model.model_kwargs.{reasoning_key}={reasoning_effort}")])
     if budget is not None:
         parts.extend(["-l", str(budget)])
     return " ".join(parts)
@@ -1667,6 +1687,23 @@ def _extract_swe_agent_token_usage(traj: dict[str, Any]) -> UsageBreakdown | Non
             if isinstance(completion_details, dict)
             else 0
         )
+        prompt_details = dict_value.get("prompt_tokens_details")
+
+        if prompt_tokens == 0 and completion_tokens == 0 and reasoning_tokens == 0:
+            # mini-swe-agent's LiteLLM Responses model saves Responses API
+            # usage keys rather than Chat Completions usage keys.
+            if _swe_usage_int(dict_value.get("total_tokens")) == 0:
+                continue
+            prompt_tokens = _swe_usage_int(dict_value.get("input_tokens"))
+            completion_tokens = _swe_usage_int(dict_value.get("output_tokens"))
+            completion_details = dict_value.get("output_tokens_details")
+            reasoning_tokens = (
+                _swe_usage_int(completion_details.get("reasoning_tokens"))
+                if isinstance(completion_details, dict)
+                else 0
+            )
+            prompt_details = dict_value.get("input_tokens_details")
+
         if prompt_tokens == 0 and completion_tokens == 0 and reasoning_tokens == 0:
             continue
 
@@ -1674,10 +1711,11 @@ def _extract_swe_agent_token_usage(traj: dict[str, Any]) -> UsageBreakdown | Non
         total_output_tokens += completion_tokens if completion_tokens else reasoning_tokens
         reasoning_output_tokens += reasoning_tokens
 
-        prompt_details = dict_value.get("prompt_tokens_details")
         if isinstance(prompt_details, dict):
             cached_input_tokens += _swe_usage_int(prompt_details.get("cached_tokens"))
-            cache_write_input_tokens += _swe_usage_int(prompt_details.get("cache_creation_tokens"))
+            cache_write_input_tokens += _swe_usage_int(
+                prompt_details.get("cache_creation_tokens", prompt_details.get("cache_write_tokens"))
+            )
 
     if total_input_tokens == 0 and total_output_tokens == 0 and reasoning_output_tokens == 0:
         return None
@@ -1933,6 +1971,10 @@ def spell_build_bundle(
             if harbor_safe:
                 _validate_spell_bundle_member(arcname)
             tar.add(resolved_root / rel, arcname=arcname)
+        # Configuration belongs to the benchmarking tree; evaluator source stays pinned.
+        for name in ("paper_pricing.clj", "paper-model-pricing.edn"):
+            source = Path(__file__).resolve().parents[1] / "scripts" / name
+            tar.add(source, arcname=f"spell/paper-config/{name}")
     return buf.getvalue()
 
 
@@ -2055,7 +2097,7 @@ def spell_run_command(
         'export PATH="$HOME/.local/bin:$PATH" && '
         'CLOJURE_BIN="$(if command -v clojure >/dev/null 2>&1 && clojure -Sdescribe >/dev/null 2>&1; '
         'then echo clojure; elif command -v clj >/dev/null 2>&1; then echo clj; else echo clojure; fi)" && '
-        f"$CLOJURE_BIN -Sdeps {shlex.quote(SPELL_SDEPS)} -M -m spell.benchmark-api "
+        f"$CLOJURE_BIN -Sdeps {shlex.quote(SPELL_SDEPS)} -M -i /opt/spell/paper-config/paper_pricing.clj -m spell.benchmark-api "
         "--request - --response - <<'SPELL_PAYLOAD'\n"
         f"{payload_json}\n"
         "SPELL_PAYLOAD"

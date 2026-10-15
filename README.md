@@ -2,25 +2,29 @@
 
 Benchmark infrastructure for evaluating Spell against one-shot LLM calls, Claude Code, Codex CLI, and mini-swe-agent across math, long-context, and coding tasks.
 
-All commands run from the repository root using `uv run`.
+All commands run from this benchmarking repository root using `uv run`.
+
+For the paper experiments, start with [Reproducing the paper](paper-repro/README.md). It gives the Spell v0.1.0 setup, baseline versions, task selection, and commands.
+
+Install Python dependencies with `uv sync`. Spell runs additionally require the published Spell runtime and Clojure CLI, as described in that guide.
 
 ## Quick Start
 
 ```bash
 # Run 10 GSM8K items with Spell (Opus, toolcall transport)
-uv run python benchmarking/bench.py general \
+uv run python bench.py general \
   --dataset gsm8k --condition spell \
   --model anthropic-tc:claude-opus-4-5-20251101 \
   --n 10
 
 # Run 1 SWE-bench item with Spell
-uv run python benchmarking/bench.py swebench \
+uv run python bench.py swebench \
   --dataset mini --condition spell \
   --model anthropic-tc:claude-opus-4-5-20251101 \
   --n 1
 
 # Summarize results
-uv run python benchmarking/bench.py summarize --input results/unified/<file>.jsonl
+uv run python bench.py summarize --input results/unified/<file>.jsonl
 
 # Organize loose root one-off files into scratch batches
 uv run python scripts/organize_one_offs.py --dry-run
@@ -34,7 +38,7 @@ uv run python scripts/organize_one_offs.py
 Runs a dataset through one or more conditions, evaluates answers automatically, and writes unified JSONL.
 
 ```bash
-uv run python benchmarking/bench.py general [OPTIONS]
+uv run python bench.py general [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -71,7 +75,7 @@ uv run python benchmarking/bench.py general [OPTIONS]
  Runs the agent inside the official SWE-bench instance image, captures the resulting patch, and records a same-container evaluation result. Per-item `sweb.eval.*` images and stopped containers are cleaned up automatically after generation, while shared `sweb.env.*` images stay cached. Use `--keep-images` if you want to retain a specific instance image for debugging, or `--clean-eval` when you also want a fresh official evaluation rerun after generation.
 
 ```bash
-uv run python benchmarking/bench.py swebench [OPTIONS]
+uv run python bench.py swebench [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -123,7 +127,7 @@ defaults to running all conditions in sequence while preserving env cache until
 the final condition.
 
 ```bash
-uv run python benchmarking/bench.py swebench-eval [OPTIONS]
+uv run python bench.py swebench-eval [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -146,7 +150,7 @@ Default cleanup sequence for multi-condition runs:
 Clones a repository, masks target functions, runs the agent, then executes the project's test suite to verify correctness.
 
 ```bash
-uv run python benchmarking/bench.py featurebench [OPTIONS]
+uv run python bench.py featurebench [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -179,7 +183,7 @@ When `--unified` is enabled, prompts are rewritten against `/workspace` and test
 ### `summarize` — Aggregate Results
 
 ```bash
-uv run python benchmarking/bench.py summarize --input results/unified/<file>.jsonl
+uv run python bench.py summarize --input results/unified/<file>.jsonl
 ```
 
 Optional filters: `--run-id`, `--condition`.
@@ -245,7 +249,7 @@ Selected via `--split` and `--task-ids`. Tasks are loaded from the FeatureBench 
 - `codex`: forwarded and recorded.
 - `claude_code`: forwarded via `claude --effort` and recorded.
 - `spell` / `one_shot`: forwarded and recorded for `openai-tc`, `codex-tc`, `anthropic-pf`, `anthropic-tc`, and the Fireworks thinking models `deepseek-v4-pro`, `glm-5p1`, and `qwen3p6-plus` on `fireworks` or `fireworks-tc`. For `fireworks:qwen3p6-plus` and `fireworks-tc:qwen3p6-plus`, `high` resolves to Fireworks `reasoning_effort=32000`.
-- `swe_agent`: forwarded and recorded for `fireworks_ai/accounts/fireworks/models/deepseek-v4-pro`; unsupported mini-swe-agent models still leave the field empty.
+- `swe_agent`: forwarded and recorded for `openai/gpt-5.4` using LiteLLM Responses and `reasoning.effort`, and for `fireworks_ai/accounts/fireworks/models/deepseek-v4-pro` using `reasoning_effort`; unsupported mini-swe-agent models leave the field empty.
 
 For mini-swe-agent through LiteLLM/Fireworks, pass the LiteLLM model string directly, for example `--swe-agent-model fireworks_ai/accounts/fireworks/models/deepseek-v4-pro` or `--swe-agent-model fireworks_ai/accounts/fireworks/models/glm-5p1`. The harness forwards both `FIREWORKS_API_KEY` and `FIREWORKS_AI_API_KEY`, deriving either alias from the other when only one is set. It also sets mini-swe-agent cost tracking to ignore LiteLLM pricing errors; when mini reports only a zero-cost placeholder, the harness estimates cost from trajectory token counts and the shared `data/pricing.edn` table. DeepSeek V4 Pro pricing is keyed as `accounts/fireworks/models/deepseek-v4-pro` with 1.74 input / 0.145 cached-input / 3.48 output per-million-token rates; cache-write input follows the shared 1.25x input convention.
 
@@ -374,7 +378,7 @@ Denominator is always total items. Errors count as wrong.
 ### Pilot a math benchmark (small N, verify config)
 
 ```bash
-uv run python benchmarking/bench.py general \
+uv run python bench.py general \
   --dataset aime_2025 --condition spell \
   --model anthropic-tc:claude-opus-4-5-20251101 \
   --n 5 --budget 5 --dry-run
@@ -384,13 +388,13 @@ uv run python benchmarking/bench.py general \
 
 ```bash
 # Spell
-uv run python benchmarking/bench.py general \
+uv run python bench.py general \
   --dataset hmmt_feb_2025 --condition spell \
   --model anthropic-tc:claude-opus-4-5-20251101 \
   --budget 5 --output results/unified/hmmt_spell.jsonl
 
 # Claude Code
-uv run python benchmarking/bench.py general \
+uv run python bench.py general \
   --dataset hmmt_feb_2025 --condition claude_code \
   --claude-model claude-opus-4-5-20251101 \
   --output results/unified/hmmt_cc.jsonl
@@ -399,7 +403,7 @@ uv run python benchmarking/bench.py general \
 ### SWE-bench with Codex
 
 ```bash
-uv run python benchmarking/bench.py swebench \
+uv run python bench.py swebench \
   --dataset mini --condition spell \
   --model codex-tc:gpt-5.3-codex \
   --n 5 --output results/unified/swe_codex.jsonl
@@ -408,7 +412,7 @@ uv run python benchmarking/bench.py swebench \
 ### FeatureBench: specific tasks
 
 ```bash
-uv run python benchmarking/bench.py featurebench \
+uv run python bench.py featurebench \
   --condition spell \
   --model anthropic-tc:claude-opus-4-5-20251101 \
   --task-ids 1 --task-ids 2 --task-ids 3
@@ -417,8 +421,8 @@ uv run python benchmarking/bench.py featurebench \
 ### Compare results
 
 ```bash
-uv run python benchmarking/bench.py summarize --input results/unified/hmmt_spell.jsonl
-uv run python benchmarking/bench.py summarize --input results/unified/hmmt_cc.jsonl
+uv run python bench.py summarize --input results/unified/hmmt_spell.jsonl
+uv run python bench.py summarize --input results/unified/hmmt_cc.jsonl
 ```
 
 ## Infrastructure
@@ -442,4 +446,6 @@ benchmarking/
 └── data/                     # Cached datasets (gitignored)
 ```
 
-The Clojure benchmark API lives at `src/spell/benchmark_api.clj` in the parent repository. The Python client that calls it is at `spell_benchmark_client.py` (also in the parent repository root).
+The Clojure benchmark API lives at `src/spell/benchmark_api.clj` in the Spell checkout selected by `SPELL_ROOT`. The Python client that calls it is `spell_benchmark_client.py` in this benchmarking repository.
+
+This harness is released under the [MIT license](LICENSE). Benchmark datasets, task images, and external comparator software retain their upstream licenses and terms.

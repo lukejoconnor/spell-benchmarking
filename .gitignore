@@ -35,3 +35,6 @@ src/benchmarking.egg-info/
 .idea/
 .vscode/
 .DS_Store
+
+# Locally installed host comparator CLIs
+.baseline-cli/

@@ -104,36 +104,55 @@ def load_jsonl(path: Path | str, *, tolerate_invalid: bool = False) -> list[dict
     return rows
 
 
+def record_outcome(record: dict[str, Any]) -> bool | None:
+    """Read the benchmark's score; an execution error is an unsuccessful item."""
+    if record.get("benchmark") == "swebench":
+        resolved = (record.get("metadata") or {}).get("same_container_resolved")
+        if resolved is not None:
+            return bool(resolved)
+    if record.get("error_message") or record.get("error_type") or record.get("status") in {
+        "error", "timeout", "container_error", "agent_timeout", "test_timeout",
+    }:
+        return False
+    if record.get("correct") is not None:
+        return bool(record["correct"])
+    return None
+
+
 def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     total = len(records)
-    errors = sum(1 for r in records if r.get("error_message"))
-    correct_values = [r.get("correct") for r in records if r.get("correct") is not None]
-    accuracy = (sum(1 for v in correct_values if v) / len(correct_values)) if correct_values else None
+    errors = sum(1 for r in records if r.get("error_message") or r.get("error_type") or r.get("status") in {"error", "timeout"})
+    outcomes = [record_outcome(r) for r in records]
+    scored = sum(value is not None for value in outcomes)
+    accuracy = (sum(value is True for value in outcomes) / total) if scored else None
     costs = [r.get("cost_usd") for r in records if r.get("cost_usd") is not None]
     latencies = [r.get("latency_ms") for r in records if r.get("latency_ms") is not None]
 
     by_condition: dict[str, dict[str, Any]] = {}
-    for r in records:
+    for r, outcome in zip(records, outcomes):
         condition = r.get("condition", "unknown")
         name = r.get("name")
         bucket_key = f"{condition}/{name}" if name else condition
         bucket = by_condition.setdefault(bucket_key, {"total": 0, "errors": 0, "correct": 0, "scored": 0, "cost_usd": 0.0})
         bucket["total"] += 1
-        if r.get("error_message"):
+        if r.get("error_message") or r.get("error_type") or r.get("status") in {"error", "timeout"}:
             bucket["errors"] += 1
-        if r.get("correct") is not None:
+        if outcome is not None:
             bucket["scored"] += 1
-            if r.get("correct"):
+            if outcome:
                 bucket["correct"] += 1
         if r.get("cost_usd") is not None:
             bucket["cost_usd"] += float(r["cost_usd"])
 
     for bucket in by_condition.values():
-        bucket["accuracy"] = (bucket["correct"] / bucket["scored"]) if bucket["scored"] else None
+        bucket["accuracy"] = (bucket["correct"] / bucket["total"]) if bucket["scored"] else None
+        bucket["unscored"] = bucket["total"] - bucket["scored"]
 
     return {
         "total": total,
         "errors": errors,
+        "scored": scored,
+        "unscored": total - scored,
         "accuracy": accuracy,
         "total_cost_usd": sum(costs) if costs else None,
         "mean_latency_ms": (sum(latencies) / len(latencies)) if latencies else None,

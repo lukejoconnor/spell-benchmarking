@@ -76,7 +76,8 @@ def _benchmark_api_clj_cmd(project_root: Path) -> list[str]:
     # Allow spell.benchmark-api invocations from external workspace CWDs
     # by injecting this repo as a local dep.
     sdeps = '{:deps {local/spell {:local/root "%s"}}}' % project_root
-    return ["clj", "-Sdeps", sdeps, "-M", "-m", "spell.benchmark-api"]
+    return [os.environ.get("CLOJURE_COMMAND", "clojure"), "-Sdeps", sdeps, "-M",
+            "-i", str(BENCHMARK_ROOT / "scripts/paper_pricing.clj"), "-m", "spell.benchmark-api"]
 
 
 @contextmanager

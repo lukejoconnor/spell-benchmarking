@@ -18,7 +18,7 @@ PARALLEL="${PARALLEL:-4}"
 PILOT_N="${PILOT_N:-4}"
 PAPER_N="${PAPER_N:-200}"
 REST_START="${REST_START:-4}"
-SPELL_REF="${SPELL_REF:-paper}"
+SPELL_REF="${SPELL_REF:-v0.1.0}"
 BENCHMARKING_REF="${BENCHMARKING_REF:-paper}"
 DATE_TAG="${DATE_TAG:-$(date -u +%Y%m%d)}"
 RUN_GROUP="${RUN_GROUP:-longbench-paper-gpt54-med-simple-trailing-${DATE_TAG}}"
@@ -45,13 +45,13 @@ Usage:
   scripts/run_longbench_paper_gcp.sh finish
 
 Runs the LongBench v2 Spell vs Codex GPT-5.4/medium paper replication on GCP.
-Both remote checkouts default to paper/paper. The pilot runs the first 4 items.
+Spell defaults to v0.1.0; benchmarking defaults to paper. The pilot runs the first 4 items.
 The rest phase runs items 5-200 from the same ordered LongBench v2 subset used
 for the paper-facing 200-item result.
 Use pilot-spell/rest-spell for the simple-trailing Spell-only paper rerun.
 
 Useful overrides:
-  RUN_GROUP=... VM_PREFIX=... PARALLEL=4 SPELL_REF=paper BENCHMARKING_REF=paper
+  RUN_GROUP=... VM_PREFIX=... PARALLEL=4 SPELL_REF=v0.1.0 BENCHMARKING_REF=paper
   MODEL=openai-tc:gpt-5.4 CODEX_MODEL=gpt-5.4 SPELL_TRAILING="'(!extend)"
   MACHINE_TYPE=e2-standard-4
 EOF

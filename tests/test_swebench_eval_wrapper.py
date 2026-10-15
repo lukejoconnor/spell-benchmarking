@@ -48,3 +48,23 @@ def test_patch_repo_setup_commands_leaves_unpinned_clone_unchanged() -> None:
 
     assert patched[0] == commands[0]
     assert patched[3] == "python -m pip install 'pip<24' -qq"
+
+
+def test_patch_repo_setup_commands_removes_orphaned_matplotlib_vcs_versioning() -> None:
+    commands = [
+        "git clone -o origin  --single-branch https://github.com/matplotlib/matplotlib /testbed",
+        "cd /testbed",
+        "conda activate testbed",
+        "python -m pip install -e .",
+    ]
+
+    patched = _patch_repo_setup_commands(
+        commands,
+        repo="matplotlib/matplotlib",
+        repo_directory="/testbed",
+        branch="",
+    )
+
+    assert patched[3] == "python -m pip install 'pip<24' -qq"
+    assert patched[4] == "python -m pip uninstall -y vcs-versioning"
+    assert patched[5] == "python -m pip install -e ."
