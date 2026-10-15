@@ -61,6 +61,7 @@ from src.featurebench_lib import (
 from src.swebench_output import write_predictions_jsonl
 from src.swebench_container import (
     SWEBenchContainerSetupError,
+    SWEBenchEnvImageCacheConfig,
     prewarm_swebench_env_images,
     remove_swebench_instance_image,
 )
@@ -85,6 +86,7 @@ from src.usage_accounting import sum_usages, usage_record_fields
 from src.unified_results import (
     UnifiedRunRecord,
     append_jsonl,
+    load_jsonl,
     now_iso,
     parse_model_spec,
     summarize_records,
@@ -95,11 +97,21 @@ from src.terminalbench_runner import (
     parse_terminalbench_conditions,
     prepare_terminalbench_env,
     prune_terminalbench_docker,
+    resolve_terminalbench_dataset_spec,
     resolve_terminalbench_model,
     terminalbench_condition_run_id,
     terminalbench_output_file,
     terminalbench_records_from_run,
     terminalbench_run_dir,
+)
+from src.harbor_terminalbench_runner import (
+    HARBOR_CLAUDE_CODE_DEFAULT_MODEL,
+    HARBOR_TERMINALBENCH_DATASET,
+    HarborTerminalBenchComplianceError,
+    build_harbor_terminalbench_commands,
+    harbor_claude_code_auth_env_preview,
+    harbor_claude_code_env,
+    write_default_timeout_summary,
 )
 from src.swebench_pro_eval import (
     check_docker_manifest_access,
@@ -115,6 +127,15 @@ CONTEXT_DIR = BENCHMARK_ROOT / "data" / "contexts"
 SCALE_PRO_EVAL_REPO_DEFAULT = "data/swebench_pro_eval/SWE-bench_Pro-os"
 SCALE_PRO_OUTPUT_DIR_DEFAULT = "results/swebench_pro_eval"
 SWEBENCH_MIN_FREE_DISK_GB = 32
+SWEBENCH_PAPER_COMPLIANCE_INSTRUCTION = (
+    "Paper-compliance rule: Do not use web browsing or external internet resources to solve this task. "
+    "Do not search for this issue, repository, pull requests, commits, attached patches, mirrors, or "
+    "SWE-bench solutions. Do not fetch URLs from the problem statement or comments for implementation "
+    "guidance. Use only the repository files in {location}, the issue description above, and local "
+    "commands/tests you run in this environment. If a normal local validation command tries to install "
+    "dependencies, keep that use limited to dependency setup and never use the network to obtain "
+    "task-specific solution information."
+)
 
 
 @dataclass
@@ -137,6 +158,16 @@ MATH_TRAILING = "'(!describe math)"
 class _SwePrediction:
     instance_id: str
     patch: str
+
+
+def _make_swebench_env_cache_config(
+    repository: str | None,
+    *,
+    read_only: bool,
+) -> SWEBenchEnvImageCacheConfig | None:
+    if not repository:
+        return None
+    return SWEBenchEnvImageCacheConfig(repository=repository, write_enabled=not read_only)
 
 def _run_id(prefix: str) -> str:
     ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
@@ -286,6 +317,8 @@ _DATASET_TIMEOUTS: dict[str, int] = {
     # General benchmarks
     "omni_math":        3600,
     "omni_math_hard":   3600,
+    "browsecomp_plus":  1800,
+    "browsecomp_plus_pilot": 1800,
     "aime_2025":         600,
     "aime_2026":         600,
     "hmmt_feb_2025":     600,
@@ -337,6 +370,13 @@ def _validate_general_configuration(
     *,
     web_search_enabled: bool,
 ) -> None:
+    if "browsecomp_plus" in item_datasets and "one_shot" in conditions:
+        raise click.ClickException(
+            "BrowseComp-Plus does not support `one_shot`: that condition inlines the full "
+            "document pack into the prompt instead of giving the model file access. "
+            "Use `spell`, `claude_code`, or `codex` so the 1000-document context stays in an external file."
+        )
+
     uses_gaia = dataset == GAIA_DATASET_PREFIX or any(
         item_dataset == GAIA_DATASET_PREFIX or item_dataset.startswith(f"{GAIA_DATASET_PREFIX}_")
         for item_dataset in item_datasets
@@ -365,13 +405,22 @@ def _format_optional_swebench_text(value: Any) -> str:
         return str(value).strip()
 
 
-def _format_swebench_prompt(item: SWEBenchItem, workspace: str | Path | None = None) -> str:
+def _swebench_hints_included(item: SWEBenchItem, *, paper_compliant: bool) -> bool:
+    return bool((getattr(item, "hints_text", "") or "").strip()) and not paper_compliant
+
+
+def _format_swebench_prompt(
+    item: SWEBenchItem,
+    workspace: str | Path | None = None,
+    *,
+    paper_compliant: bool = False,
+) -> str:
     location = str(workspace) if workspace else "/testbed"
 
     # Build PR description from item fields.
     pr_parts = [item.problem_statement.strip()]
     hints_text = (item.hints_text or "").strip()
-    if hints_text:
+    if _swebench_hints_included(item, paper_compliant=paper_compliant):
         pr_parts.extend(["", "## Hints", "", hints_text])
     requirements = _format_optional_swebench_text((item.metadata or {}).get("requirements"))
     if requirements:
@@ -381,7 +430,7 @@ def _format_swebench_prompt(item: SWEBenchItem, workspace: str | Path | None = N
         pr_parts.extend(["", "## Interface Contract", "", interface])
     pr_description = "\n".join(pr_parts)
 
-    return f"""\
+    prompt = f"""\
 <uploaded_files>
 {location}
 </uploaded_files>
@@ -411,6 +460,9 @@ TIPS:
 - When you need to find information about the codebase, use "grep" and "find" to search for relevant files and code with the bash tool
 - Use your bash tool to set up any necessary environment variables, such as those needed to run tests.
 """
+    if paper_compliant:
+        prompt = f"{prompt}{SWEBENCH_PAPER_COMPLIANCE_INSTRUCTION.format(location=location)}\n"
+    return prompt
 
 
 def _swebench_prompt_workspace(item: SWEBenchItem) -> Path:
@@ -419,27 +471,27 @@ def _swebench_prompt_workspace(item: SWEBenchItem) -> Path:
     return Path("/testbed")
 
 
-def _evaluate_general(item: BenchmarkItem, response_text: str | None) -> tuple[str | None, bool | None]:
+def _evaluate_general(item: BenchmarkItem, response_text: str | None) -> tuple[str | None, bool | None, str | None]:
     response = (response_text or "").strip()
     if not response:
-        return None, False
+        return None, False, None
 
     if item.choices:
         answer = extract_mcq_answer(response)
-        return answer, (answer == item.answer) if answer else False
+        return answer, (answer == item.answer) if answer else False, None
 
     if item.dataset == "gsm8k":
         answer = extract_numeric_answer(response)
         if answer is None:
-            return None, False
-        return answer, normalize_numeric(answer) == normalize_numeric(item.answer)
+            return None, False, None
+        return answer, normalize_numeric(answer) == normalize_numeric(item.answer), None
 
     if item.dataset == "project_euler":
         expected_raw = (item.answer or "").strip()
         if not expected_raw:
             # Some upstream Project Euler rows currently have missing gold answers.
             # Keep these unscored until the source dataset is fixed.
-            return response, None
+            return response, None, None
 
         def _to_decimal(raw: str) -> Decimal | None:
             cleaned = raw.strip().replace(",", "").replace("$", "")
@@ -457,12 +509,12 @@ def _evaluate_general(item: BenchmarkItem, response_text: str | None) -> tuple[s
             if answer is None:
                 direct_decimal = _to_decimal(response)
                 if direct_decimal is None:
-                    return None, False
-                return response, direct_decimal == expected_decimal
+                    return None, False, None
+                return response, direct_decimal == expected_decimal, None
 
             got_decimal = _to_decimal(answer)
             if got_decimal is None:
-                return answer, False
+                return answer, False, None
 
             if got_decimal == got_decimal.to_integral_value():
                 try:
@@ -471,25 +523,25 @@ def _evaluate_general(item: BenchmarkItem, response_text: str | None) -> tuple[s
                     extracted = answer
             else:
                 extracted = answer
-            return extracted, got_decimal == expected_decimal
+            return extracted, got_decimal == expected_decimal, None
 
         def _normalize_text(raw: str) -> str:
             return "".join(ch.lower() for ch in raw if ch.isalnum())
 
         answer = response.strip()
         if not answer:
-            return None, False
-        return answer, _normalize_text(answer) == _normalize_text(expected_raw)
+            return None, False, None
+        return answer, _normalize_text(answer) == _normalize_text(expected_raw), None
 
     if item.dataset == "mathconstruct":
         answer, is_correct, _details = evaluate_mathconstruct_response(item, response)
-        return answer, bool(is_correct)
+        return answer, bool(is_correct), None
 
     if item.dataset in ("math", "aime", "hmmt", "omni_math"):
         answer = extract_math_answer(response)
         if answer is None:
-            return None, False
-        return answer, math_equivalent(answer, item.answer)
+            return None, False, None
+        return answer, math_equivalent(answer, item.answer), None
 
     if item.dataset == "gaia":
         # GAIA: use official scorer with normalization
@@ -500,10 +552,24 @@ def _evaluate_general(item: BenchmarkItem, response_text: str | None) -> tuple[s
         answer = re.sub(r'\s*\(\[.*?\]\(.*?\)\)', '', answer).strip()
         # Strip trailing markdown links: "[source](url)" at end
         answer = re.sub(r'\s*\[.*?\]\(.*?\)\s*$', '', answer).strip()
-        return answer, gaia_question_scorer(answer, item.answer)
+        return answer, gaia_question_scorer(answer, item.answer), None
+
+    if item.dataset == "browsecomp_plus":
+        from src.browsecomp_plus import extract_exact_answer, judge_response
+        extracted = extract_exact_answer(response)
+        outcome = judge_response(
+            question=item.question,
+            response=response,
+            correct_answer=item.answer,
+            judge_model=os.environ.get("BROWSECOMP_PLUS_JUDGE_MODEL", "gpt-4.1-mini"),
+        )
+        judge_extracted = outcome.extracted or extracted
+        if outcome.correct is None:
+            return judge_extracted, None, outcome.error or "BrowseComp judge returned an unparseable response"
+        return judge_extracted, outcome.correct, None
 
     answer = extract_freeform_answer(response)
-    return answer, answer.strip().lower() == item.answer.strip().lower()
+    return answer, answer.strip().lower() == item.answer.strip().lower(), None
 
 
 def _provider_model_for_condition(condition: str, model_spec: str | None) -> tuple[str | None, str | None]:
@@ -591,6 +657,19 @@ def _rewrap_response(
     )
 
 
+def _mark_evaluation_error(
+    response: RunResponse,
+    *,
+    error_type: str,
+    error_message: str,
+    metadata: dict[str, Any] | None = None,
+) -> RunResponse:
+    rewritten = _rewrap_response(response, status="error", metadata=metadata)
+    rewritten.error_type = error_type
+    rewritten.error_message = error_message
+    return rewritten
+
+
 def _require_model(condition: str, model: str | None, flag_name: str = "--model") -> str:
     if model is None:
         raise click.ClickException(f"{flag_name} is required for condition '{condition}'")
@@ -636,23 +715,100 @@ def _build_adapter(
     raise ValueError(f"Unknown condition: {condition}")
 
 
-def _print_summary(output_file: Path, run_id: str, condition: str, *, name: str | None = None) -> None:
-    rows = []
-    with output_file.open("r", encoding="utf-8") as f:
-        for line in f:
-            row = json.loads(line)
-            if (
-                row.get("run_id") == run_id
-                and row.get("condition") == condition
-                and row.get("name") == name
-            ):
-                rows.append(row)
+def _print_summary(
+    output_file: Path,
+    run_id: str,
+    condition: str,
+    *,
+    name: str | None = None,
+    dataset: str | None = None,
+) -> None:
+    rows = _matching_unified_rows(
+        output_file,
+        run_id=run_id,
+        condition=condition,
+        name=name,
+        dataset=dataset,
+        tolerate_invalid=True,
+    )
     summary = summarize_records(rows)
     click.echo(f"Summary ({_condition_label(condition, name)}): total={summary['total']} errors={summary['errors']} ")
     if summary["accuracy"] is not None:
         click.echo(f"  accuracy={summary['accuracy']:.1%}")
     if summary["total_cost_usd"] is not None:
         click.echo(f"  cost=${summary['total_cost_usd']:.4f}")
+
+
+def _matching_unified_rows(
+    output_file: Path,
+    *,
+    run_id: str,
+    condition: str | None = None,
+    name: str | None = None,
+    dataset: str | None = None,
+    tolerate_invalid: bool = False,
+) -> list[dict[str, Any]]:
+    rows = load_jsonl(output_file, tolerate_invalid=tolerate_invalid)
+    return [
+        row for row in rows
+        if row.get("run_id") == run_id
+        and (condition is None or row.get("condition") == condition)
+        and row.get("name") == name
+        and (dataset is None or row.get("dataset") == dataset)
+    ]
+
+
+def _validate_swebench_paper_resume_rows(rows: list[dict[str, Any]]) -> None:
+    mismatches: list[str] = []
+    for row in _latest_rows_by_item(rows):
+        metadata = row.get("metadata") or {}
+        item_id = row.get("item_id") or "<unknown>"
+        if metadata.get("paper_compliant") is not True:
+            mismatches.append(f"{item_id}: metadata.paper_compliant is not true")
+        if metadata.get("hints_included") is not False:
+            mismatches.append(f"{item_id}: metadata.hints_included is not false")
+        if metadata.get("paper_compliance_instruction") is not True:
+            mismatches.append(f"{item_id}: metadata.paper_compliance_instruction is not true")
+        if metadata.get("web_search") is True:
+            mismatches.append(f"{item_id}: metadata.web_search is true")
+
+    if mismatches:
+        sample = "; ".join(mismatches[:3])
+        extra = "" if len(mismatches) <= 3 else f"; ... and {len(mismatches) - 3} more"
+        raise click.ClickException(
+            "Cannot resume a paper-compliant SWE-bench run from non-compliant existing rows: "
+            f"{sample}{extra}. Use a fresh --run-id or remove the stale rows."
+        )
+
+
+def _latest_rows_by_item(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        item_id = row.get("item_id")
+        if isinstance(item_id, str) and item_id:
+            latest[item_id] = row
+    return list(latest.values())
+
+
+def _swebench_predictions_from_output(
+    output_file: Path,
+    *,
+    run_id: str,
+    condition: str,
+    name: str | None = None,
+    dataset: str | None = None,
+) -> list[_SwePrediction]:
+    rows = _latest_rows_by_item(
+        _matching_unified_rows(
+            output_file,
+            run_id=run_id,
+            condition=condition,
+            name=name,
+            dataset=dataset,
+            tolerate_invalid=True,
+        )
+    )
+    return [_SwePrediction(instance_id=row["item_id"], patch=row.get("patch") or "") for row in rows]
 
 
 def _resolve_spell_agent_or_die(
@@ -1235,7 +1391,14 @@ def run_general(
         responses = run_requests_parallel(requests, adapter, max_parallel=parallel, progress_callback=progress)
 
         for item, req, resp in zip(loaded, requests, responses):
-            extracted, correct = _evaluate_general(item, resp.response_text)
+            extracted, correct, eval_error = _evaluate_general(item, resp.response_text)
+            if eval_error:
+                resp = _mark_evaluation_error(
+                    resp,
+                    error_type="judge_error",
+                    error_message=eval_error,
+                    metadata={**resp.metadata, "judge_error": eval_error},
+                )
             record = _mk_record(
                 run_id=run_id,
                 benchmark="general",
@@ -1293,6 +1456,12 @@ def run_general(
 @click.option("--timeout", type=int, default=None, help="Per-item timeout seconds (default: from _DATASET_TIMEOUTS)")
 @click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default=None, help="Reasoning effort (default: provider default, i.e. no --effort flag for CC)")
 @click.option("--web-search/--no-web-search", default=False, show_default=True, help="Enable Codex live web search")
+@click.option(
+    "--paper-compliant/--no-paper-compliant",
+    default=False,
+    show_default=True,
+    help="Omit SWE-bench hints, add no-web/solution-lookup instructions, and disable exposed web tools where practical",
+)
 @click.option("--trace/--no-trace", default=True, show_default=True, help="Record execution traces")
 @click.option("--clean-eval/--no-clean-eval", default=False, show_default=True, help="Re-run patches in a fresh official eval container after generation")
 @click.option("--eval-predictions-dir", default="results/swebench", show_default=True)
@@ -1308,6 +1477,19 @@ def run_general(
 )
 @click.option("--eval-instance-image-tag", default="latest", show_default=True)
 @click.option("--eval-env-image-tag", default="latest", show_default=True)
+@click.option(
+    "--env-image-cache-repository",
+    default=None,
+    envvar="SPELL_SWEBENCH_ENV_IMAGE_CACHE_REPOSITORY",
+    help="Artifact Registry repository for SWE-bench env/instance image caching",
+)
+@click.option(
+    "--env-image-cache-read-only/--no-env-image-cache-read-only",
+    default=False,
+    show_default=True,
+    envvar="SPELL_SWEBENCH_ENV_IMAGE_CACHE_READ_ONLY",
+    help="Pull from the SWE-bench image cache but do not publish new env or instance images",
+)
 @click.option(
     "--prewarm-envs/--no-prewarm-envs",
     default=False,
@@ -1419,6 +1601,7 @@ def run_swebench(
     timeout: int | None,
     reasoning_effort: str | None,
     web_search: bool,
+    paper_compliant: bool,
     trace: bool,
     clean_eval: bool,
     eval_predictions_dir: str,
@@ -1429,6 +1612,8 @@ def run_swebench(
     eval_namespace: str,
     eval_instance_image_tag: str,
     eval_env_image_tag: str,
+    env_image_cache_repository: str | None,
+    env_image_cache_read_only: bool,
     prewarm_envs: bool,
     env_build_workers: int,
     prewarm_only: bool,
@@ -1453,6 +1638,13 @@ def run_swebench(
     run_id = run_id or _run_id("swebench")
     output_file = Path(output) if output else _default_output(run_id)
     conditions = _parse_swebench_conditions(condition)
+    if paper_compliant and web_search:
+        raise click.ClickException("--paper-compliant cannot be combined with --web-search")
+    if paper_compliant and (agent or agent_msg or agent_tc):
+        raise click.ClickException(
+            "--paper-compliant does not support custom Spell agent overrides; "
+            "use the default SWE-bench agent so exposed web/search tools stay disabled."
+        )
 
     # Resolve timeout from central map
     if timeout is None:
@@ -1507,6 +1699,12 @@ def run_swebench(
     click.echo(f"Loaded {len(items)} items")
     if env_build_workers < 1:
         raise click.ClickException("--env-build-workers must be at least 1")
+    env_image_cache = _make_swebench_env_cache_config(
+        env_image_cache_repository,
+        read_only=env_image_cache_read_only,
+    )
+    if backend != "docker" and env_image_cache is not None:
+        raise click.ClickException("SWE-bench env-image cache is only supported with the docker backend")
     if dry_run:
         spell_resolution = None
         if "spell" in conditions:
@@ -1530,6 +1728,12 @@ def run_swebench(
                     "budget": budget,
                     "depth": depth,
                     "web_search": web_search,
+                    "paper_compliant": paper_compliant,
+                    "hints_included": any(
+                        _swebench_hints_included(item, paper_compliant=paper_compliant)
+                        for item in items
+                    ),
+                    "paper_compliance_instruction": paper_compliant,
                     "trace": trace,
                     "keep_images": keep_images,
                     "agent": spell_resolution.agent_file if spell_resolution else None,
@@ -1546,6 +1750,8 @@ def run_swebench(
                     "eval_namespace": eval_namespace,
                     "eval_instance_image_tag": eval_instance_image_tag,
                     "eval_env_image_tag": eval_env_image_tag,
+                    "env_image_cache_repository": env_image_cache_repository,
+                    "env_image_cache_read_only": env_image_cache_read_only,
                     "prewarm_envs": prewarm_envs,
                     "env_build_workers": env_build_workers,
                     "prewarm_only": prewarm_only,
@@ -1581,12 +1787,14 @@ def run_swebench(
             f"Prewarming SWE-bench env images with {env_build_workers} worker"
             f"{'' if env_build_workers == 1 else 's'}"
         )
-        prewarm_result = prewarm_swebench_env_images(
-            items,
-            instance_image_tag=eval_instance_image_tag,
-            env_image_tag=eval_env_image_tag,
-            max_workers=env_build_workers,
-        )
+        prewarm_kwargs: dict[str, Any] = {
+            "instance_image_tag": eval_instance_image_tag,
+            "env_image_tag": eval_env_image_tag,
+            "max_workers": env_build_workers,
+        }
+        if env_image_cache is not None:
+            prewarm_kwargs["env_image_cache"] = env_image_cache
+        prewarm_result = prewarm_swebench_env_images(items, **prewarm_kwargs)
         click.echo(
             "Prewarm summary: "
             f"{prewarm_result.unique_env_count} unique env image"
@@ -1619,8 +1827,13 @@ def run_swebench(
                 )
 
             def process(item) -> UnifiedRunRecord:
+                condition_web_search = web_search if cond == "codex" else False
                 try:
-                    prompt = _format_swebench_prompt(item, workspace=_swebench_prompt_workspace(item))
+                    prompt = _format_swebench_prompt(
+                        item,
+                        workspace=_swebench_prompt_workspace(item),
+                        paper_compliant=paper_compliant,
+                    )
                     request_trace_dir = _trace_dir_for_request(trace_dir, cond, item.instance_id, name=name)
 
                     req = RunRequest(
@@ -1643,7 +1856,7 @@ def run_swebench(
                         depth=depth,
                         max_tokens=max_tokens,
                         reasoning_effort=reasoning_effort,
-                        web_search=web_search if cond == "codex" else False,
+                        web_search=condition_web_search,
                         trace=trace,
                         trace_dir=request_trace_dir,
                     )
@@ -1663,14 +1876,24 @@ def run_swebench(
                         trace_dir=req.trace_dir,
                         eval_timeout=eval_timeout,
                         item=item,
-                    pro_eval_repo=pro_eval_repo if dataset == "pro" else None,
-                    pro_dockerhub_username=pro_dockerhub_username,
-                    instance_image_tag=eval_instance_image_tag,
-                    env_image_tag=eval_env_image_tag,
-                    backend=backend,
-                )
+                        pro_eval_repo=pro_eval_repo if dataset == "pro" else None,
+                        pro_dockerhub_username=pro_dockerhub_username,
+                        instance_image_tag=eval_instance_image_tag,
+                        env_image_tag=eval_env_image_tag,
+                        backend=backend,
+                        paper_compliant=paper_compliant,
+                        **(
+                            {"env_image_cache": env_image_cache}
+                            if env_image_cache is not None
+                            else {}
+                        ),
+                    )
                     patch = resp.metadata.get("patch", "")
                     changed_files = resp.metadata.get("changed_files", [])
+                    hints_included = _swebench_hints_included(
+                        item,
+                        paper_compliant=paper_compliant,
+                    )
 
                     status = resp.status
                     if status == "ok":
@@ -1699,7 +1922,10 @@ def run_swebench(
                         metadata={
                             "repo": item.repo,
                             "base_commit": item.base_commit,
-                            "web_search": web_search,
+                            "paper_compliant": paper_compliant,
+                            "hints_included": hints_included,
+                            "paper_compliance_instruction": paper_compliant,
+                            "web_search": condition_web_search,
                             **(
                                 {
                                     "spell_mode": spell_resolution.spell_mode,
@@ -1754,6 +1980,13 @@ def run_swebench(
                         metadata={
                             "repo": item.repo,
                             "base_commit": item.base_commit,
+                            "paper_compliant": paper_compliant,
+                            "hints_included": _swebench_hints_included(
+                                item,
+                                paper_compliant=paper_compliant,
+                            ),
+                            "paper_compliance_instruction": paper_compliant,
+                            "web_search": condition_web_search,
                             **(
                                 {
                                     "spell_mode": spell_resolution.spell_mode,
@@ -1768,33 +2001,64 @@ def run_swebench(
                         reasoning_effort=reasoning_effort,
                     )
 
-            if parallel <= 1:
-                records = []
-                for i, item in enumerate(items):
-                    click.echo(f"  [{i+1}/{len(items)}] {item.instance_id}")
-                    records.append(process(item))
-            else:
-                records = [None] * len(items)
-                with ThreadPoolExecutor(max_workers=parallel) as pool:
-                    futures = {pool.submit(process, item): idx for idx, item in enumerate(items)}
-                    done = 0
-                    for fut in as_completed(futures):
-                        idx = futures[fut]
-                        done += 1
-                        records[idx] = fut.result()
-                        click.echo(f"  [{done}/{len(items)}] {items[idx].instance_id}")
-                records = [r for r in records if r is not None]
+            existing_rows = _matching_unified_rows(
+                output_file,
+                run_id=run_id,
+                condition=cond,
+                name=name,
+                dataset=dataset,
+                tolerate_invalid=True,
+            )
+            if paper_compliant:
+                _validate_swebench_paper_resume_rows(existing_rows)
+            completed_item_ids = {
+                item_id
+                for row in existing_rows
+                if isinstance((item_id := row.get("item_id")), str) and item_id
+            }
+            pending_items = [item for item in items if item.instance_id not in completed_item_ids]
+            if completed_item_ids:
+                click.echo(
+                    f"  Resume: {len(completed_item_ids)}/{len(items)} items already recorded; "
+                    f"running {len(pending_items)} pending"
+                )
 
-            for record in records:
+            def persist_record(record: UnifiedRunRecord) -> None:
                 image_name = record.metadata.get("instance_image_name")
                 if isinstance(image_name, str) and image_name:
                     images_to_cleanup.add(image_name)
-                append_jsonl(output_file, record)
+                append_jsonl(output_file, record, flush=True, fsync=True)
 
-            _print_summary(output_file, run_id, cond, name=name)
+            completed_so_far = len(completed_item_ids)
+            if parallel <= 1:
+                for item in pending_items:
+                    record = process(item)
+                    persist_record(record)
+                    completed_so_far += 1
+                    click.echo(f"  [{completed_so_far}/{len(items)}] {item.instance_id}")
+            else:
+                with ThreadPoolExecutor(max_workers=parallel) as pool:
+                    futures = {pool.submit(process, item): item for item in pending_items}
+                    for fut in as_completed(futures):
+                        item = futures[fut]
+                        record = fut.result()
+                        persist_record(record)
+                        completed_so_far += 1
+                        click.echo(f"  [{completed_so_far}/{len(items)}] {item.instance_id}")
+
+            if not pending_items:
+                click.echo("  No pending items; rebuilding predictions from existing unified output")
+
+            _print_summary(output_file, run_id, cond, name=name, dataset=dataset)
 
             pred_path = Path("results") / "swebench" / _swebench_predictions_filename(cond, dataset, run_id, name=name)
-            swe_results = [_SwePrediction(instance_id=record.item_id, patch=record.patch or "") for record in records]
+            swe_results = _swebench_predictions_from_output(
+                output_file,
+                run_id=run_id,
+                condition=cond,
+                name=name,
+                dataset=dataset,
+            )
             pred_model_name = {
                 "spell": model or "unknown",
                 "claude_code": f"claude_code:{claude_model or 'unknown'}",
@@ -2227,7 +2491,12 @@ def run_featurebench(
     default=("all",),
     help="Condition(s) to run. Repeat the flag to run multiple explicit conditions.",
 )
-@click.option("--dataset", default=TERMINALBENCH_DATASET, show_default=True)
+@click.option(
+    "--dataset",
+    default=TERMINALBENCH_DATASET,
+    show_default=True,
+    help="Terminal-Bench dataset or alias. Aliases: old-core/core-0.1.1/1.1 -> terminal-bench-core==0.1.1; 2.0/head/current/latest -> terminal-bench-core==head via the bundled 2.x registry.",
+)
 @click.option("--model", default=None, help="provider:model override for Spell")
 @click.option("--claude-model", default=None, help="Model override for Claude Code")
 @click.option("--codex-model", default=None, help="Model override for Codex CLI")
@@ -2239,7 +2508,14 @@ def run_featurebench(
 @click.option("--agent", default=None, help="Spell agent override")
 @click.option("--cleanup/--no-cleanup", default=True, show_default=True)
 @click.option("--trace/--no-trace", default=True, show_default=True, help="Extract Spell traces to traces/<run-id>/spell/")
-@click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="high", show_default=True)
+@click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high", "xhigh"]), default="high", show_default=True)
+@click.option(
+    "--agent-timeout-sec",
+    type=int,
+    default=3600,
+    show_default=True,
+    help="Per-task wall-clock cap passed to the tb harness and condition agents.",
+)
 @click.option("--name", default=None, help="Label for this run variant (flows into output directories and JSONL records)")
 @click.option("--trailing", default=None, help="Custom Spell trailing expression (default: '(!extend))")
 @click.option("--dry-run", is_flag=True, default=False)
@@ -2260,6 +2536,7 @@ def run_terminalbench(
     cleanup: bool,
     trace: bool,
     reasoning_effort: str,
+    agent_timeout_sec: int,
     name: str | None,
     trailing: str | None,
     dry_run: bool,
@@ -2269,10 +2546,15 @@ def run_terminalbench(
     run_id = run_id or _run_id("terminalbench")
     output_file = Path(output) if output else terminalbench_output_file(run_id)
     conditions = _parse_terminalbench_conditions_option(condition_values)
+    requested_dataset = dataset
+    resolved_dataset = resolve_terminalbench_dataset_spec(dataset).dataset
     requested_task_ids = tuple(task_ids) + tuple(task_ids_short)
 
     click.echo(f"Run ID: {run_id}")
     click.echo(f"Output: {output_file}")
+    click.echo(f"Dataset: {resolved_dataset}")
+    if requested_dataset != resolved_dataset:
+        click.echo(f"Requested dataset: {requested_dataset}")
     if name:
         click.echo(f"Name: {name}")
 
@@ -2292,13 +2574,14 @@ def run_terminalbench(
             condition=cond,
             run_id=tb_run_id,
             model=models_by_condition.get(cond),
-            dataset=dataset,
+            dataset=requested_dataset,
             task_ids=requested_task_ids,
             n_tasks=n_tasks,
             n_concurrent=n_concurrent,
             budget=budget,
             cleanup=cleanup,
             reasoning_effort=reasoning_effort,
+            agent_timeout_sec=agent_timeout_sec,
             agent_file=agent,
             trailing=trailing,
             trace=trace,
@@ -2318,7 +2601,9 @@ def run_terminalbench(
         click.echo(
             json.dumps(
                 {
-                    "dataset": dataset,
+                    "dataset": resolved_dataset,
+                    "requested_dataset": requested_dataset,
+                    "resolved_dataset": resolved_dataset,
                     "conditions": conditions,
                     "task_ids": list(requested_task_ids),
                     "n_tasks": n_tasks,
@@ -2349,10 +2634,11 @@ def run_terminalbench(
             run_dir=terminalbench_run_dir(run_id, cond, name=name),
             run_id=run_id,
             condition=cond,
-            dataset=dataset,
+            dataset=resolved_dataset,
             model_spec=command_info["model"],
             name=name,
             agent_file=agent if cond == "spell" else None,
+            requested_dataset=requested_dataset,
             reasoning_effort=reasoning_effort,
             host_trace_root=_trace_dir_for_condition(host_trace_root, cond, name=name) if cond == "spell" else None,
         )
@@ -2368,6 +2654,136 @@ def run_terminalbench(
         if cleanup and idx < len(commands) - 1:
             click.echo("  Pruning Docker before next condition...")
             prune_terminalbench_docker(env)
+
+
+@cli.command("harbor-terminalbench")
+@click.option("--condition", default="spell", show_default=True, type=click.Choice(["spell", "codex", "claude_code", "all"]))
+@click.option("--model", default="openai-tc:gpt-5.4", show_default=True, help="Spell provider:model")
+@click.option("--codex-model", default="gpt-5.4", show_default=True, help="Model for custom Harbor Codex agent")
+@click.option("--claude-model", default=HARBOR_CLAUDE_CODE_DEFAULT_MODEL, show_default=True, help="Model for Harbor Claude Code")
+@click.option("--reasoning-effort", type=click.Choice(["low", "medium", "high"]), default="medium", show_default=True)
+@click.option("-k", "--trials", type=int, default=5, show_default=True, help="Trials per task")
+@click.option("--dataset", default=HARBOR_TERMINALBENCH_DATASET, show_default=True, help="Harbor dataset name@version")
+@click.option("--jobs-dir", type=click.Path(path_type=Path), default=None, help="Root directory for Harbor job artifacts")
+@click.option("--n-concurrent", type=int, default=4, show_default=True, help="Harbor concurrent trial count")
+@click.option("--task", default=None, help="Harbor registry task selector; dev mode only")
+@click.option("--include-task-name", multiple=True, help="Harbor task-name include glob; dev mode only")
+@click.option("--exclude-task-name", multiple=True, help="Harbor task-name exclude glob; dev mode only")
+@click.option("--n", "n_tasks", type=int, default=None, help="Limit to N tasks; dev mode only")
+@click.option("--budget", type=float, default=5.0, show_default=True, help="Spell budget in USD")
+@click.option(
+    "--agent-timeout-multiplier",
+    type=float,
+    default=1.0,
+    show_default=True,
+    help="Harbor agent timeout multiplier; dev-smoke only and non-submission when >1.",
+)
+@click.option("--dev-smoke", is_flag=True, default=False, help="Permit non-submission smoke settings such as k=1 or task filters")
+@click.option("--dry-run", is_flag=True, default=False)
+@click.option("--run-id", default=None)
+def run_harbor_terminalbench(
+    condition: str,
+    model: str,
+    codex_model: str,
+    claude_model: str,
+    reasoning_effort: str,
+    trials: int,
+    dataset: str,
+    jobs_dir: Path | None,
+    n_concurrent: int,
+    task: str | None,
+    include_task_name: tuple[str, ...],
+    exclude_task_name: tuple[str, ...],
+    n_tasks: int | None,
+    budget: float,
+    agent_timeout_multiplier: float,
+    dev_smoke: bool,
+    dry_run: bool,
+    run_id: str | None,
+) -> None:
+    run_id = run_id or _run_id("harbor_terminalbench")
+    try:
+        commands = build_harbor_terminalbench_commands(
+            condition=condition,
+            run_id=run_id,
+            model=model,
+            codex_model=codex_model,
+            claude_model=claude_model,
+            reasoning_effort=reasoning_effort,
+            trials=trials,
+            jobs_dir=jobs_dir,
+            dataset=dataset,
+            dev_smoke=dev_smoke,
+            n_concurrent=n_concurrent,
+            task=task,
+            include_task_names=include_task_name,
+            exclude_task_names=exclude_task_name,
+            n_tasks=n_tasks,
+            budget=budget,
+            agent_timeout_multiplier=agent_timeout_multiplier,
+        )
+    except HarborTerminalBenchComplianceError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    mode = "dev" if dev_smoke else "submission"
+    click.echo(f"Run ID: {run_id}")
+    click.echo(f"Mode: {mode}")
+    click.echo(f"Dataset: {dataset}")
+    click.echo(f"Trials per task: {trials}")
+    click.echo(f"Agent timeout multiplier: {agent_timeout_multiplier}")
+    click.echo("Compliance: " + ("non-submission dev run" if dev_smoke else "submission command guarded"))
+
+    rendered = [
+        {
+            "condition": item.condition,
+            "job_name": item.job_name,
+            "model": item.model,
+            "jobs_dir": str(item.jobs_dir),
+            "submission_compliant": item.submission_compliant,
+            "agent_timeout_multiplier": item.agent_timeout_multiplier,
+            "auth_env_policy": item.auth_env_policy,
+            "command": item.command,
+        }
+        for item in commands
+    ]
+    if dry_run:
+        click.echo("Dry run config:")
+        click.echo(
+            json.dumps(
+                {
+                    "mode": mode,
+                    "agent_timeout_multiplier": agent_timeout_multiplier,
+                    "auth_env": {
+                        "claude_code": harbor_claude_code_auth_env_preview()
+                        if any(item.condition == "claude_code" for item in commands)
+                        else None
+                    },
+                    "commands": rendered,
+                },
+                indent=2,
+            )
+        )
+        return
+
+    claude_code_env = None
+    if any(item.condition == "claude_code" for item in commands):
+        try:
+            claude_code_env = harbor_claude_code_env()
+        except HarborTerminalBenchComplianceError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+    for item in commands:
+        click.echo(f"\n--- Running Harbor Terminal-Bench {item.condition} ---")
+        click.echo(f"Job dir: {item.jobs_dir}")
+        env = claude_code_env if item.condition == "claude_code" else None
+        subprocess.run(item.command, check=True, cwd=BENCHMARK_ROOT, env=env)
+        if dev_smoke and item.agent_timeout_multiplier > 1.0:
+            job_dir = item.jobs_dir / item.job_name
+            summary_path = write_default_timeout_summary(
+                jobs_dir=job_dir if job_dir.exists() else item.jobs_dir,
+                agent_timeout_multiplier=item.agent_timeout_multiplier,
+            )
+            click.echo(f"Default-timeout diagnostic: {summary_path}")
 
 
 SAB_BENCHMARK_DIR = BENCHMARK_ROOT / "data" / "scienceagentbench" / "benchmark" / "benchmark"

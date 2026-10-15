@@ -28,8 +28,10 @@ notebook/
 # Temp dirs
 .tmp-docker-repro/
 worktrees/
+.worktrees/
 src/benchmarking.egg-info/
 
 # Editor
 .idea/
 .vscode/
+.DS_Store

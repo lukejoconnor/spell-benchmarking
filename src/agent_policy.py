@@ -11,34 +11,15 @@ from typing import Literal
 
 SpellMode = Literal["msg", "tc"]
 BenchKind = Literal["general", "swebench", "featurebench", "exercism"]
-GeneralFamily = Literal["general_math", "general_longcontext", "general_other"]
+GeneralFamily = Literal["general_longcontext", "general_other"]
 AgentSource = Literal["default", "agent", "agent_msg", "agent_tc"]
 ProviderFamily = Literal["pf", "msg", "tc"]
 PREFILL_PROVIDER_PREFIXES = {"anthropic-pf", "fireworks"}
-
-MATH_DATASETS = {
-    "gsm8k",
-    "math",
-    "aime",
-    "hmmt",
-    "omni_math",
-    "mathconstruct",
-    "project_euler",
-}
-
 
 DEFAULT_AGENT_POLICY: dict[tuple[ProviderFamily, SpellMode], str] = {
     ("pf", "msg"): "config/agents/io-pf.agent.edn",
     ("msg", "msg"): "config/agents/io-msg.agent.edn",
     ("tc", "tc"): "config/agents/io-tc.agent.edn",
-}
-
-# Math benchmarks use agents without web namespace (TODO #152).
-# Web search wastes tokens on competition math problems.
-MATH_AGENT_POLICY: dict[tuple[ProviderFamily, SpellMode], str] = {
-    ("pf", "msg"): "config/agents/math-pf.agent.edn",
-    ("msg", "msg"): "config/agents/math-msg.agent.edn",
-    ("tc", "tc"): "config/agents/math-tc.agent.edn",
 }
 
 
@@ -75,13 +56,11 @@ def classify_provider_family(model_spec: str | None, spell_mode: SpellMode) -> P
 
 
 def _is_longcontext_dataset(dataset_name: str) -> bool:
-    return dataset_name.startswith("longbench_") or dataset_name.startswith("babilong_")
+    return dataset_name == "longbench" or dataset_name.startswith("longbench_") or dataset_name.startswith("babilong_")
 
 
 def classify_general_family(item_datasets: set[str]) -> GeneralFamily:
     """Classify general benchmark runs by loaded item datasets."""
-    if item_datasets and item_datasets.issubset(MATH_DATASETS):
-        return "general_math"
     if item_datasets and all(_is_longcontext_dataset(d) for d in item_datasets):
         return "general_longcontext"
     return "general_other"
@@ -138,10 +117,8 @@ def resolve_spell_agent(
         source = "agent"
     else:
         key = (provider_family, spell_mode)
-        # Use math-specific agents (no web) for math benchmarks
-        policy = MATH_AGENT_POLICY if family == "general_math" else DEFAULT_AGENT_POLICY
         try:
-            selected = policy[key]
+            selected = DEFAULT_AGENT_POLICY[key]
         except KeyError as exc:  # pragma: no cover - defensive
             raise ValueError(f"No default Spell agent policy for key: {key}") from exc
         source = "default"

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .docker_agents import run_agent_in_container
-from .swebench_container import SWEBenchContainer
+from .swebench_container import SWEBenchContainer, SWEBenchEnvImageCacheConfig
 from .datasets import SWEBenchItem
 from .unified_adapters import RunResponse
 
@@ -41,7 +41,9 @@ def run_unified_swebench(
     pro_dockerhub_username: str = "jefzda",
     instance_image_tag: str = "latest",
     env_image_tag: str = "latest",
+    env_image_cache: SWEBenchEnvImageCacheConfig | None = None,
     backend: str = "docker",
+    paper_compliant: bool = False,
 ) -> RunResponse:
     eval_log_path: str | None = None
     if backend == "singularity":
@@ -57,6 +59,7 @@ def run_unified_swebench(
             dockerhub_username=pro_dockerhub_username,
             instance_image_tag=instance_image_tag,
             env_image_tag=env_image_tag,
+            env_image_cache=env_image_cache,
         )
     with ContainerClass(item, **container_kwargs) as container:
         result = run_agent_in_container(
@@ -74,6 +77,7 @@ def run_unified_swebench(
             trace=trace,
             trace_dir=trace_dir,
             init=init,
+            paper_compliant=paper_compliant,
         )
         base_ref = container.initial_commit or "HEAD"
         patch = container.diff(base_ref)

@@ -76,18 +76,18 @@ class BenchmarkItem:
     metadata: dict = None
 
 
-def load_longbench_short(max_chars: int = 100_000) -> list[BenchmarkItem]:
-    """Load LongBench v2 examples with context < max_chars."""
+def load_longbench(max_chars: int | None = None) -> list[BenchmarkItem]:
+    """Load LongBench v2 examples, optionally filtering by max context chars."""
     ds = load_dataset('THUDM/LongBench-v2', split='train')
 
     items = []
     for row in ds:
-        if len(row['context']) >= max_chars:
+        if max_chars is not None and len(row['context']) >= max_chars:
             continue
 
         items.append(BenchmarkItem(
             id=row['_id'],
-            dataset='longbench_short',
+            dataset='longbench',
             context=row['context'],
             question=row['question'],
             answer=row['answer'],
@@ -105,6 +105,14 @@ def load_longbench_short(max_chars: int = 100_000) -> list[BenchmarkItem]:
             }
         ))
 
+    return items
+
+
+def load_longbench_short(max_chars: int = 100_000) -> list[BenchmarkItem]:
+    """Load LongBench v2 examples with context < max_chars."""
+    items = load_longbench(max_chars=max_chars)
+    for item in items:
+        item.dataset = 'longbench_short'
     return items
 
 
@@ -557,6 +565,76 @@ def evaluate_mathconstruct_response(item: BenchmarkItem, response_text: str | No
     return extracted, bool(is_correct), details
 
 
+def load_browsecomp_plus(
+    n_samples: int = 150,
+    n_docs: int = 1000,
+    max_doc_chars: int | None = 1500,
+    max_preserved_doc_chars: int | None = None,
+    seed: int = 42,
+) -> list[BenchmarkItem]:
+    """Load BrowseComp-Plus multi-hop QA items (Chen et al. 2025).
+
+    Following Sun et al. (2025): sample `n_samples` queries from the 830-query
+    test set and assemble `n_docs` documents per query, guaranteeing that all
+    gold and evidence documents are present. Remaining slots are filled with
+    uniformly random documents drawn from the 100K-document corpus.
+
+    Truncation: random/negative docs are truncated to `max_doc_chars`. Gold
+    and evidence docs are truncated to `max_preserved_doc_chars` (None = keep
+    intact) so the answer-bearing content is preserved.
+
+    Context lives in `BenchmarkItem.context` as one concatenated string with
+    per-doc headers; the bench harness writes it to a per-item file and the
+    agent searches that file directly (grep/head/io/read-file).
+    """
+    # Local import to keep top-level import time low for users who never load
+    # BrowseComp-Plus (corpus download is ~2 GB).
+    from .browsecomp_plus import (
+        _load_decrypted_queries,
+        _load_corpus_docids,
+        _sample_query_records,
+        build_context_string,
+        build_query_packs,
+    )
+
+    all_records = _load_decrypted_queries()
+    sampled = _sample_query_records(all_records, n_samples, seed)
+    corpus_docids = _load_corpus_docids()
+    packs = build_query_packs(
+        sampled,
+        corpus_docids=corpus_docids,
+        n_docs=n_docs,
+        seed=seed,
+    )
+
+    items: list[BenchmarkItem] = []
+    for pack in packs:
+        preserve_ids = set(pack.gold_docids) | set(pack.evidence_docids)
+        context = build_context_string(
+            pack.docs,
+            max_doc_chars=max_doc_chars,
+            preserve_docids=preserve_ids,
+            max_preserved_chars=max_preserved_doc_chars,
+        )
+        items.append(BenchmarkItem(
+            id=f'browsecomp_plus_{pack.query_id}',
+            dataset='browsecomp_plus',
+            context=context,
+            question=pack.query,
+            answer=pack.answer,
+            choices=None,
+            metadata={
+                'query_id': pack.query_id,
+                'n_docs': len(pack.docs),
+                'gold_docids': pack.gold_docids,
+                'evidence_docids': pack.evidence_docids,
+                'max_doc_chars': max_doc_chars,
+                'max_preserved_doc_chars': max_preserved_doc_chars,
+            },
+        ))
+    return items
+
+
 def load_babilong(context_size: str = '32k', tasks: list[str] = None) -> list[BenchmarkItem]:
     """Load BABILong at specified context size.
 
@@ -591,8 +669,13 @@ def load_babilong(context_size: str = '32k', tasks: list[str] = None) -> list[Be
 
 
 LONGBENCH_SEARCH_GUIDANCE = (
-    "The document may be very large. Do not read the entire file at once. "
-    "Search for relevant keywords first, then inspect only the specific sections you need."
+    "The document may be very large — some documents exceed 1M tokens, "
+    "which will overflow your context window if read in full.\n\n"
+    "Strategy: Work through the document incrementally in small chunks or "
+    "sections. After each chunk, briefly summarize what you found and keep "
+    "notes on any lines or facts that seem relevant to the question. Once "
+    "you have enough evidence, synthesize your answer from those notes "
+    "rather than rereading the whole document."
 )
 
 
@@ -607,20 +690,36 @@ def format_benchmark_prompt(item: BenchmarkItem, context_file: str | None = None
             f'Document size: {doc_len:,} chars',
             '',
         ])
-        if item.dataset in ('longbench_sampled', 'longbench_short'):
+        if item.dataset in ('longbench', 'longbench_sampled', 'longbench_short'):
             parts.extend([LONGBENCH_SEARCH_GUIDANCE, ''])
+        if item.dataset == 'browsecomp_plus':
+            from .browsecomp_plus import build_prompt_preamble
+            n_docs = (item.metadata or {}).get('n_docs', 1000)
+            parts.extend([build_prompt_preamble(n_docs, context_file), ''])
         parts.extend([
             'Question:',
             item.question.strip(),
         ])
     elif item.context:
-        parts.extend([
-            'Context:',
-            item.context,
-            '',
-            'Question:',
-            item.question.strip(),
-        ])
+        if item.dataset == 'browsecomp_plus':
+            from .browsecomp_plus import build_prompt_preamble
+            n_docs = (item.metadata or {}).get('n_docs', 1000)
+            parts.extend([build_prompt_preamble(n_docs, None), ''])
+            parts.extend([
+                'Documents:',
+                item.context,
+                '',
+                'Question:',
+                item.question.strip(),
+            ])
+        else:
+            parts.extend([
+                'Context:',
+                item.context,
+                '',
+                'Question:',
+                item.question.strip(),
+            ])
     elif item.dataset == 'gaia':
         parts.append(item.question.strip())
         file_path = (item.metadata or {}).get('file_path', '')
@@ -652,6 +751,7 @@ def format_benchmark_prompt(item: BenchmarkItem, context_file: str | None = None
         parts.append('Solve efficiently. Return just the final integer answer, no explanation.')
     elif item.dataset == 'omni_math':
         parts.append('')
+        parts.append('When useful, use numerical computation to verify your answer — but do not replace a symbolic closed form with its float approximation. The grader matches LaTeX-style answers (e.g., \\sqrt{5}/5).')
         parts.append('Return the answer with no explanation (e.g., 42 or 3/4 or 2\\sqrt{3}).')
     elif item.dataset == 'aime':
         parts.append('')
@@ -663,6 +763,9 @@ def format_benchmark_prompt(item: BenchmarkItem, context_file: str | None = None
         parts.append('')
         parts.append('Use web search, Python, and any tools needed to answer this question.')
         parts.append('Return ONLY the final answer — a number, a short string, or a comma-separated list. No explanation.')
+    elif item.dataset == 'browsecomp_plus':
+        # Format instructions are already baked into the preamble above.
+        pass
     else:
         parts.append('')
         parts.append('Return just the answer (e.g., "bathroom").')
@@ -822,6 +925,7 @@ EXERCISM_DATASETS = {
 
 # Dataset registry
 DATASETS = {
+    'longbench': load_longbench,
     'longbench_short': load_longbench_short,
     'longbench_sampled': load_longbench_sampled,
     'babilong_32k': lambda: load_babilong('32k'),
@@ -850,6 +954,9 @@ DATASETS = {
     'gaia_l1': lambda: load_gaia(level=1),  # Level 1 (53 items, easiest)
     'gaia_l2': lambda: load_gaia(level=2),  # Level 2 (86 items)
     'gaia_l3': lambda: load_gaia(level=3),  # Level 3 (26 items, hardest)
+    # BrowseComp-Plus (Chen et al. 2025; RLMs protocol from Sun et al. 2025)
+    'browsecomp_plus': lambda: load_browsecomp_plus(),  # 150 queries × 1000 docs
+    'browsecomp_plus_pilot': lambda: load_browsecomp_plus(n_samples=5),  # Tiny pilot subset
 }
 
 

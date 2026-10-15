@@ -16,12 +16,36 @@ from .codex_usage import normalize_codex_model
 from .docker_agents import discover_spell_root
 from .provenance import benchmark_git_versions
 from .reasoning_effort import effective_reasoning_effort
-from .usage_accounting import UsageBreakdown, estimate_cost, usage_from_totals, usage_record_fields
+from .terminalbench_patch_recovery import recovered_metadata_from_texts
+from .usage_accounting import (
+    CLAUDE_REPORTED_COST_TOLERANCE_USD,
+    UsageBreakdown,
+    estimate_cost,
+    usage_from_totals,
+    usage_record_fields,
+)
 from .unified_results import UnifiedRunRecord, now_iso
 
-TERMINALBENCH_DATASET = "terminal-bench-core==0.1.1"
+TERMINALBENCH_OLD_CORE_DATASET = "terminal-bench-core==0.1.1"
+TERMINALBENCH_HEAD_DATASET = "terminal-bench-core==head"
+TERMINALBENCH_DATASET = TERMINALBENCH_OLD_CORE_DATASET
+TERMINALBENCH_HEAD_REGISTRY = Path("terminal_bench") / "terminal-bench-core-head-registry.json"
+TERMINALBENCH_HEAD_ALIASES = frozenset({"2.0", "head", "current", "latest"})
+TERMINALBENCH_DATASET_ALIASES = {
+    "old-core": TERMINALBENCH_OLD_CORE_DATASET,
+    "core-0.1.1": TERMINALBENCH_OLD_CORE_DATASET,
+    "0.1.1": TERMINALBENCH_OLD_CORE_DATASET,
+    "1.1": TERMINALBENCH_OLD_CORE_DATASET,
+    **{alias: TERMINALBENCH_HEAD_DATASET for alias in TERMINALBENCH_HEAD_ALIASES},
+}
 TERMINALBENCH_CONDITIONS = ("spell", "claude_code", "codex")
 TERMINALBENCH_RESULTS_DIR = Path("results") / "terminal-bench"
+
+
+@dataclass(frozen=True)
+class TerminalBenchDatasetSpec:
+    dataset: str
+    local_registry_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -48,6 +72,19 @@ CONDITION_SPECS: dict[str, TerminalBenchConditionSpec] = {
 
 def resolve_terminalbench_model(condition: str, override: str | None) -> str:
     return override or CONDITION_SPECS[condition].default_model
+
+
+def resolve_terminalbench_dataset(dataset: str | None) -> str:
+    return resolve_terminalbench_dataset_spec(dataset).dataset
+
+
+def resolve_terminalbench_dataset_spec(dataset: str | None) -> TerminalBenchDatasetSpec:
+    if dataset is None:
+        return TerminalBenchDatasetSpec(TERMINALBENCH_DATASET)
+    requested = dataset.strip()
+    resolved = TERMINALBENCH_DATASET_ALIASES.get(requested, requested)
+    registry_path = TERMINALBENCH_HEAD_REGISTRY if requested in TERMINALBENCH_HEAD_ALIASES else None
+    return TerminalBenchDatasetSpec(resolved, registry_path)
 
 
 def parse_terminalbench_conditions(values: tuple[str, ...] | list[str]) -> list[str]:
@@ -83,6 +120,7 @@ def terminalbench_run_dir(run_id: str, condition: str, *, name: str | None = Non
 
 def prepare_terminalbench_env(benchmark_root: Path) -> dict[str, str]:
     env = os.environ.copy()
+    env.setdefault("DOCKER_BUILDKIT", "1")
 
     colima_sock = Path.home() / ".colima" / "default" / "docker.sock"
     if not env.get("DOCKER_HOST") and not Path("/var/run/docker.sock").exists() and colima_sock.exists():
@@ -117,6 +155,7 @@ def build_terminalbench_command(
     budget: float,
     cleanup: bool,
     reasoning_effort: str,
+    agent_timeout_sec: int = 3600,
     agent_file: str | None,
     trailing: str | None,
     trace: bool,
@@ -124,6 +163,7 @@ def build_terminalbench_command(
 ) -> list[str]:
     spec = CONDITION_SPECS[condition]
     effective_effort = effective_reasoning_effort(condition, model or spec.default_model, reasoning_effort)
+    dataset_spec = resolve_terminalbench_dataset_spec(dataset)
     cmd = [
         "tb",
         "run",
@@ -132,7 +172,7 @@ def build_terminalbench_command(
         "--model",
         model or spec.default_model,
         "--dataset",
-        dataset,
+        dataset_spec.dataset,
         "--output-path",
         str(output_root),
         "--run-id",
@@ -140,16 +180,15 @@ def build_terminalbench_command(
         "--n-concurrent",
         str(n_concurrent),
     ]
+    if dataset_spec.local_registry_path is not None:
+        cmd.extend(["--local-registry-path", str(dataset_spec.local_registry_path)])
 
     if cleanup:
         cmd.append("--cleanup")
     else:
         cmd.append("--no-cleanup")
 
-    # Set the harness-level agent timeout to 3600s (1 hour) to align with
-    # other coding benchmarks (SWE-bench-style) and accommodate high-effort
-    # reasoning runs. The tb CLI defaults to 360s which kills slow runs.
-    cmd.extend(["--global-agent-timeout-sec", "3600"])
+    cmd.extend(["--global-agent-timeout-sec", str(agent_timeout_sec)])
 
     for task_id in task_ids:
         cmd.extend(["-t", task_id])
@@ -165,7 +204,7 @@ def build_terminalbench_command(
             # 120s value forced Spell agents to kill training mid-run on
             # the train-fasttext task, cycling through truncated attempts.
             "sh_timeout": 600,
-            "agent_timeout": 3600,
+            "agent_timeout": agent_timeout_sec,
             "trace": trace,
         }
         if effective_effort is not None:
@@ -179,7 +218,7 @@ def build_terminalbench_command(
         if effective_effort is not None:
             agent_kwargs["reasoning_effort"] = effective_effort
     elif condition == "codex":
-        agent_kwargs = {"agent_timeout": 3600}
+        agent_kwargs = {"agent_timeout": agent_timeout_sec}
         if effective_effort is not None:
             agent_kwargs["reasoning_effort"] = effective_effort
 
@@ -239,6 +278,27 @@ def _load_agent_result(run_dir: Path, task_id: str, trial_name: str) -> dict[str
         return {}
 
 
+def _read_optional_text(path: Path) -> str:
+    if not path.exists():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _terminalbench_test_log_texts(run_dir: Path, task_id: str, trial_name: str) -> list[str]:
+    trial_dir = run_dir / task_id / trial_name
+    return [
+        text
+        for text in [
+            _read_optional_text(trial_dir / "sessions" / "tests.log"),
+            _read_optional_text(trial_dir / "panes" / "post-test.txt"),
+        ]
+        if text
+    ]
+
+
 def _usage_int(value: Any) -> int | None:
     if isinstance(value, (int, float)):
         return int(value)
@@ -249,6 +309,7 @@ def _terminalbench_usage(
     *,
     trial: dict[str, Any],
     agent_result: dict[str, Any],
+    condition: str,
     model: str | None,
 ) -> UsageBreakdown | None:
     total_input_tokens = _usage_int(agent_result.get("total_input_tokens"))
@@ -258,6 +319,7 @@ def _terminalbench_usage(
         total_input_tokens = _usage_int(trial.get("total_input_tokens"))
 
     cached_input_tokens = _usage_int(agent_result.get("cached_input_tokens")) or 0
+    cache_write_input_tokens = _usage_int(agent_result.get("cache_write_input_tokens")) or 0
     reasoning_output_tokens = _usage_int(agent_result.get("reasoning_output_tokens")) or 0
 
     total_output_tokens = _usage_int(agent_result.get("total_output_tokens"))
@@ -280,12 +342,41 @@ def _terminalbench_usage(
         total_input_tokens=total_input_tokens,
         total_output_tokens=total_output_tokens,
         cached_input_tokens=cached_input_tokens,
+        cache_write_input_tokens=cache_write_input_tokens,
         reasoning_output_tokens=reasoning_output_tokens,
         cost_usd=cost_usd,
         cost_source=agent_result.get("cost_source"),
     )
-    if usage is None or usage.cost_usd is not None:
+    if usage is None:
         return usage
+
+    if usage.cost_usd is not None and condition != "claude_code":
+        return usage
+
+    reported_cost = usage.cost_usd
+    if reported_cost is not None:
+        estimated_cost = estimate_cost(model, usage)
+        if estimated_cost is not None and reported_cost < estimated_cost - CLAUDE_REPORTED_COST_TOLERANCE_USD:
+            return UsageBreakdown(
+                uncached_input_tokens=usage.uncached_input_tokens,
+                cached_input_tokens=usage.cached_input_tokens,
+                cache_write_input_tokens=usage.cache_write_input_tokens,
+                visible_output_tokens=usage.visible_output_tokens,
+                reasoning_output_tokens=usage.reasoning_output_tokens,
+                cost_usd=estimated_cost,
+                cost_source="estimated",
+            )
+        if usage.cost_source is not None:
+            return usage
+        return UsageBreakdown(
+            uncached_input_tokens=usage.uncached_input_tokens,
+            cached_input_tokens=usage.cached_input_tokens,
+            cache_write_input_tokens=usage.cache_write_input_tokens,
+            visible_output_tokens=usage.visible_output_tokens,
+            reasoning_output_tokens=usage.reasoning_output_tokens,
+            cost_usd=reported_cost,
+            cost_source="reported",
+        )
 
     estimated_cost = estimate_cost(model, usage)
     return UsageBreakdown(
@@ -392,12 +483,14 @@ def terminalbench_records_from_run(
     model_spec: str | None,
     name: str | None,
     agent_file: str | None,
+    requested_dataset: str | None = None,
     reasoning_effort: str | None = None,
     host_trace_root: Path | None = None,
 ) -> list[UnifiedRunRecord]:
     payload = load_terminalbench_results(run_dir)
     trials = payload.get("results") or []
     records: list[UnifiedRunRecord] = []
+    resolved_dataset = resolve_terminalbench_dataset(dataset)
     resolved_model = resolve_terminalbench_model(condition, model_spec)
     normalized_model = _normalize_record_model(condition, resolved_model)
     recorded_reasoning_effort = effective_reasoning_effort(condition, resolved_model, reasoning_effort)
@@ -409,9 +502,17 @@ def terminalbench_records_from_run(
         error_type = _error_type_for_trial(trial)
         error_message = _error_message_for_trial(trial)
         agent_result = _load_agent_result(run_dir, task_id, trial_name)
+        touched_test_files = agent_result.get("touched_test_files")
+        if not isinstance(touched_test_files, list) or not all(isinstance(path, str) for path in touched_test_files):
+            touched_test_files = []
+        recovery_metadata = recovered_metadata_from_texts(
+            _terminalbench_test_log_texts(run_dir, task_id, trial_name),
+            touched_test_files=touched_test_files,
+        )
         usage = _terminalbench_usage(
             trial=trial,
             agent_result=agent_result,
+            condition=condition,
             model=normalized_model,
         )
         cached_input_tokens = usage.cached_input_tokens if usage else agent_result.get("cached_input_tokens")
@@ -445,8 +546,11 @@ def terminalbench_records_from_run(
             "resolved_model": normalized_model if condition == "codex" else None,
             "cost_source": usage.cost_source if usage else None,
             "reasoning_output_tokens": reasoning_output_tokens if condition == "codex" else None,
+            "requested_dataset": requested_dataset if requested_dataset and requested_dataset != resolved_dataset else None,
+            "resolved_dataset": resolved_dataset if requested_dataset and requested_dataset != resolved_dataset else None,
             "versions": benchmark_git_versions(),
         }
+        metadata.update(recovery_metadata)
         metadata = {key: value for key, value in metadata.items() if value is not None}
 
         records.append(
@@ -454,7 +558,7 @@ def terminalbench_records_from_run(
                 run_id=run_id,
                 timestamp=now_iso(),
                 benchmark="terminalbench",
-                dataset=dataset,
+                dataset=resolved_dataset,
                 split=None,
                 item_id=task_id,
                 condition=condition,

@@ -7,7 +7,6 @@ result event for token usage and cost.
 
 from __future__ import annotations
 
-import base64
 import logging
 import os
 import sys
@@ -17,9 +16,11 @@ try:
     from .base import DockerExecAgent, ParsedUsage
 except ImportError:
     from base import DockerExecAgent, ParsedUsage
+from terminal_bench.agents.failure_mode import FailureMode
 
 try:
     from src.docker_agents import (
+        cc_missing_cli_error,
         cc_env_vars,
         cc_install_script,
         cc_parse_usage,
@@ -28,6 +29,7 @@ try:
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from src.docker_agents import (
+        cc_missing_cli_error,
         cc_env_vars,
         cc_install_script,
         cc_parse_usage,
@@ -72,25 +74,11 @@ class ClaudeCodeAgent(DockerExecAgent):
     def _install_script(self) -> str:
         return cc_install_script(version=self.version or "latest")
 
-    def _load_claude_json_b64(self) -> str | None:
-        # Optional explicit override for nonstandard auth locations.
-        if os.environ.get("CLAUDE_JSON_B64"):
-            return os.environ["CLAUDE_JSON_B64"]
-
-        claude_json = Path.home() / ".claude.json"
-        if not claude_json.exists():
-            return None
-        return base64.b64encode(claude_json.read_bytes()).decode("ascii")
+    def _requires_uv(self) -> bool:
+        return True
 
     def _env_vars(self) -> dict[str, str]:
-        claude_json_b64 = self._load_claude_json_b64()
-        env = cc_env_vars(model=self._resolve_model())
-        if not env.get("ANTHROPIC_API_KEY") and not claude_json_b64:
-            logger.warning(
-                "No ANTHROPIC_API_KEY or ~/.claude.json found for Claude Code container auth. "
-                "Runs may fail unless one is provided."
-            )
-        return env
+        return cc_env_vars(model=self._resolve_model())
 
     def _run_command(self, instruction: str, workdir: str) -> str:
         del workdir
@@ -111,7 +99,17 @@ class ClaudeCodeAgent(DockerExecAgent):
          "usage": {"input_tokens": N, "output_tokens": M}}
         """
         del container, workdir
-        usage = cc_parse_usage(stdout)
+        usage = cc_parse_usage(stdout, model=self._resolve_model())
         if not usage:
             logger.warning("No result event found in Claude Code output")
         return usage
+
+    def _determine_failure_mode(self, result, usage):
+        del usage
+        if result.timed_out:
+            return FailureMode.AGENT_TIMEOUT
+        if result.exit_code != 0:
+            if cc_missing_cli_error(result):
+                return FailureMode.AGENT_INSTALLATION_FAILED
+            return FailureMode.UNKNOWN_AGENT_ERROR
+        return FailureMode.NONE

@@ -2,7 +2,7 @@
 
 ## Architecture
 
-The harness is a Click CLI (`bench.py`) with subcommands for each benchmark family: `general` (math, long-context, QA), `swebench`, `featurebench`, `terminalbench`, `exercism`, `scienceagentbench`. Every subcommand follows the same execution pipeline:
+The harness is a Click CLI (`bench.py`) with subcommands for each benchmark family: `general` (math, long-context, QA), `swebench`, `featurebench`, `terminalbench`, `harbor-terminalbench`, `exercism`, `scienceagentbench`. Every subcommand follows the same execution pipeline:
 
 ```
 CLI flags → load dataset → build adapter per condition → construct RunRequests → execute → evaluate → write JSONL
@@ -21,6 +21,8 @@ A **condition** is the system under test. Four are supported:
 | `swe_agent` | `SweAgentAdapter` | mini-swe-agent CLI (`mini`) |
 
 Each adapter implements a `run(req: RunRequest) -> RunResponse` protocol. The adapters live in `src/unified_adapters.py`. Docker variants (`DockerSpellAdapter`, `DockerSweAgentAdapter`, etc.) in `src/docker_adapters.py` wrap the same logic but execute inside containers.
+
+`claude_code` requires `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`. The Claude Code harness strips `ANTHROPIC_API_KEY` and legacy `CLAUDE_JSON_B64` from its process/container environments to keep benchmark runs on Claude Max subscription OAuth.
 
 ### The init construction pipeline (Spell only)
 
@@ -44,7 +46,9 @@ Three modes exist for software benchmarks (SWE-bench, FeatureBench, Exercism):
 - **Docker** (`--docker`): Docker-wrapped adapters run the agent inside a container. Patch returned in response metadata.
 - **Unified** (`--unified`): Shared container-agent infrastructure (`src/docker_agents.py`). The agent runs in a `DockerWorkspaceContainer` with the repo pre-cloned. Used by Terminal-Bench and now available for SWE-bench/FeatureBench/Exercism. Calls `run_unified_swebench()` / `run_unified_featurebench()` / `run_unified_exercism()` instead of `adapter.run()`.
 
-Terminal-Bench now uses `bench.py terminalbench` as the primary entrypoint. That subcommand wraps `tb run`, normalizes per-task `results.json` into `UnifiedRunRecord`s, and copies Spell traces out of per-task `agent-logs/spell-trace/` directories into the standard `traces/<run-id>/spell/...` layout.
+Terminal-Bench local/regression runs use `bench.py terminalbench`. That subcommand wraps legacy `tb run`, normalizes per-task `results.json` into `UnifiedRunRecord`s, and copies Spell traces out of per-task `agent-logs/spell-trace/` directories into the standard `traces/<run-id>/spell/...` layout. Its `--dataset 2.0` alias is not public leaderboard-compliant.
+
+Public Terminal-Bench 2.0 runs use `bench.py harbor-terminalbench`, which shells out to `uv tool run --from harbor harbor run -d terminal-bench@2.0` so fresh hosts can run without a separate Harbor CLI install. Submission mode requires `k >= 5`, forbids task filters, and does not expose timeout/resource/local-registry/recovery knobs. Codex uses `harbor_codex_agent.py` instead of Harbor's built-in adapter so web search is explicitly disabled and GPT-5.4 cost is computed from a per-call ledger with the >272K-token long-context threshold applied per model call. Claude Code uses Harbor's built-in `claude-code` agent, but the wrapper launches Harbor with an OAuth-only environment: `CLAUDE_CODE_OAUTH_TOKEN` is required and Anthropic API-key/base-url plus legacy Claude JSON auth variables are stripped before the subprocess starts. `--dev-smoke` is explicitly non-submission and permits `k=1`, `--n`, and task selectors for development comparisons. `--agent-timeout-multiplier >1` is only accepted with `--dev-smoke`; those runs write `default-timeout-summary.json` sidecars with `resolved_within_default_timeout`, a diagnostic for whether resolved trials also fit the default 900s TB2 agent budget.
 
 In unified mode, `bench.py` still constructs the `RunRequest` (including `init`) identically — the unified runners just receive the pre-built init string.
 

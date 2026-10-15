@@ -20,7 +20,6 @@ assert PROJECT_ROOT is not None
 
 class AgentPolicyTests(unittest.TestCase):
     def test_detect_spell_mode(self) -> None:
-        self.assertEqual(detect_spell_mode("codex-msg:gpt-5.3-codex"), "msg")
         self.assertEqual(detect_spell_mode("codex-tc:gpt-5.3-codex"), "tc")
         self.assertEqual(detect_spell_mode("anthropic-tc:claude-sonnet-4-5-20250929"), "tc")
         self.assertEqual(detect_spell_mode("openai-tc:gpt-5.4"), "tc")
@@ -28,8 +27,8 @@ class AgentPolicyTests(unittest.TestCase):
         self.assertEqual(detect_spell_mode("gpt-5.3-codex"), "msg")
 
     def test_classify_general_family(self) -> None:
-        self.assertEqual(classify_general_family({"aime", "hmmt"}), "general_math")
-        self.assertEqual(classify_general_family({"project_euler"}), "general_math")
+        self.assertEqual(classify_general_family({"aime", "hmmt"}), "general_other")
+        self.assertEqual(classify_general_family({"project_euler"}), "general_other")
         self.assertEqual(classify_general_family({"longbench_short", "babilong_32k"}), "general_longcontext")
         self.assertEqual(classify_general_family({"longbench_short", "aime"}), "general_other")
         self.assertEqual(classify_general_family(set()), "general_other")
@@ -105,7 +104,7 @@ class AgentPolicyTests(unittest.TestCase):
             resolve_spell_agent(
                 project_root=PROJECT_ROOT,
                 bench_kind="featurebench",
-                model_spec="codex-msg:gpt-5.3-codex",
+                model_spec="anthropic-pf:claude-sonnet-4-5-20250929",
                 agent_msg=str(missing),
             )
 
