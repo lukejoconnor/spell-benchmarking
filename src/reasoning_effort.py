@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 SUPPORTED_SPELL_PROVIDER_PREFIXES = {
-    "codex-msg",
     "codex-tc",
-    "openai",
     "openai-tc",
     "anthropic-pf",
     "anthropic-tc",

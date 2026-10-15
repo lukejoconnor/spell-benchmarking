@@ -1,8 +1,6 @@
 # Spell Benchmarking
 
-Benchmark infrastructure for evaluating Spell against one-shot LLM calls, Claude Code, Codex CLI, and mini-swe-agent across math, long-context, and coding tasks.
-
-All commands run from the repository root using `uv run`.
+Scripts and benchmarking infrastructure for [this paper](https://arxiv.org/abs/2605.06898). The main Spell repository is located [here](https://github.com/lukejoconnor/spell).
 
 ## Quick Start
 
@@ -107,6 +105,10 @@ Execution details:
 - `mini`, `lite`, and `verified` run inside official SWE-bench instance images with the repo mounted at `/testbed`.
 - `pro` runs inside the official Docker Hub instance image with the repo at `/app`.
 - Same-container eval always runs after generation and is recorded in run metadata.
+- To reuse SWE-bench Docker layers across fresh disposable VMs, pass `--env-image-cache-repository <Artifact Registry repo>` or set `SPELL_SWEBENCH_ENV_IMAGE_CACHE_REPOSITORY`. The same repository now stores both shared `sweb.env.*` images and per-instance `sweb.eval.*` images under separate cache tags. Use `--env-image-cache-read-only` when you want pulls but no pushes; the GCP launcher can export the env var automatically from `SPELL_GCP_ENV_IMAGE_CACHE_REPOSITORY`.
+- Unified output is appended incrementally after each completed item, so a crash loses at most the in-flight item rather than the whole run.
+- To resume a partial run, rerun with the same `--run-id` and `--output`; completed items are detected from the existing unified JSONL and skipped automatically.
+- The per-condition SWE-bench predictions JSONL is regenerated from the unified output after each condition completes.
 
 Clean-eval cleanup sequence for multi-condition runs:
 - Non-final conditions: `cache_level=env`, `clean=false` (reuse env images)
@@ -240,7 +242,7 @@ Selected via `--split` and `--task-ids`. Tasks are loaded from the FeatureBench 
 `--reasoning-effort` is support-matrix driven rather than purely condition-driven:
 - `codex`: forwarded and recorded.
 - `claude_code`: forwarded via `claude --effort` and recorded.
-- `spell` / `one_shot`: forwarded only for OpenAI/Codex-family providers (`openai`, `openai-tc`, `codex-msg`, `codex-tc`); Anthropic-backed Spell runs leave the field empty.
+- `spell` / `one_shot`: forwarded and recorded for `openai-tc`, `codex-tc`, `anthropic-pf`, and `anthropic-tc`.
 - `swe_agent`: not currently benchmark-wired, so records leave the field empty.
 
 ## One-Off Files
@@ -260,10 +262,8 @@ The `--model` flag uses a `provider:model` format that determines both the trans
 |--------|-----------|-------|---------|
 | `anthropic-pf` | Anthropic prefill | `io-pf.agent.edn` | `anthropic-pf:claude-opus-4-5-20251101` |
 | `anthropic-tc` | Anthropic tool-call | `io-tc.agent.edn` | `anthropic-tc:claude-opus-4-5-20251101` |
-| `codex-msg` | Codex messages | `io-msg.agent.edn` | `codex-msg:gpt-5.3-codex` |
 | `codex-tc` | Codex tool-call | `io-tc.agent.edn` | `codex-tc:gpt-5.3-codex` |
 | `openai-tc` | OpenAI tool-call | `io-tc.agent.edn` | `openai-tc:gpt-5.4` |
-| `openai` | OpenAI Chat | `io-msg.agent.edn` | `openai:o3` |
 
 ### Model Aliases
 
@@ -272,6 +272,8 @@ The Clojure API supports short aliases: `haiku`, `sonnet`, `opus`, `opus46`, `o3
 ### Claude Code / Codex Models
 
 `--claude-model` accepts a plain model name (no provider prefix): `claude-opus-4-5-20251101`, `claude-sonnet-4-5-20250929`, or the aliases `opus`, `sonnet`.
+
+Claude Code conditions require `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` (Max subscription OAuth). The harness removes `ANTHROPIC_API_KEY` and legacy `CLAUDE_JSON_B64` from Claude Code subprocess/container environments so Claude Code runs cannot silently fall back to Anthropic API billing.
 
 `--codex-model` defaults to `codex`, which resolves to `gpt-5-codex` internally.
 
@@ -309,7 +311,6 @@ The agent is selected automatically based on the provider prefix:
 | Provider prefix | Provider family | Default agent |
 |----------------|----------------|---------------|
 | `anthropic-pf` | prefill | `config/agents/io-pf.agent.edn` |
-| `codex-msg`, `openai` | message | `config/agents/io-msg.agent.edn` |
 | `anthropic-tc`, `codex-tc`, `openai-tc` | toolcall | `config/agents/io-tc.agent.edn` |
 
 Each agent inherits from a base agent (e.g., `base-tc.agent.edn`) and adds the `io` namespace for file access. The agent determines the system prompt and available namespaces but not the model — the model comes from the `--model` flag.

@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -32,6 +33,15 @@ def _request(condition: str, model_spec: str | None = None, trace_dir: Path | No
 
 
 class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
+    @patch.dict(
+        os.environ,
+        {
+            "CLAUDE_CODE_OAUTH_TOKEN": "oauth-token",
+            "ANTHROPIC_API_KEY": "sk-should-not-forward",
+            "CLAUDE_JSON_B64": "legacy-json",
+        },
+        clear=False,
+    )
     @patch("src.unified_adapters.subprocess.run")
     def test_claude_adapter_disables_custom_setting_sources(self, run_mock):
         run_mock.return_value = SimpleNamespace(
@@ -74,6 +84,23 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         self.assertEqual(response.metadata.get("session_id"), "sess-1")
         self.assertEqual(response.tokens_in, 10)
         self.assertIsNone(response.cached_input_tokens)
+        env = run_mock.call_args.kwargs["env"]
+        self.assertEqual(env["CLAUDE_CODE_OAUTH_TOKEN"], "oauth-token")
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+        self.assertNotIn("CLAUDE_JSON_B64", env)
+        self.assertNotEqual(env.get("HOME"), os.environ.get("HOME"))
+        self.assertTrue(Path(env["HOME"]).name.startswith("spell-claude-code-home-"))
+
+    @patch.dict(os.environ, {}, clear=True)
+    @patch("src.unified_adapters.subprocess.run")
+    def test_claude_adapter_requires_oauth_token(self, run_mock):
+        adapter = ClaudeCodeAdapter(model="sonnet", budget=1.0)
+        response = adapter.run(_request("claude_code", "claude_code:sonnet"))
+
+        self.assertEqual(response.status, "error")
+        self.assertEqual(response.error_type, "auth_error")
+        self.assertIn("CLAUDE_CODE_OAUTH_TOKEN is required", response.error_message or "")
+        run_mock.assert_not_called()
 
     @patch("src.unified_adapters.subprocess.run")
     def test_codex_adapter_uses_no_custom_wrapper(self, run_mock):
@@ -115,6 +142,7 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         cmd = run_mock.call_args.args[0]
         self.assertLess(cmd.index("--search"), cmd.index("exec"))
 
+    @patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-token"}, clear=False)
     @patch("src.unified_adapters.subprocess.run")
     def test_claude_adapter_writes_trace_file(self, run_mock):
         run_mock.return_value = SimpleNamespace(
@@ -229,13 +257,13 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
                                             "input_tokens": 1_000,
                                             "cached_input_tokens": 100,
                                             "output_tokens": 200,
-                                            "reasoning_output_tokens": 350,
+                                            "reasoning_output_tokens": 50,
                                         },
                                         "last_token_usage": {
                                             "input_tokens": 1_000,
                                             "cached_input_tokens": 100,
                                             "output_tokens": 200,
-                                            "reasoning_output_tokens": 350,
+                                            "reasoning_output_tokens": 50,
                                         },
                                         "model_context_window": 258_400,
                                     },
@@ -252,12 +280,12 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
 
             self.assertEqual(response.status, "ok")
             self.assertAlmostEqual(response.cost_usd or 0.0, 0.01, places=8)
-            self.assertEqual(response.metadata["reasoning_output_tokens"], 350)
+            self.assertEqual(response.metadata["reasoning_output_tokens"], 50)
             self.assertEqual(response.metadata["rollout_status"], "ok")
             self.assertEqual(response.metadata["cost_source"], "reported")
             self.assertEqual(response.metadata["raw"]["events"][0]["type"], "thread.started")
             self.assertEqual(response.metadata["raw"]["non_json_lines"], ["non-json-line"])
-            self.assertEqual(response.metadata["raw"]["rollout_token_count"]["total_token_usage"]["reasoning_output_tokens"], 350)
+            self.assertEqual(response.metadata["raw"]["rollout_token_count"]["total_token_usage"]["reasoning_output_tokens"], 50)
             self.assertEqual(response.metadata["raw"]["rollout_path"], str(rollout_path))
 
     @patch("src.unified_adapters.subprocess.run")
@@ -383,6 +411,7 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
         self.assertEqual(response.tokens_in, 13)
         self.assertEqual(response.cached_input_tokens, 3)
 
+    @patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-token"}, clear=False)
     @patch("src.unified_adapters.subprocess.run")
     def test_claude_adapter_reports_total_and_cached_input_tokens(self, run_mock):
         run_mock.return_value = SimpleNamespace(
@@ -408,6 +437,37 @@ class UnifiedAdapterCommandDefaultsTest(unittest.TestCase):
 
         self.assertEqual(response.tokens_in, 13)
         self.assertEqual(response.cached_input_tokens, 3)
+        self.assertEqual(response.metadata["cost_source"], "reported")
+
+    @patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-token"}, clear=False)
+    @patch("src.unified_adapters.subprocess.run")
+    def test_claude_adapter_reprices_underreported_cache_write_cost(self, run_mock):
+        run_mock.return_value = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "type": "result",
+                    "result": "ok",
+                    "usage": {
+                        "input_tokens": 100_000,
+                        "cache_creation_input_tokens": 50_000,
+                        "cache_read_input_tokens": 25_000,
+                        "output_tokens": 10_000,
+                    },
+                    "total_cost_usd": 0.4575,
+                }
+            ),
+            stderr="",
+        )
+
+        adapter = ClaudeCodeAdapter(model="claude-sonnet-4-6", budget=1.0)
+        response = adapter.run(_request("claude_code", "claude_code:claude-sonnet-4-6"))
+
+        self.assertEqual(response.status, "ok")
+        self.assertEqual(response.tokens_in, 175_000)
+        self.assertEqual(response.cached_input_tokens, 75_000)
+        self.assertAlmostEqual(response.cost_usd or 0.0, 0.645, places=6)
+        self.assertEqual(response.metadata["cost_source"], "estimated")
 
     @patch("src.unified_adapters.SpellBenchmarkClient.run")
     def test_spell_adapter_skips_default_format_for_software(self, client_run_mock):

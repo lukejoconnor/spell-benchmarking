@@ -12,8 +12,14 @@ if str(BENCHMARK_ROOT) not in sys.path:
     sys.path.insert(0, str(BENCHMARK_ROOT))
 
 from src.terminalbench_runner import (
+    TERMINALBENCH_DATASET,
+    TERMINALBENCH_HEAD_DATASET,
+    TERMINALBENCH_HEAD_REGISTRY,
+    TERMINALBENCH_OLD_CORE_DATASET,
     build_terminalbench_command,
     parse_terminalbench_conditions,
+    prepare_terminalbench_env,
+    resolve_terminalbench_dataset,
     terminalbench_condition_run_id,
     terminalbench_records_from_run,
     terminalbench_run_dir,
@@ -31,6 +37,34 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             ["spell", "codex"],
         )
 
+    def test_terminalbench_dataset_aliases_keep_old_core_default_and_head_aliases(self) -> None:
+        self.assertEqual(TERMINALBENCH_DATASET, TERMINALBENCH_OLD_CORE_DATASET)
+        self.assertEqual(resolve_terminalbench_dataset(None), TERMINALBENCH_OLD_CORE_DATASET)
+        self.assertEqual(resolve_terminalbench_dataset("old-core"), TERMINALBENCH_OLD_CORE_DATASET)
+        self.assertEqual(resolve_terminalbench_dataset("core-0.1.1"), TERMINALBENCH_OLD_CORE_DATASET)
+        self.assertEqual(resolve_terminalbench_dataset("1.1"), TERMINALBENCH_OLD_CORE_DATASET)
+        self.assertEqual(resolve_terminalbench_dataset("2.0"), TERMINALBENCH_HEAD_DATASET)
+        self.assertEqual(resolve_terminalbench_dataset("head"), TERMINALBENCH_HEAD_DATASET)
+        self.assertEqual(resolve_terminalbench_dataset("latest"), TERMINALBENCH_HEAD_DATASET)
+
+    def test_terminalbench_dataset_resolution_preserves_raw_passthrough(self) -> None:
+        self.assertEqual(resolve_terminalbench_dataset("terminal-bench-core==0.1.1"), TERMINALBENCH_OLD_CORE_DATASET)
+        self.assertEqual(resolve_terminalbench_dataset("terminal-bench-core"), "terminal-bench-core")
+        self.assertEqual(resolve_terminalbench_dataset("terminal-bench-core==head"), TERMINALBENCH_HEAD_DATASET)
+        self.assertEqual(resolve_terminalbench_dataset("custom-dataset==2026.04"), "custom-dataset==2026.04")
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_prepare_terminalbench_env_enables_buildkit_by_default(self) -> None:
+        env = prepare_terminalbench_env(BENCHMARK_ROOT)
+
+        self.assertEqual(env["DOCKER_BUILDKIT"], "1")
+
+    @patch.dict("os.environ", {"DOCKER_BUILDKIT": "0"}, clear=True)
+    def test_prepare_terminalbench_env_respects_explicit_buildkit_override(self) -> None:
+        env = prepare_terminalbench_env(BENCHMARK_ROOT)
+
+        self.assertEqual(env["DOCKER_BUILDKIT"], "0")
+
     def test_build_terminalbench_command_threads_spell_kwargs(self) -> None:
         cmd = build_terminalbench_command(
             condition="spell",
@@ -43,7 +77,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             budget=7.5,
             cleanup=False,
             reasoning_effort="medium",
-            agent_file="config/agents/io-acm-tc.agent.edn",
+            agent_file="config/agents/io-tc.agent.edn",
             trailing="'(!describe io)",
             trace=False,
         )
@@ -56,9 +90,49 @@ class TerminalBenchRunnerTests(unittest.TestCase):
         self.assertIn("--n-tasks 2", rendered)
         self.assertIn("-k budget=7.5", rendered)
         self.assertIn("-k reasoning_effort=medium", rendered)
-        self.assertIn("-k agent_file=config/agents/io-acm-tc.agent.edn", rendered)
+        self.assertIn("-k agent_file=config/agents/io-tc.agent.edn", rendered)
         self.assertIn("-k trailing='(!describe io)", rendered)
         self.assertIn("-k trace=false", rendered)
+
+    def test_build_terminalbench_command_resolves_dataset_alias(self) -> None:
+        cmd = build_terminalbench_command(
+            condition="codex",
+            run_id="codex_demo",
+            model="openai/gpt-5.3-codex",
+            dataset="2.0",
+            task_ids=(),
+            n_tasks=1,
+            n_concurrent=1,
+            budget=7.5,
+            cleanup=True,
+            reasoning_effort="high",
+            agent_file=None,
+            trailing=None,
+            trace=False,
+        )
+
+        self.assertEqual(cmd[cmd.index("--dataset") + 1], TERMINALBENCH_HEAD_DATASET)
+        self.assertEqual(cmd[cmd.index("--local-registry-path") + 1], str(TERMINALBENCH_HEAD_REGISTRY))
+
+    def test_build_terminalbench_command_preserves_raw_head_passthrough(self) -> None:
+        cmd = build_terminalbench_command(
+            condition="codex",
+            run_id="codex_demo",
+            model="openai/gpt-5.3-codex",
+            dataset="terminal-bench-core==head",
+            task_ids=(),
+            n_tasks=1,
+            n_concurrent=1,
+            budget=7.5,
+            cleanup=True,
+            reasoning_effort="high",
+            agent_file=None,
+            trailing=None,
+            trace=False,
+        )
+
+        self.assertEqual(cmd[cmd.index("--dataset") + 1], TERMINALBENCH_HEAD_DATASET)
+        self.assertNotIn("--local-registry-path", cmd)
 
     def test_build_terminalbench_command_threads_claude_and_codex_effort(self) -> None:
         claude_cmd = build_terminalbench_command(
@@ -95,7 +169,7 @@ class TerminalBenchRunnerTests(unittest.TestCase):
         self.assertIn("-k reasoning_effort=medium", " ".join(claude_cmd))
         self.assertIn("-k reasoning_effort=medium", " ".join(codex_cmd))
 
-    def test_build_terminalbench_command_omits_unsupported_spell_effort(self) -> None:
+    def test_build_terminalbench_command_includes_supported_anthropic_spell_effort(self) -> None:
         cmd = build_terminalbench_command(
             condition="spell",
             run_id="spell_demo",
@@ -112,16 +186,16 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             trace=False,
         )
 
-        self.assertNotIn("-k reasoning_effort=medium", " ".join(cmd))
+        self.assertIn("-k reasoning_effort=medium", " ".join(cmd))
 
     def test_terminalbench_run_id_sanitizes_name(self) -> None:
         self.assertEqual(
-            terminalbench_condition_run_id("terminalbench_demo", "spell", name="io/acm"),
-            "spell_io_acm_terminalbench_demo",
+            terminalbench_condition_run_id("terminalbench_demo", "spell", name="io/tc"),
+            "spell_io_tc_terminalbench_demo",
         )
         self.assertEqual(
-            terminalbench_run_dir("terminalbench_demo", "spell", name="io/acm"),
-            Path("results") / "terminal-bench" / "spell_io_acm_terminalbench_demo",
+            terminalbench_run_dir("terminalbench_demo", "spell", name="io/tc"),
+            Path("results") / "terminal-bench" / "spell_io_tc_terminalbench_demo",
         )
 
     def test_terminalbench_records_copy_spell_traces_and_cost(self) -> None:
@@ -205,6 +279,97 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             )
             copied_trace = Path(record.metadata["trace_dir"])
             self.assertTrue((copied_trace / "trace-1" / "tree.txt").exists())
+
+    def test_terminalbench_records_store_resolved_dataset_and_alias_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir) / "results" / "codex_demo"
+            trial_dir = run_dir / "hello-world" / "hello-world.1-of-1.codex_demo"
+            trial_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "results.json").write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "trial_name": "hello-world.1-of-1.codex_demo",
+                                "task_id": "hello-world",
+                                "is_resolved": True,
+                                "failure_mode": "none",
+                                "parser_results": {"check": "passed"},
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            records = terminalbench_records_from_run(
+                run_dir=run_dir,
+                run_id="terminalbench_demo",
+                condition="codex",
+                dataset="2.0",
+                model_spec="openai/gpt-5.3-codex",
+                name=None,
+                agent_file=None,
+                requested_dataset="2.0",
+            )
+
+            self.assertEqual(records[0].dataset, TERMINALBENCH_HEAD_DATASET)
+            self.assertEqual(records[0].metadata["requested_dataset"], "2.0")
+            self.assertEqual(records[0].metadata["resolved_dataset"], TERMINALBENCH_HEAD_DATASET)
+
+    def test_terminalbench_records_extract_recovery_caveat_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir) / "results" / "codex_demo"
+            trial_dir = run_dir / "swe-bench-fsspec" / "swe-bench-fsspec.1-of-1.codex_demo"
+            agent_log_dir = trial_dir / "agent-logs"
+            sessions_dir = trial_dir / "sessions"
+            agent_log_dir.mkdir(parents=True, exist_ok=True)
+            sessions_dir.mkdir(parents=True, exist_ok=True)
+            (agent_log_dir / "result.json").write_text(
+                json.dumps(
+                    {
+                        "touched_test_files": ["fsspec/implementations/tests/test_dirfs.py"],
+                        "test_patch_collision_recovery_enabled": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (sessions_dir / "tests.log").write_text(
+                "SPELL_TB_TEST_PATCH_COLLISION_RECOVERED path=fsspec/implementations/tests/test_dirfs.py\n",
+                encoding="utf-8",
+            )
+            (run_dir / "results.json").write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "trial_name": "swe-bench-fsspec.1-of-1.codex_demo",
+                                "task_id": "swe-bench-fsspec",
+                                "is_resolved": True,
+                                "failure_mode": "none",
+                                "parser_results": {"check": "passed"},
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            records = terminalbench_records_from_run(
+                run_dir=run_dir,
+                run_id="terminalbench_demo",
+                condition="codex",
+                dataset="2.0",
+                model_spec="openai/gpt-5.4",
+                name=None,
+                agent_file=None,
+            )
+
+            metadata = records[0].metadata
+            self.assertTrue(metadata["test_patch_collision_recovered"])
+            self.assertEqual(metadata["touched_test_files"], ["fsspec/implementations/tests/test_dirfs.py"])
+            self.assertEqual(metadata["test_patch_collision_paths"], ["fsspec/implementations/tests/test_dirfs.py"])
+            self.assertIn("official test patch collided", metadata["score_caveat"])
 
     def test_terminalbench_records_recover_spell_visible_and_reasoning_from_agent_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -414,6 +579,64 @@ class TerminalBenchRunnerTests(unittest.TestCase):
             self.assertAlmostEqual(record.cost_usd or 0.0, 2.75625, places=6)
             self.assertEqual(record.cached_input_tokens, 250_000)
             self.assertEqual(record.metadata["resolved_model"], "gpt-5.3-codex")
+            self.assertEqual(record.metadata["cost_source"], "estimated")
+
+    def test_terminalbench_records_preserve_claude_cache_write_and_reprice_underreported_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            run_dir = root / "results" / "claude_demo"
+            trial_dir = run_dir / "hello-world" / "hello-world.1-of-1.claude_demo"
+            agent_log_dir = trial_dir / "agent-logs"
+            agent_log_dir.mkdir(parents=True, exist_ok=True)
+            (agent_log_dir / "result.json").write_text(
+                json.dumps(
+                    {
+                        "input_tokens": 175_000,
+                        "cached_input_tokens": 25_000,
+                        "cache_write_input_tokens": 50_000,
+                        "visible_output_tokens": 10_000,
+                        "total_input_tokens": 175_000,
+                        "total_output_tokens": 10_000,
+                        "cost_usd": 0.4575,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (run_dir / "results.json").write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "trial_name": "hello-world.1-of-1.claude_demo",
+                                "task_id": "hello-world",
+                                "is_resolved": True,
+                                "failure_mode": "none",
+                                "parser_results": {"check": "passed"},
+                                "total_input_tokens": 175_000,
+                                "total_output_tokens": 10_000,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            records = terminalbench_records_from_run(
+                run_dir=run_dir,
+                run_id="terminalbench_demo",
+                condition="claude_code",
+                dataset="terminal-bench-core==0.1.1",
+                model_spec="anthropic/claude-sonnet-4-6",
+                name=None,
+                agent_file=None,
+            )
+
+            self.assertEqual(len(records), 1)
+            record = records[0]
+            self.assertEqual(record.status, "resolved")
+            self.assertEqual(record.cached_input_tokens, 25_000)
+            self.assertEqual(record.cache_write_input_tokens, 50_000)
+            self.assertAlmostEqual(record.cost_usd or 0.0, 0.645, places=6)
             self.assertEqual(record.metadata["cost_source"], "estimated")
 
     def test_terminalbench_records_skip_cost_estimate_when_shared_pricing_unavailable(self) -> None:

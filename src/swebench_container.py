@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import io
 import json
 import logging
@@ -41,6 +42,9 @@ logger = logging.getLogger(__name__)
 
 PRO_WORKDIR = "/app"
 _SETUP_LOG_TAIL_CHARS = 4000
+_DOCKER_STOP_TIMEOUT_SECONDS = 120
+_DOCKER_CLEANUP_TIMEOUT_SECONDS = 30
+_INSTANCE_IMAGE_CACHE_SCHEMA_VERSION = 1
 _ENV_BUILD_LOCKS: dict[str, threading.Lock] = {}
 _ENV_BUILD_LOCKS_GUARD = threading.Lock()
 
@@ -56,6 +60,15 @@ class SameContainerEvalResult:
 class SWEBenchEnvPrewarmResult:
     unique_env_count: int
     built_env_count: int
+
+
+@dataclass(slots=True, frozen=True)
+class SWEBenchEnvImageCacheConfig:
+    repository: str
+    write_enabled: bool = True
+
+    def remote_ref_for(self, image_key: str, *, kind: str = "env") -> str:
+        return f"{self.repository}:{_image_cache_tag(image_key, kind=kind)}"
 
 
 @dataclass(slots=True)
@@ -179,28 +192,62 @@ def _build_pro_eval_entryscript(
     return "\n".join(entry_lines) + "\n"
 
 
-def remove_swebench_instance_image(image_name: str) -> bool:
+def _remove_local_image_ref(image_ref: str, *, description: str) -> bool:
     try:
         result = subprocess.run(
-            ["docker", "rmi", image_name],
+            ["docker", "rmi", image_ref],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=_DOCKER_CLEANUP_TIMEOUT_SECONDS,
         )
     except Exception:
-        logger.warning("Error removing SWE-bench instance image %s", image_name, exc_info=True)
+        logger.warning("Error removing %s %s", description, image_ref, exc_info=True)
         return False
 
     if result.returncode == 0:
-        logger.info("Removed SWE-bench instance image %s", image_name)
+        logger.info("Removed %s %s", description, image_ref)
+        return True
+
+    if "No such image" in result.stderr:
         return True
 
     logger.warning(
-        "Failed to remove SWE-bench instance image %s: %s",
-        image_name,
+        "Failed to remove %s %s: %s",
+        description,
+        image_ref,
         result.stderr.strip(),
     )
     return False
+
+
+def remove_swebench_instance_image(image_name: str) -> bool:
+    return _remove_local_image_ref(image_name, description="SWE-bench instance image")
+
+
+def _image_cache_tag(image_key: str, *, kind: str) -> str:
+    digest = hashlib.sha256(image_key.encode("utf-8")).hexdigest()
+    return f"{kind}-{digest}"
+
+
+def _instance_cache_key(test_spec: Any) -> str:
+    payload = {
+        "schema_version": _INSTANCE_IMAGE_CACHE_SCHEMA_VERSION,
+        "instance_image_key": str(getattr(test_spec, "instance_image_key", "")),
+        "env_image_key": str(getattr(test_spec, "env_image_key", "")),
+        "repo_script_list": list(getattr(test_spec, "repo_script_list", []) or []),
+        "env_script_list": list(getattr(test_spec, "env_script_list", []) or []),
+        "docker_specs": getattr(test_spec, "docker_specs", {}) or {},
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _docker_run_command(args: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["docker", *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
 
 
 def _env_build_lock_key(test_spec: Any) -> str:
@@ -230,6 +277,139 @@ def _read_log_tail(log_path: str | Path | None, limit: int = _SETUP_LOG_TAIL_CHA
     if not text:
         return None
     return text[-limit:]
+
+
+def _cache_remote_ref(
+    image_key: str,
+    cache_config: SWEBenchEnvImageCacheConfig,
+    *,
+    kind: str,
+) -> str:
+    return cache_config.remote_ref_for(image_key, kind=kind)
+
+
+def _pull_cached_image(
+    image_key: str,
+    cache_config: SWEBenchEnvImageCacheConfig,
+    *,
+    kind: str,
+    cache_key: str | None = None,
+) -> bool:
+    remote_ref = _cache_remote_ref(cache_key or image_key, cache_config, kind=kind)
+    logger.info("Trying SWE-bench %s cache pull for %s from %s", kind, image_key, remote_ref)
+    try:
+        pull = _docker_run_command(["pull", "--platform", "linux/amd64", remote_ref], timeout=600)
+    except Exception:
+        logger.warning(
+            "Error pulling SWE-bench %s cache image %s for %s",
+            kind,
+            remote_ref,
+            image_key,
+            exc_info=True,
+        )
+        return False
+
+    if pull.returncode != 0:
+        stderr = pull.stderr.strip()
+        if stderr:
+            logger.info(
+                "SWE-bench %s cache miss for %s from %s: %s",
+                kind,
+                image_key,
+                remote_ref,
+                stderr,
+            )
+        else:
+            logger.info("SWE-bench %s cache miss for %s from %s", kind, image_key, remote_ref)
+        return False
+
+    try:
+        tag = _docker_run_command(["tag", remote_ref, image_key], timeout=60)
+    except Exception:
+        logger.warning(
+            "Error retagging SWE-bench %s cache image %s to %s",
+            kind,
+            remote_ref,
+            image_key,
+            exc_info=True,
+        )
+        return False
+
+    if tag.returncode != 0:
+        logger.warning(
+            "Failed to retag SWE-bench %s cache image %s to %s: %s",
+            kind,
+            remote_ref,
+            image_key,
+            tag.stderr.strip(),
+        )
+        return False
+
+    _remove_local_image_ref(remote_ref, description=f"SWE-bench {kind} cache tag")
+    logger.info("Pulled SWE-bench %s cache image %s into %s", kind, remote_ref, image_key)
+    return True
+
+
+def _push_cached_image(
+    image_key: str,
+    cache_config: SWEBenchEnvImageCacheConfig,
+    *,
+    kind: str,
+    cache_key: str | None = None,
+) -> bool:
+    if not cache_config.write_enabled:
+        return False
+
+    remote_ref = _cache_remote_ref(cache_key or image_key, cache_config, kind=kind)
+    logger.info("Publishing SWE-bench %s image %s to %s", kind, image_key, remote_ref)
+    try:
+        tag = _docker_run_command(["tag", image_key, remote_ref], timeout=60)
+    except Exception:
+        logger.warning(
+            "Error tagging SWE-bench %s image %s for cache push to %s",
+            kind,
+            image_key,
+            remote_ref,
+            exc_info=True,
+        )
+        return False
+
+    if tag.returncode != 0:
+        logger.warning(
+            "Failed to tag SWE-bench %s image %s for cache push to %s: %s",
+            kind,
+            image_key,
+            remote_ref,
+            tag.stderr.strip(),
+        )
+        return False
+
+    try:
+        push = _docker_run_command(["push", remote_ref], timeout=1200)
+    except Exception:
+        logger.warning(
+            "Error pushing SWE-bench %s image %s to %s",
+            kind,
+            image_key,
+            remote_ref,
+            exc_info=True,
+        )
+        return False
+    finally:
+        _remove_local_image_ref(remote_ref, description=f"SWE-bench {kind} cache tag")
+
+    if push.returncode != 0:
+        logger.warning(
+            "Failed to push SWE-bench %s image %s to %s: %s",
+            kind,
+            image_key,
+            remote_ref,
+            push.stderr.strip(),
+        )
+        return False
+
+    logger.info("Published SWE-bench %s image %s to %s", kind, image_key, remote_ref)
+    return True
 
 
 def _normalize_setup_error(
@@ -308,6 +488,7 @@ def prewarm_swebench_env_images(
     instance_image_tag: str = "latest",
     env_image_tag: str = "latest",
     max_workers: int = 1,
+    env_image_cache: SWEBenchEnvImageCacheConfig | None = None,
 ) -> SWEBenchEnvPrewarmResult:
     if max_workers < 1:
         raise ValueError("max_workers must be at least 1")
@@ -321,6 +502,13 @@ def prewarm_swebench_env_images(
     )
     if not specs:
         return SWEBenchEnvPrewarmResult(unique_env_count=0, built_env_count=0)
+
+    cached_env_keys: set[str] = set()
+    if env_image_cache is not None:
+        for spec in specs:
+            env_image_key = _env_build_lock_key(spec)
+            if _pull_cached_image(env_image_key, env_image_cache, kind="env"):
+                cached_env_keys.add(env_image_key)
 
     docker_client = docker.from_env()
     try:
@@ -345,6 +533,13 @@ def prewarm_swebench_env_images(
     if failed:
         raise _normalize_failed_env_build(failed)
 
+    if env_image_cache is not None:
+        for payload in successful:
+            env_image_key = payload[0]
+            if env_image_key in cached_env_keys:
+                continue
+            _push_cached_image(str(env_image_key), env_image_cache, kind="env")
+
     return SWEBenchEnvPrewarmResult(
         unique_env_count=len(specs),
         built_env_count=len(successful),
@@ -362,12 +557,14 @@ class SWEBenchContainer:
         dockerhub_username: str = "jefzda",
         instance_image_tag: str = "latest",
         env_image_tag: str = "latest",
+        env_image_cache: SWEBenchEnvImageCacheConfig | None = None,
     ):
         self.item = item
         self.pro_eval_repo = pro_eval_repo
         self.dockerhub_username = dockerhub_username
         self.instance_image_tag = instance_image_tag
         self.env_image_tag = env_image_tag
+        self.env_image_cache = env_image_cache
 
         self.container_workdir = PRO_WORKDIR if self.is_pro else DOCKER_WORKDIR
         self.container_id: str | None = None
@@ -426,9 +623,46 @@ class SWEBenchContainer:
     def _build_with_auto_env(self, log_dir: Path):
         """Build the instance container, auto-building env images if missing."""
         run_id = uuid.uuid4().hex[:8]
+        instance_image_key = str(self._test_spec.instance_image_key)
+        instance_cache_key = _instance_cache_key(self._test_spec)
+
+        def _build_container_once(*, logger_override, push_instance_cache: bool):
+            container = build_container(
+                self._test_spec, self._docker_client, run_id, logger_override, False, False
+            )
+            if push_instance_cache and self.env_image_cache is not None:
+                _push_cached_image(
+                    instance_image_key,
+                    self.env_image_cache,
+                    kind="instance",
+                    cache_key=instance_cache_key,
+                )
+            return container
+
+        if self.env_image_cache is not None and _pull_cached_image(
+            instance_image_key,
+            self.env_image_cache,
+            kind="instance",
+            cache_key=instance_cache_key,
+        ):
+            try:
+                return _build_container_once(
+                    logger_override=self._logger,
+                    push_instance_cache=False,
+                )
+            except BuildImageError:
+                logger.warning(
+                    "Cached SWE-bench instance image %s for %s did not produce a usable container; rebuilding locally",
+                    instance_image_key,
+                    self.item.instance_id,
+                    exc_info=True,
+                )
+                remove_swebench_instance_image(instance_image_key)
+
         try:
-            return build_container(
-                self._test_spec, self._docker_client, run_id, self._logger, False, False
+            return _build_container_once(
+                logger_override=self._logger,
+                push_instance_cache=True,
             )
         except BuildImageError as exc:
             if "not found" not in str(exc).lower():
@@ -441,12 +675,28 @@ class SWEBenchContainer:
         )
         with _env_build_lock_for(self._test_spec):
             try:
-                return build_container(
-                    self._test_spec, self._docker_client, run_id, self._logger, False, False
+                return _build_container_once(
+                    logger_override=self._logger,
+                    push_instance_cache=True,
                 )
             except BuildImageError as exc:
                 if "not found" not in str(exc).lower():
                     raise _normalize_build_image_error(exc, stage="build_container") from exc
+            if self.env_image_cache is not None and _pull_cached_image(
+                env_lock_key, self.env_image_cache, kind="env"
+            ):
+                try:
+                    return _build_container_once(
+                        logger_override=self._logger,
+                        push_instance_cache=True,
+                    )
+                except BuildImageError as exc:
+                    logger.warning(
+                        "Cached SWE-bench env image %s for %s did not produce a usable container; rebuilding locally",
+                        env_lock_key,
+                        self.item.instance_id,
+                        exc_info=True,
+                    )
             logger.info(
                 "Env image %s missing for %s; building from scratch",
                 env_lock_key,
@@ -470,12 +720,15 @@ class SWEBenchContainer:
                     stage="build_env_images",
                     detail=str(exc) or "Unknown env image build failure",
                 ) from exc
+        if self.env_image_cache is not None:
+            _push_cached_image(env_lock_key, self.env_image_cache, kind="env")
         env_logger = setup_logger(
             self.item.instance_id, log_dir / "rebuild_after_env.log"
         )
         try:
-            return build_container(
-                self._test_spec, self._docker_client, run_id, env_logger, False, False
+            return _build_container_once(
+                logger_override=env_logger,
+                push_instance_cache=True,
             )
         except BuildImageError as exc:
             raise _normalize_build_image_error(exc, stage="build_container") from exc
@@ -794,34 +1047,101 @@ class SWEBenchContainer:
 
     def stop(self) -> None:
         container_id = self.container_id
+        cleanup_error: RuntimeError | None = None
         if container_id:
-            subprocess.run(
-                ["docker", "stop", container_id],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
+            stop_timed_out = False
+            cleanup_failures: list[str] = []
+            remove_failed = False
+            try:
+                stop_result = subprocess.run(
+                    ["docker", "stop", container_id],
+                    capture_output=True,
+                    text=True,
+                    timeout=_DOCKER_STOP_TIMEOUT_SECONDS,
+                )
+                if stop_result.returncode != 0:
+                    logger.debug(
+                        "docker stop failed for %s: %s",
+                        container_id,
+                        stop_result.stderr.strip(),
+                    )
+            except subprocess.TimeoutExpired:
+                stop_timed_out = True
+                logger.warning(
+                    "docker stop timed out for %s after %ss; falling back to docker kill",
+                    container_id,
+                    _DOCKER_STOP_TIMEOUT_SECONDS,
+                )
+                try:
+                    kill_result = subprocess.run(
+                        ["docker", "kill", container_id],
+                        capture_output=True,
+                        text=True,
+                        timeout=_DOCKER_CLEANUP_TIMEOUT_SECONDS,
+                    )
+                    if kill_result.returncode != 0:
+                        kill_error = (
+                            kill_result.stderr.strip()
+                            or "docker kill returned non-zero exit status"
+                        )
+                        cleanup_failures.append(f"docker kill: {kill_error}")
+                        logger.debug(
+                            "docker kill failed for %s: %s",
+                            container_id,
+                            kill_error,
+                        )
+                except Exception as exc:
+                    cleanup_failures.append(f"docker kill raised {exc!r}")
+                    logger.debug("docker kill failed for %s", container_id, exc_info=True)
+            except Exception:
+                logger.debug("docker stop failed for %s", container_id, exc_info=True)
             try:
                 remove = subprocess.run(
                     ["docker", "rm", container_id],
                     capture_output=True,
                     text=True,
-                    timeout=30,
+                    timeout=_DOCKER_CLEANUP_TIMEOUT_SECONDS,
                 )
                 if remove.returncode != 0:
+                    remove_error = (
+                        remove.stderr.strip() or "docker rm returned non-zero exit status"
+                    )
+                    if stop_timed_out:
+                        remove_failed = True
+                        cleanup_failures.append(f"docker rm: {remove_error}")
                     logger.debug(
                         "docker rm skipped for %s: %s",
                         container_id,
-                        remove.stderr.strip(),
+                        remove_error,
                     )
-            except Exception:
+            except Exception as exc:
+                if stop_timed_out:
+                    remove_failed = True
+                    cleanup_failures.append(f"docker rm raised {exc!r}")
                 logger.debug("docker rm failed for %s", container_id, exc_info=True)
-        self.container_id = None
-        self.initial_commit = None
-        self._container_obj = None
+            if stop_timed_out and remove_failed:
+                detail = "; ".join(cleanup_failures)
+                logger.error(
+                    "Failed to clean up timed-out SWE-bench container %s; container may still be running: %s",
+                    container_id,
+                    detail,
+                )
+                cleanup_error = RuntimeError(
+                    f"Failed to clean up timed-out SWE-bench container {container_id}: {detail}"
+                )
+            else:
+                self.container_id = None
+                self.initial_commit = None
+                self._container_obj = None
+        else:
+            self.container_id = None
+            self.initial_commit = None
+            self._container_obj = None
         if self._logger is not None:
             close_logger(self._logger)
             self._logger = None
+        if cleanup_error is not None:
+            raise cleanup_error
 
     def cleanup_image(self) -> None:
         image_name = self.image_name

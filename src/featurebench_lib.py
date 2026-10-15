@@ -9,7 +9,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from .docker_agents import DockerWorkspaceContainer
+from .docker_agents import DockerWorkspaceContainer, ensure_python_packages, run_install_script
 from .workspace import RepoCache, Worktree
 
 
@@ -109,13 +109,11 @@ def install_deps(workspace: Path, item: dict) -> None:
 
 
 def _ensure_uv_in_container(container: DockerWorkspaceContainer, workdir: str = "/workspace") -> None:
-    result = container.exec_run(
-        "command -v uv >/dev/null 2>&1 || python -m pip install -q uv",
-        timeout=300,
-        workdir=workdir,
-    )
-    if result.exit_code != 0:
-        raise RuntimeError(f"Failed to install uv in container: {result.stderr[:500]}")
+    result = container.exec_run("command -v uv >/dev/null 2>&1", timeout=30, workdir=workdir)
+    if result.exit_code == 0:
+        return
+    if not ensure_python_packages(container, ["uv"]):
+        raise RuntimeError("Failed to install uv in container")
 
 
 def install_deps_in_container(
@@ -129,9 +127,8 @@ def install_deps_in_container(
     if not install_cmd:
         return
     _ensure_uv_in_container(container, workdir=workdir)
-    result = container.exec_run(install_cmd, timeout=600, workdir=workdir)
-    if result.exit_code != 0:
-        raise RuntimeError(f"FeatureBench install failed: {result.stderr[:1000]}")
+    if not run_install_script(container, install_cmd, timeout=600, workdir=workdir):
+        raise RuntimeError("FeatureBench install failed")
 
 
 def detect_test_deps(repo: str) -> list[str]:

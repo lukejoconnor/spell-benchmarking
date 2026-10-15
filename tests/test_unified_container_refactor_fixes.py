@@ -119,12 +119,12 @@ class ResolveAgentForContainerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             spell_root = Path(tmp_dir) / "spell"
             _make_spell_root(spell_root)
-            agent_file = spell_root / "config" / "agents" / "io-acm-tc.agent.edn"
-            agent_file.write_text("{:name acm}", encoding="utf-8")
+            agent_file = spell_root / "config" / "agents" / "io-tc.agent.edn"
+            agent_file.write_text("{:name io-tc}", encoding="utf-8")
 
-            resolved = _resolve_agent_for_container("config/agents/io-acm-tc.agent.edn", spell_root=spell_root)
+            resolved = _resolve_agent_for_container("config/agents/io-tc.agent.edn", spell_root=spell_root)
 
-            self.assertEqual(resolved, "/opt/spell/config/agents/io-acm-tc.agent.edn")
+            self.assertEqual(resolved, "/opt/spell/config/agents/io-tc.agent.edn")
 
 
 class UnifiedSWEBenchRunnerTest(unittest.TestCase):

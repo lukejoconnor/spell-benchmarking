@@ -45,6 +45,10 @@ Maintain a neutral, skeptical stance. Present unfavorable and inconclusive resul
 |-----------|-------|---------------|-------------|
 | LongBench v2 | 48-91 | Long-context MCQ (8k-128k tokens) | `uv run python benchmarking/bench.py general --dataset longbench_short --condition spell` |
 | BABILong QA2 | 100 | Multi-hop QA over 32k context | `uv run python benchmarking/bench.py general --dataset babilong_32k_qa2 --condition spell` |
+| BrowseComp-Plus | 150 | Multi-hop deep-research QA over 1000-doc pack (gold + evidence + random); RLMs protocol (Sun et al. 2025) | `uv run python benchmarking/bench.py general --dataset browsecomp_plus --condition spell` |
+| BrowseComp-Plus pilot | 5 | Smoke-test variant of BrowseComp-Plus | `uv run python benchmarking/bench.py general --dataset browsecomp_plus_pilot --condition spell` |
+
+**BrowseComp-Plus notes:** docs are XOR/canary-decrypted on first load and cached to `data/browsecomp_plus/queries_decrypted.jsonl` (~2.1 GB; first run ~5 min, subsequent ~15 s). Each query gets 1000 docs (all gold + evidence + random fill from the 100K corpus) written to a single `data/contexts/<id>.txt` file; per-doc text is truncated to 1500 chars by default. Scoring uses LLM-as-judge with `gpt-4.1-mini` and the upstream GRADER_TEMPLATE; override the judge model with `BROWSECOMP_PLUS_JUDGE_MODEL`. The original benchmark uses Qwen3-32B (~1pp delta vs GPT-4.1 per upstream docs).
 
 ### Coding (Python harness)
 
@@ -65,12 +69,16 @@ SWE-bench harness defaults and workflow:
 - `bench.py swebench` now defaults to `--condition all` (`spell`, `claude_code`, `codex`, `swe_agent`) and always runs same-container evaluation after generation.
 - Use `--name <label>` to tag a run variant across JSONL records, traces, and SWE-bench prediction filenames.
 - Use `--trailing <expr>` on Spell runs to override the default trailing policy directly instead of relying on preset variants.
+- Use `--paper-compliant` for paper-facing SWE-bench Lite/Verified/mini reruns. This omits `hints_text`, appends the no-web/solution-lookup instruction, disables exposed web/search tools where practical, and records compliance metadata. It is not strict leaderboard compliance because generation containers are not network-isolated.
+- After paper-compliant runs, `uv run python scripts/check_swebench_paper_compliance.py <unified-jsonl> --run-id <run-id> --trace-root traces/<run-id>` performs metadata checks plus best-effort warning scans for obvious web or solution-lookup traces.
 - `bench.py swebench` uses `src/swebench_container.py` to start official instance images, then runs agents through the shared `src/docker_agents.py` runtime layer.
 - Use `--clean-eval` to rerun generated patches in a fresh official evaluation container.
 - Clean eval runs conditions in series with staged cleanup:
   - non-final conditions: `cache_level=env`, `clean=false`
   - final condition: configurable final cleanup (`--eval-final-cache-level`, `--eval-final-clean`)
 - For explicit eval-only runs, use `bench.py swebench-eval` and pass the same `--name` you used for generation when predictions were label-tagged.
+- For remote SWE-bench image caching on GCP, set `SPELL_GCP_ENV_IMAGE_CACHE_REPOSITORY` to an Artifact Registry repo. The startup script logs Docker into that repo with the VM service account token and exports `SPELL_SWEBENCH_ENV_IMAGE_CACHE_REPOSITORY` so `bench.py swebench` can pull/push both shared `sweb.env.*` images and per-instance `sweb.eval.*` images across fresh VMs.
+- GPT-5.4 and GPT-5.4-pro switch to the long-context pricing tier once total input exceeds 272k tokens; benchmark-side cost estimates apply the session-level 2x input / 1.5x output rates, including the benchmark's cache-write input bucket as input-side usage.
 
 ### Coding (Clojure harness)
 
@@ -87,32 +95,72 @@ Software-benchmark container infra:
 
 | Benchmark | Items | What it tests | Run command |
 |-----------|-------|---------------|-------------|
-| Terminal-Bench 2.0 | ~80 | Shell tasks in Docker containers | `uv run python bench.py terminalbench --condition all` |
+| Terminal-Bench old core | 80 | Shell tasks in Docker containers | `uv run python bench.py terminalbench --dataset old-core --condition all` |
+| Terminal-Bench 2.x pinned | ~94 | Local/core shell tasks in Docker containers | `uv run python bench.py terminalbench --dataset 2.0 --condition all` |
+| Harbor Terminal-Bench 2.0 | 89 | Public TB2 Spell/Codex/Claude Code submission path | `uv run python bench.py harbor-terminalbench --condition spell` |
 
-Requires Docker (Colima or Docker Desktop). Uses `tb` CLI (`uv tool install terminal-bench`).
-All three conditions use imported Docker agents under `terminal_bench/`, orchestrated through `bench.py terminalbench`.
-If `benchmarking/` is checked out as a standalone worktree instead of nested under the main Spell repo, export `SPELL_ROOT=/path/to/spell` before running `bench.py terminalbench`.
+Requires Docker (Colima or Docker Desktop). The legacy rows use `tb` CLI (`uv tool install terminal-bench`).
+The Harbor row uses Harbor CLI via `uv tool run --from harbor harbor` plus local installed-agent adapters: `harbor_spell_agent.py` for Spell and `harbor_codex_agent.py` for Codex, so fresh benchmark VMs do not need a separate manual Harbor install. Harbor Claude Code uses Harbor's built-in `claude-code` agent, but the benchmark wrapper launches Harbor with an OAuth-only environment: it requires `CLAUDE_CODE_OAUTH_TOKEN` and strips `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, and legacy Claude JSON auth variables before Harbor starts.
+Legacy `terminalbench` conditions use imported Docker agents under `terminal_bench/`, orchestrated through `bench.py terminalbench`.
+If `benchmarking/` is checked out as a standalone worktree instead of nested under the main Spell repo, export `SPELL_ROOT=/path/to/spell` before running either Terminal-Bench path.
+The default dataset remains old core (`terminal-bench-core==0.1.1`) for comparability with recent local runs. Dataset aliases resolve as follows:
+
+- `old-core`, `core-0.1.1`, `0.1.1`, and `1.1` -> `terminal-bench-core==0.1.1`
+- `2.0`, `head`, `current`, and `latest` -> `terminal-bench-core==head` using the bundled local registry entry pinned to upstream `dataset/terminal-bench-core/v0.2.x` commit `76de0a03069c2a1101d8e0845daedb5065da87ea`
+
+Raw `tb --dataset` strings still pass through without the bundled registry override, so use the registry string directly when you need upstream registry behavior. Note that the upstream default registry may treat raw `terminal-bench-core` as a moving head entry; prefer the aliases above for reproducible local CLI behavior.
+
+`bench.py terminalbench --dataset 2.0` is **not** a public leaderboard-compliant Terminal-Bench 2.0 run. It is the local scientific/regression harness: it uses `tb run`, a local registry path for the pinned 2.x task set, local timeout/cleanup knobs, and the test-patch-collision recovery wrapper.
+
+Public Terminal-Bench 2.0 Spell submission runs must use Harbor:
+
+- Submission mode: `uv run python bench.py harbor-terminalbench --condition spell --model openai-tc:gpt-5.4 --reasoning-effort medium -k 5`
+- Codex submission mode: `uv run python bench.py harbor-terminalbench --condition codex --codex-model gpt-5.4 --reasoning-effort medium -k 5`
+- Claude Code submission mode: `uv run python bench.py harbor-terminalbench --condition claude_code --claude-model anthropic/claude-opus-4-6 --reasoning-effort medium -k 5`
+- Development Codex comparison: `uv run python bench.py harbor-terminalbench --condition codex --codex-model gpt-5.4 --reasoning-effort medium --dev-smoke -k 1`
+- Development Claude Code comparison: `uv run python bench.py harbor-terminalbench --condition claude_code --claude-model anthropic/claude-opus-4-6 --reasoning-effort medium --dev-smoke -k 1`
+- Development smoke only: add `--dev-smoke` to allow `-k 1`, `--n`, `--task`, or task-name filters.
+- Timeout-expanded dev smoke only: add `--dev-smoke --agent-timeout-multiplier <N>` with `N > 1`. This is non-submission only.
+
+Submission mode is guarded to use `uv tool run --from harbor harbor run -d terminal-bench@2.0`, require `k >= 5`, run the full dataset, and avoid timeout/resource/local-registry/recovery flags. Codex submission runs use the local `harbor_codex_agent.py` adapter rather than Harbor's built-in `codex` agent so web search is explicitly disabled and GPT-5.4 cost is computed per model call. `reasoning_output_tokens` is recorded as a sub-bucket of `output_tokens`, not added again for billing. Claude Code submission runs intentionally use Max-subscription OAuth rather than Anthropic API billing; if `CLAUDE_CODE_OAUTH_TOKEN` is absent, the wrapper fails before launching Harbor.
+
+Harbor Spell writes live cumulative usage snapshots to `/logs/agent/spell-usage.json`; this file is the source of truth for Spell token/cost accounting on success, error, and timeout rows. `spell-output.txt` may contain final-response metadata, but Harbor Spell must not use it as a cost/token fallback.
+
+For timeout-expanded dev-smoke runs, the wrapper writes `default-timeout-summary.json` under each Harbor job directory. The `resolved_within_default_timeout` field is a post-hoc diagnostic for whether a resolved trial also finished within the default 900s TB2 agent budget; it is not leaderboard scoring and must not be included in submission artifacts.
 
 Examples:
 ```bash
-# Spell vs Codex CLI on two tasks with ACM-style io reminder
+# Spell vs Codex CLI on two tasks with an explicit io reminder
 uv run python bench.py terminalbench \
   --condition spell \
   --condition codex \
   --model codex-tc:gpt-5.3-codex \
-  --agent config/agents/io-acm-tc.agent.edn \
+  --agent config/agents/io-tc.agent.edn \
   --trailing "'(!describe io)" \
   -t hello-world \
   -t csv-to-parquet
 
-# Dry-run the exact tb commands without executing them
+# Dry-run old-core/default commands without executing them
 uv run python bench.py terminalbench \
   --condition spell \
+  --dataset old-core \
+  -t hello-world \
+  --dry-run
+
+# Dry-run the pinned 2.x Terminal-Bench task set without executing it
+uv run python bench.py terminalbench \
+  --condition spell \
+  --dataset 2.0 \
   -t hello-world \
   --dry-run
 ```
 
 Direct `tb run` still works for one-off debugging when you need raw harness behavior, but batch runs and unified JSONL collection should go through `bench.py terminalbench`.
+
+Terminal-Bench scoring caveat:
+- If an agent touches test-like files and the official evaluator patch later collides with those edits, the harness attempts to restore only those touched test files, retry the evaluator patch, and run the tests.
+- Unified records for recovered rows include `metadata.test_patch_collision_recovered=true` and `metadata.score_caveat`; display such rows with an asterisk in paper/report tables.
+- For old artifacts, use `uv run python scripts/scan_terminalbench_patch_collisions.py [results-root] --format table` to identify unrechecked collision rows for annotation.
 
 ### Orchestration (Clojure harness)
 
@@ -141,13 +189,13 @@ Direct `tb run` still works for one-off debugging when you need raw harness beha
 
 Condition semantics:
 - `one_shot`: single LLM call (text-only). Use any provider/model via `--model` (including Codex-backed single-call models).
-  - `reasoning_effort` currently applies only to OpenAI/Codex-family providers (`openai`, `openai-tc`, `codex-msg`, `codex-tc`).
+  - `reasoning_effort` currently applies to `openai-tc`, `codex-tc`, `anthropic-pf`, and `anthropic-tc`.
 - `codex`: Codex CLI harness (agent loop). Default model is `codex` via `--codex-model codex`.
   - In the harness adapter, `codex` resolves to `gpt-5-codex` for stable Codex CLI compatibility.
 - `claude_code`: Claude Code CLI harness. `--reasoning-effort` maps to the CLI's `--effort` flag.
 - `swe_agent`: mini-swe-agent comparator. It does not currently expose a benchmark-wired reasoning-effort control, so records should leave this field empty.
 - `spell` (including SWE-bench workspaces): adapter injects local `-Sdeps` so `spell.benchmark-api` resolves even when `cwd` is a cloned repo workspace.
-  - `reasoning_effort` currently applies only to OpenAI/Codex-family providers (`openai`, `openai-tc`, `codex-msg`, `codex-tc`), not Anthropic-backed Spell runs.
+  - `reasoning_effort` currently applies to `openai-tc`, `codex-tc`, `anthropic-pf`, and `anthropic-tc`.
 
 Spell `--model` specs (provider prefix + model name from `.provider.edn`):
 
@@ -156,7 +204,6 @@ Spell `--model` specs (provider prefix + model name from `.provider.edn`):
 | Anthropic (toolcall) | `anthropic-tc:claude-opus-4-6` | `claude-opus-4-6` |
 | Anthropic (prefill) | `anthropic-pf:claude-opus-4-6` | `claude-opus-4-6` |
 | Codex (toolcall) | `codex-tc:gpt-5.3-codex` | `gpt-5.3-codex` |
-| Codex (message) | `codex-msg:gpt-5.3-codex` | `gpt-5.3-codex` |
 
 Model names must match the provider's API exactly. The provider `.edn` files in `config/providers/` define defaults.
 
@@ -278,6 +325,7 @@ tb run --agent-import-path "codex_agent:CodexAgent" \
   --model "openai/gpt-5.3-codex"
 
 # Claude Code (installs in Docker, stream-json for JSONL token tracking)
+# Requires CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`; does not use ANTHROPIC_API_KEY.
 tb run --agent-import-path "cc_agent:ClaudeCodeAgent" \
   --model "anthropic/claude-opus-4-6" -k "max_budget_usd=5.0"
 ```

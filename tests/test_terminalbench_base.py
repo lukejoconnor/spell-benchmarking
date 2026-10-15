@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import types
@@ -12,6 +13,8 @@ from unittest.mock import patch
 
 BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 BASE_MODULE_PATH = BENCHMARK_ROOT / "terminal_bench" / "base.py"
+CC_AGENT_MODULE_PATH = BENCHMARK_ROOT / "terminal_bench" / "cc_agent.py"
+SPELL_AGENT_MODULE_PATH = BENCHMARK_ROOT / "terminal_bench" / "spell_agent.py"
 
 
 @dataclass
@@ -101,6 +104,44 @@ def _load_base_module():
     return module, prior
 
 
+def _load_cc_agent_module():
+    base_module, prior = _load_base_module()
+    prior["terminal_bench.base"] = sys.modules.get("terminal_bench.base")
+    prior["base"] = sys.modules.get("base")
+    sys.modules["terminal_bench.base"] = base_module
+    sys.modules["base"] = base_module
+
+    spec = importlib.util.spec_from_file_location("terminal_bench_cc_agent_under_test", CC_AGENT_MODULE_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load {CC_AGENT_MODULE_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        _restore_modules(prior)
+        raise
+    return module, prior
+
+
+def _load_spell_agent_module():
+    base_module, prior = _load_base_module()
+    prior["terminal_bench.base"] = sys.modules.get("terminal_bench.base")
+    prior["base"] = sys.modules.get("base")
+    sys.modules["terminal_bench.base"] = base_module
+    sys.modules["base"] = base_module
+
+    spec = importlib.util.spec_from_file_location("terminal_bench_spell_agent_under_test", SPELL_AGENT_MODULE_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load {SPELL_AGENT_MODULE_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        _restore_modules(prior)
+        raise
+    return module, prior
+
+
 def _restore_modules(prior: dict[str, object | None]) -> None:
     for name, value in prior.items():
         if value is None:
@@ -117,6 +158,9 @@ class TerminalBenchBaseTests(unittest.TestCase):
                 @staticmethod
                 def name() -> str:
                     return "dummy"
+
+                def _requires_uv(self) -> bool:
+                    return False
 
                 def _install_script(self) -> str:
                     return "true"
@@ -137,6 +181,7 @@ class TerminalBenchBaseTests(unittest.TestCase):
                 logging_dir = Path(tmp_dir)
                 usage = module.ParsedUsage(
                     uncached_input_tokens=39382,
+                    cache_write_input_tokens=512,
                     visible_output_tokens=1123,
                     reasoning_output_tokens=17869,
                     cost_usd=0.324007,
@@ -146,6 +191,7 @@ class TerminalBenchBaseTests(unittest.TestCase):
                 result = json.loads((logging_dir / "result.json").read_text(encoding="utf-8"))
 
             self.assertEqual(result["visible_output_tokens"], 1123)
+            self.assertEqual(result["cache_write_input_tokens"], 512)
             self.assertEqual(result["reasoning_output_tokens"], 17869)
             self.assertEqual(result["total_output_tokens"], 18992)
             self.assertNotIn("output_tokens", result)
@@ -161,6 +207,9 @@ class TerminalBenchBaseTests(unittest.TestCase):
                     return "dummy"
 
                 def _requires_node(self) -> bool:
+                    return False
+
+                def _requires_uv(self) -> bool:
                     return False
 
                 def _install_script(self) -> str:
@@ -215,6 +264,9 @@ class TerminalBenchBaseTests(unittest.TestCase):
                 def _requires_node(self) -> bool:
                     return False
 
+                def _requires_uv(self) -> bool:
+                    return False
+
                 def _install_script(self) -> str:
                     return "true"
 
@@ -245,6 +297,146 @@ class TerminalBenchBaseTests(unittest.TestCase):
 
             self.assertEqual(result.total_input_tokens, 39382)
             self.assertEqual(result.total_output_tokens, 18992)
+        finally:
+            _restore_modules(prior)
+
+    def test_claude_agent_marks_missing_cli_as_install_failure(self) -> None:
+        module, prior = _load_cc_agent_module()
+        try:
+            agent = module.ClaudeCodeAgent()
+            result = agent._determine_failure_mode(
+                types.SimpleNamespace(
+                    timed_out=False,
+                    exit_code=1,
+                    stdout="",
+                    stderr="bootstrap failed\nClaude Code CLI not available after installation\n",
+                ),
+                usage=None,
+            )
+
+            self.assertEqual(result, _FailureMode.AGENT_INSTALLATION_FAILED)
+        finally:
+            _restore_modules(prior)
+
+    @patch.dict(
+        os.environ,
+        {
+            "CLAUDE_CODE_OAUTH_TOKEN": "oauth-token",
+            "ANTHROPIC_API_KEY": "sk-should-not-forward",
+            "CLAUDE_JSON_B64": "legacy-json",
+        },
+        clear=False,
+    )
+    def test_claude_agent_env_uses_oauth_only(self) -> None:
+        module, prior = _load_cc_agent_module()
+        try:
+            agent = module.ClaudeCodeAgent(model_name="anthropic/claude-opus-4-7")
+            env = agent._env_vars()
+
+            self.assertEqual(env["CLAUDE_CODE_OAUTH_TOKEN"], "oauth-token")
+            self.assertEqual(env["ANTHROPIC_MODEL"], "claude-opus-4-7")
+            self.assertNotIn("ANTHROPIC_API_KEY", env)
+            self.assertNotIn("CLAUDE_JSON_B64", env)
+        finally:
+            _restore_modules(prior)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_claude_agent_env_requires_oauth_token(self) -> None:
+        module, prior = _load_cc_agent_module()
+        try:
+            agent = module.ClaudeCodeAgent()
+            with self.assertRaisesRegex(RuntimeError, "CLAUDE_CODE_OAUTH_TOKEN is required"):
+                agent._env_vars()
+        finally:
+            _restore_modules(prior)
+
+    def test_spell_agent_skips_uv_bootstrap(self) -> None:
+        module, prior = _load_spell_agent_module()
+        try:
+            agent = module.SpellAgent(model_name="anthropic-tc:opus46")
+
+            self.assertFalse(agent._requires_uv())
+        finally:
+            _restore_modules(prior)
+
+    def test_terminalbench_agents_require_uv_by_default(self) -> None:
+        module, prior = _load_base_module()
+        try:
+            class DummyAgent(module.DockerExecAgent):
+                @staticmethod
+                def name() -> str:
+                    return "dummy"
+
+                def _requires_node(self) -> bool:
+                    return False
+
+                def _install_script(self) -> str:
+                    return "true"
+
+                def _run_command(self, instruction: str, workdir: str) -> str:
+                    del instruction, workdir
+                    return "true"
+
+                def _parse_usage(self, stdout: str, *, container=None, workdir: str | None = None):
+                    del stdout, container, workdir
+                    return None
+
+                def _env_vars(self) -> dict[str, str]:
+                    return {}
+
+            self.assertTrue(DummyAgent()._requires_uv())
+        finally:
+            _restore_modules(prior)
+
+    def test_perform_task_records_touched_tests_and_installs_recovery_wrapper(self) -> None:
+        module, prior = _load_base_module()
+        try:
+            commands: list[str] = []
+
+            class DummyAgent(module.DockerExecAgent):
+                @staticmethod
+                def name() -> str:
+                    return "dummy"
+
+                def _requires_node(self) -> bool:
+                    return False
+
+                def _requires_uv(self) -> bool:
+                    return False
+
+                def _install_script(self) -> str:
+                    return "true"
+
+                def _run_command(self, instruction: str, workdir: str) -> str:
+                    del instruction, workdir
+                    return "run-agent"
+
+                def _parse_usage(self, stdout: str, *, container=None, workdir: str | None = None):
+                    del stdout, container, workdir
+                    return None
+
+                def _env_vars(self) -> dict[str, str]:
+                    return {}
+
+                def _container_exec(self, container, cmd: str, **kwargs):
+                    del container, kwargs
+                    commands.append(cmd)
+                    if "status --porcelain" in cmd:
+                        return module.ExecOutput(exit_code=0, stdout="?? tests/test_created.py\n M src/app.py\n", stderr="")
+                    return module.ExecOutput(exit_code=0, stdout="stdout", stderr="")
+
+            agent = DummyAgent()
+            session = _TmuxSession()
+            session.container = _FakeContainer()
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                result = agent.perform_task("instruction", session, logging_dir=Path(tmp_dir))
+                saved = json.loads((Path(tmp_dir) / "result.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(result.failure_mode, _FailureMode.NONE)
+            self.assertEqual(saved["touched_test_files"], ["tests/test_created.py"])
+            self.assertTrue(saved["test_patch_collision_recovery_enabled"])
+            self.assertTrue(any("/usr/local/bin/patch" in command for command in commands))
         finally:
             _restore_modules(prior)
 

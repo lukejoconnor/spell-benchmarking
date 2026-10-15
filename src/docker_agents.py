@@ -35,7 +35,7 @@ from .codex_usage import (
     usage_from_events,
     usage_from_rollout,
 )
-from .usage_accounting import UsageBreakdown
+from .usage_accounting import UsageBreakdown, claude_code_usage_from_result
 
 logger = logging.getLogger(__name__)
 
@@ -46,16 +46,76 @@ DEFAULT_WORKDIR = "/workspace"
 SPELL_AGENT_IN_CONTAINER = "/opt/spell/config/agents/io-tc.agent.edn"
 SPELL_SDEPS = '{:deps {local/spell {:local/root "/opt/spell"}}}'
 SPELL_BUNDLE_PATHS = ("deps.edn", "src", "config", "data")
+HARBOR_SPELL_BUNDLE_PATHS = ("deps.edn", "src", "config", "data/pricing.edn")
+HARBOR_SPELL_BUNDLE_FORBIDDEN_PARTS = frozenset(
+    {
+        "benchmarking",
+        "terminal_bench",
+        "terminal-bench",
+        "results",
+        "traces",
+        "logs",
+        "notebook",
+        "workspace",
+        "submissions",
+    }
+)
 CODEX_RUNTIME_ROOT = "/tmp/bench-agent-runtime/codex"
 CODEX_RUNTIME_CODEX_HOME = f"{CODEX_RUNTIME_ROOT}/home"
 CODEX_RUNTIME_NVM_DIR = f"{CODEX_RUNTIME_ROOT}/nvm"
 CODEX_RUNTIME_NPM_PREFIX = f"{CODEX_RUNTIME_ROOT}/npm-global"
 CODEX_RUNTIME_NPM_CACHE = f"{CODEX_RUNTIME_ROOT}/npm-cache"
+UV_RUNTIME_BIN = "/tmp/bench-agent-runtime/uv-bin"
+APT_FETCH_RETRY_MAX_ATTEMPTS = 3
+APT_FETCH_RETRY_SLEEP_SECONDS = 5
+INSTALL_TIMEOUT_CLEANUP_TIMEOUT_SECONDS = 30
+RETRYABLE_APT_FETCH_MARKERS = (
+    "connection timed out",
+    "temporary failure resolving",
+    "could not connect",
+    "connection failed",
+    "network is unreachable",
+)
+RETRYABLE_APT_MIRROR_MARKERS = (
+    "file has unexpected size",
+    "hash sum mismatch",
+)
+RETRYABLE_PIP_HASH_MISMATCH_MARKER = "these packages do not match the hashes"
+INSTALL_TIMEOUT_RETRY_CLEANUP_SCRIPT = r"""
+if command -v pkill >/dev/null 2>&1; then
+  pkill -TERM -f '(^|/)(apt|apt-get|dpkg)( |$)' >/dev/null 2>&1 || true
+  sleep 2
+  pkill -KILL -f '(^|/)(apt|apt-get|dpkg)( |$)' >/dev/null 2>&1 || true
+fi
+for lock_path in \
+  /var/lib/dpkg/lock-frontend \
+  /var/lib/dpkg/lock \
+  /var/cache/apt/archives/lock \
+  /var/lib/apt/lists/lock
+do
+  for _attempt in 1 2 3 4 5; do
+    [ ! -e "$lock_path" ] && break
+    sleep 1
+  done
+done
+if command -v dpkg >/dev/null 2>&1; then
+  dpkg --configure -a >/dev/null 2>&1 || true
+fi
+"""
+
+CLAUDE_RUNTIME_ROOT = "/tmp/bench-agent-runtime/claude"
+CLAUDE_RUNTIME_NVM_DIR = f"{CLAUDE_RUNTIME_ROOT}/nvm"
+CLAUDE_RUNTIME_NPM_PREFIX = f"{CLAUDE_RUNTIME_ROOT}/npm-global"
+CLAUDE_RUNTIME_NPM_CACHE = f"{CLAUDE_RUNTIME_ROOT}/npm-cache"
+NODE_BINARY_VERSION = "v22.22.2"
+MIN_NODE_MAJOR_VERSION = 18
+CLAUDE_CLI_MISSING_MARKER = "Claude Code CLI not available after installation"
 
 CC_ALLOWED_TOOLS = [
     "Bash", "Edit", "Write", "Read", "Glob", "Grep",
     "WebFetch", "NotebookEdit",
 ]
+CC_PAPER_COMPLIANT_ALLOWED_TOOLS = [tool for tool in CC_ALLOWED_TOOLS if tool != "WebFetch"]
 
 LITELLM_TO_SPELL_MODEL = {
     "anthropic/claude-opus-4-6-20250826": "anthropic-tc:opus46",
@@ -70,47 +130,236 @@ LITELLM_TO_SPELL_MODEL = {
     "anthropic/claude-opus-4-20250514": "anthropic-tc:opus",
 }
 
+
+def _nvm_source_with_tmp_npm_prefix() -> str:
+    return r"""
+if [ "${NPM_CONFIG_PREFIX+x}" = x ]; then
+    NPM_CONFIG_PREFIX_SAVED="$NPM_CONFIG_PREFIX"
+    NPM_CONFIG_PREFIX_WAS_SET=1
+else
+    NPM_CONFIG_PREFIX_SAVED=
+    NPM_CONFIG_PREFIX_WAS_SET=
+fi
+unset NPM_CONFIG_PREFIX
+if [ -s "$NVM_DIR/nvm.sh" ]; then
+    source "$NVM_DIR/nvm.sh"
+fi
+if [ -n "${NPM_CONFIG_PREFIX_WAS_SET:-}" ]; then
+    export NPM_CONFIG_PREFIX="$NPM_CONFIG_PREFIX_SAVED"
+fi
+unset NPM_CONFIG_PREFIX_SAVED NPM_CONFIG_PREFIX_WAS_SET
+""".strip()
+
+
+def _install_curl_shell() -> str:
+    return r"""
+if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq curl >/dev/null
+elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache curl >/dev/null 2>&1
+elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q curl >/dev/null 2>&1
+elif command -v yum >/dev/null 2>&1; then
+    yum install -y -q curl >/dev/null 2>&1
+else
+    echo "Unable to install curl: unsupported package manager" >&2
+    exit 1
+fi
+""".strip()
+
+
+def _install_uv_shell() -> str:
+    return f"""
+set -e
+uv_path="$(command -v uv || true)"
+if [ -z "$uv_path" ]; then
+  export UV_UNMANAGED_INSTALL="${{UV_UNMANAGED_INSTALL:-{UV_RUNTIME_BIN}}}"
+  uv_installed_with_standalone=
+  if command -v curl >/dev/null 2>&1; then
+    curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$UV_UNMANAGED_INSTALL" sh
+    uv_installed_with_standalone=1
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO- https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$UV_UNMANAGED_INSTALL" sh
+    uv_installed_with_standalone=1
+  elif command -v python >/dev/null 2>&1 && python -m pip --version >/dev/null 2>&1; then
+    python -m pip install -q --disable-pip-version-check uv
+  elif command -v python3 >/dev/null 2>&1 && python3 -m pip --version >/dev/null 2>&1; then
+    python3 -m pip install -q --disable-pip-version-check uv
+  else
+    {_install_curl_shell()}
+    if command -v curl >/dev/null 2>&1; then
+      curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$UV_UNMANAGED_INSTALL" sh
+      uv_installed_with_standalone=1
+    elif command -v wget >/dev/null 2>&1; then
+      wget -qO- https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$UV_UNMANAGED_INSTALL" sh
+      uv_installed_with_standalone=1
+    else
+      echo "Unable to install uv: neither curl, wget, nor pip is available" >&2
+      exit 1
+    fi
+  fi
+  if [ -n "$uv_installed_with_standalone" ]; then
+    uv_path="${{UV_UNMANAGED_INSTALL%/}}/uv"
+  else
+    uv_path="$(command -v uv || true)"
+  fi
+fi
+if [ -z "$uv_path" ] && [ -x "$HOME/.local/bin/uv" ]; then
+  uv_path="$HOME/.local/bin/uv"
+fi
+if [ -z "$uv_path" ] && [ -x /usr/local/bin/uv ]; then
+  uv_path=/usr/local/bin/uv
+fi
+if [ -z "$uv_path" ] && [ -x /usr/bin/uv ]; then
+  uv_path=/usr/bin/uv
+fi
+if [ -z "$uv_path" ]; then
+  uv_path="$(command -v uv || true)"
+fi
+if [ -z "$uv_path" ] || [ ! -x "$uv_path" ]; then
+  echo "uv not available after installation" >&2
+  exit 1
+fi
+mkdir -p "$HOME/.local/bin"
+cat > "$HOME/.local/bin/env" <<EOF
+export PATH="$(dirname "$uv_path"):\\$PATH"
+EOF
+""".strip()
+
+
+UV_BOOTSTRAP_COMMAND = _install_uv_shell()
+
+
+def _install_nodejs_shell(*, log_version: bool = False) -> str:
+    script = r"""
+if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq nodejs npm >/dev/null
+elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache nodejs npm >/dev/null 2>&1
+elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q nodejs npm >/dev/null 2>&1
+elif command -v yum >/dev/null 2>&1; then
+    yum install -y -q nodejs npm >/dev/null 2>&1
+else
+    echo "Unable to install Node.js runtime: unsupported package manager" >&2
+    exit 1
+fi
+""".strip()
+    if log_version:
+        script += '\necho "node installed via package manager: $(node --version 2>/dev/null || echo missing)"'
+    return script
+
+def _claude_runtime_shell_setup() -> str:
+    return f"""
+export CLAUDE_RUNTIME_ROOT="${{CLAUDE_RUNTIME_ROOT:-{CLAUDE_RUNTIME_ROOT}}}"
+export NVM_DIR="${{NVM_DIR:-{CLAUDE_RUNTIME_NVM_DIR}}}"
+export NPM_CONFIG_PREFIX="${{NPM_CONFIG_PREFIX:-{CLAUDE_RUNTIME_NPM_PREFIX}}}"
+export NPM_CONFIG_CACHE="${{NPM_CONFIG_CACHE:-{CLAUDE_RUNTIME_NPM_CACHE}}}"
+export npm_config_cache="${{npm_config_cache:-$NPM_CONFIG_CACHE}}"
+mkdir -p "$CLAUDE_RUNTIME_ROOT" "$NVM_DIR" "$NPM_CONFIG_PREFIX" "$npm_config_cache"
+%s
+export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
+""".strip() % _nvm_source_with_tmp_npm_prefix()
+
+
+def _verify_nodejs_shell() -> str:
+    return f"""
+set -e
+{_claude_runtime_shell_setup()}
+if ! command -v node >/dev/null 2>&1; then
+  echo "node not available after installation" >&2
+  exit 1
+fi
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm not available after installation" >&2
+  exit 1
+fi
+node_version="$(node --version 2>/dev/null || true)"
+node_major="${{node_version#v}}"
+node_major="${{node_major%%.*}}"
+case "$node_major" in
+  ""|*[!0-9]*)
+    echo "Unable to parse node version after installation: ${{node_version:-unknown}}" >&2
+    exit 1
+    ;;
+esac
+if [ "$node_major" -lt {MIN_NODE_MAJOR_VERSION} ]; then
+  echo "node too old after installation: $node_version (need >={MIN_NODE_MAJOR_VERSION})" >&2
+  exit 1
+fi
+echo "node verified: $node_version"
+echo "npm verified: $(npm --version 2>/dev/null || echo unknown)"
+""".strip()
+
+
+def _install_nodejs_binary_shell(*, version: str = NODE_BINARY_VERSION) -> str:
+    quoted_version = shlex.quote(version)
+    return f"""
+set -e
+{_claude_runtime_shell_setup()}
+node_version={quoted_version}
+case "$(uname -m)" in
+  x86_64|amd64)
+    node_arch=x64
+    ;;
+  aarch64|arm64)
+    node_arch=arm64
+    ;;
+  *)
+    echo "Unsupported architecture for Node.js binary install: $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+if ! command -v curl >/dev/null 2>&1; then
+  {_install_curl_shell()}
+fi
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+tarball="node-${{node_version}}-linux-${{node_arch}}.tar.gz"
+url="https://nodejs.org/dist/${{node_version}}/${{tarball}}"
+curl -fsSL "$url" -o "$tmpdir/$tarball"
+mkdir -p "$NPM_CONFIG_PREFIX"
+tar -xzf "$tmpdir/$tarball" -C "$NPM_CONFIG_PREFIX" --strip-components=1
+"$NPM_CONFIG_PREFIX/bin/node" --version >/dev/null
+"$NPM_CONFIG_PREFIX/bin/npm" --version >/dev/null
+echo "node installed via official binary: $($NPM_CONFIG_PREFIX/bin/node --version)"
+""".strip()
+
+
+def _cleanup_nodejs_binary_shell() -> str:
+    return f"""
+set -e
+{_claude_runtime_shell_setup()}
+if [ -n "${{NPM_CONFIG_PREFIX:-}}" ] && [ -d "$NPM_CONFIG_PREFIX" ]; then
+  find "$NPM_CONFIG_PREFIX" -mindepth 1 -maxdepth 1 -exec rm -rf {{}} +
+fi
+""".strip()
+
+
 NVM_NODE_INSTALL = r"""
 set -e
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 mkdir -p "$NVM_DIR"
-if [ -n "${NPM_CONFIG_PREFIX:-}" ]; then
-    mkdir -p "$NPM_CONFIG_PREFIX" "$NPM_CONFIG_PREFIX/bin" "$NPM_CONFIG_PREFIX/lib"
-fi
 if [ -d "$NVM_DIR" ]; then
-    NPM_CONFIG_PREFIX_SAVED="${NPM_CONFIG_PREFIX-}"
-    if [ "${NPM_CONFIG_PREFIX+x}" = "x" ]; then
-        unset NPM_CONFIG_PREFIX
-        NPM_CONFIG_PREFIX_WAS_SET=1
-    else
-        NPM_CONFIG_PREFIX_WAS_SET=0
-    fi
-    source "$NVM_DIR/nvm.sh" 2>/dev/null || true
-    if [ "$NPM_CONFIG_PREFIX_WAS_SET" = "1" ]; then
-        export NPM_CONFIG_PREFIX="$NPM_CONFIG_PREFIX_SAVED"
-    fi
+    %s 2>/dev/null || true
     if command -v node >/dev/null 2>&1; then
         echo "node already installed: $(node --version)"
         exit 0
     fi
 fi
-apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq curl >/dev/null 2>&1
+%s
 export PROFILE=/dev/null
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash
-NPM_CONFIG_PREFIX_SAVED="${NPM_CONFIG_PREFIX-}"
-if [ "${NPM_CONFIG_PREFIX+x}" = "x" ]; then
-    unset NPM_CONFIG_PREFIX
-    NPM_CONFIG_PREFIX_WAS_SET=1
-else
-    NPM_CONFIG_PREFIX_WAS_SET=0
-fi
-source "$NVM_DIR/nvm.sh"
+%s
 nvm install 22
-if [ "$NPM_CONFIG_PREFIX_WAS_SET" = "1" ]; then
-    export NPM_CONFIG_PREFIX="$NPM_CONFIG_PREFIX_SAVED"
-fi
 echo "node installed: $(node --version)"
-"""
+""" % (
+    _nvm_source_with_tmp_npm_prefix(),
+    _install_curl_shell(),
+    _nvm_source_with_tmp_npm_prefix(),
+)
 
 SPELL_RUNTIME_INSTALL = r"""
 set -euo pipefail
@@ -449,23 +698,7 @@ def install_nvm_node(
     *,
     env: dict[str, str] | None = None,
 ) -> bool:
-    max_attempts = 2
-    for attempt in range(1, max_attempts + 1):
-        result = container.exec_run(NVM_NODE_INSTALL, timeout=300, env=env)
-        if result.exit_code == 0:
-            return True
-        logger.error("NVM/Node install failed (attempt %s): %s", attempt, result.stderr[:500])
-        if attempt < max_attempts:
-            time.sleep(2)
-
-    fallback = container.exec_run(
-        "apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq nodejs npm >/dev/null 2>&1 && "
-        'echo "node installed via apt: $(node --version 2>/dev/null || echo missing)"',
-        timeout=300,
-        env=env,
-        workdir="/",
-    )
-    return fallback.exit_code == 0
+    return install_nvm_node_exec(container.exec_run, env=env)
 
 
 def container_exec(
@@ -502,40 +735,231 @@ def container_exec(
     )
 
 
+def _exec_output_excerpt(result: ExecOutput, *, limit: int = 500) -> str:
+    message = result.stderr.strip() or result.stdout.strip()
+    if not message:
+        message = f"exit_code={result.exit_code}"
+    return message[:limit]
+
+
+def _is_retryable_install_timeout(result: ExecOutput) -> bool:
+    return result.timed_out or result.exit_code == 124
+
+
+def _is_retryable_apt_fetch_failure(stdout: str, stderr: str) -> bool:
+    output = "\n".join(part for part in (stdout, stderr) if part).lower()
+    if any(marker in output for marker in RETRYABLE_APT_MIRROR_MARKERS):
+        return True
+    return "failed to fetch" in output and any(marker in output for marker in RETRYABLE_APT_FETCH_MARKERS)
+
+
+def _is_retryable_pip_hash_mismatch(stdout: str, stderr: str) -> bool:
+    output = "\n".join(part for part in (stdout, stderr) if part).lower()
+    return RETRYABLE_PIP_HASH_MISMATCH_MARKER in output
+
+
+def _pip_install_command(packages: list[str], *, no_cache_dir: bool = False) -> str:
+    quoted = " ".join(shlex.quote(package) for package in packages)
+    cache_flag = " --no-cache-dir" if no_cache_dir else ""
+    return f"python -m pip install -q --disable-pip-version-check{cache_flag} {quoted}"
+
+
+def _best_effort_timeout_retry_cleanup(
+    exec_fn: Callable[..., ExecOutput],
+    *,
+    env: dict[str, str] | None = None,
+) -> None:
+    try:
+        result = exec_fn(
+            INSTALL_TIMEOUT_RETRY_CLEANUP_SCRIPT,
+            timeout=INSTALL_TIMEOUT_CLEANUP_TIMEOUT_SECONDS,
+            env=dict(env) if env else None,
+            workdir="/",
+        )
+    except Exception:
+        logger.warning("Install timeout cleanup raised unexpectedly", exc_info=True)
+        return
+    if result.exit_code != 0:
+        logger.warning(
+            "Install timeout cleanup exited non-zero: %s",
+            _exec_output_excerpt(result),
+        )
+
+
+def _run_install_with_apt_retry(
+    exec_fn: Callable[..., ExecOutput],
+    script: str,
+    *,
+    timeout: int,
+    env: dict[str, str] | None = None,
+    workdir: str | None = None,
+    label: str,
+) -> ExecOutput:
+    last_result = ExecOutput(exit_code=1, stdout="", stderr="install did not run")
+    current_env = dict(env or {})
+    for attempt in range(1, APT_FETCH_RETRY_MAX_ATTEMPTS + 1):
+        exec_env = dict(current_env) if current_env else None
+        last_result = exec_fn(script, timeout=timeout, env=exec_env, workdir=workdir)
+        if last_result.exit_code == 0:
+            return last_result
+        retryable_timeout = _is_retryable_install_timeout(last_result)
+        retryable_apt = _is_retryable_apt_fetch_failure(last_result.stdout, last_result.stderr)
+        retryable_pip_hash = _is_retryable_pip_hash_mismatch(last_result.stdout, last_result.stderr)
+        if attempt >= APT_FETCH_RETRY_MAX_ATTEMPTS or not (retryable_timeout or retryable_apt or retryable_pip_hash):
+            return last_result
+        if retryable_timeout:
+            logger.warning(
+                "%s timed out (attempt %s/%s), retrying whole script: %s",
+                label,
+                attempt,
+                APT_FETCH_RETRY_MAX_ATTEMPTS,
+                _exec_output_excerpt(last_result),
+            )
+            _best_effort_timeout_retry_cleanup(exec_fn, env=current_env)
+        elif retryable_pip_hash:
+            logger.warning(
+                "%s hit pip hash mismatch (attempt %s/%s), retrying with cache disabled: %s",
+                label,
+                attempt,
+                APT_FETCH_RETRY_MAX_ATTEMPTS,
+                _exec_output_excerpt(last_result),
+            )
+            current_env["PIP_NO_CACHE_DIR"] = "1"
+            current_env["UV_NO_CACHE"] = "1"
+        else:
+            logger.warning(
+                "%s hit transient apt fetch failure (attempt %s/%s): %s",
+                label,
+                attempt,
+                APT_FETCH_RETRY_MAX_ATTEMPTS,
+                _exec_output_excerpt(last_result),
+            )
+        time.sleep(APT_FETCH_RETRY_SLEEP_SECONDS)
+    return last_result
+
+
 def install_nvm_node_exec(
     exec_fn: Callable[..., ExecOutput],
     *,
     env: dict[str, str] | None = None,
 ) -> bool:
-    result = exec_fn(NVM_NODE_INSTALL, timeout=300, env=env)
-    if result.exit_code == 0:
+    def verify(label: str) -> bool:
+        verify_result = exec_fn(
+            _verify_nodejs_shell(),
+            timeout=60,
+            env=dict(env) if env else None,
+            workdir=None,
+        )
+        if verify_result.exit_code == 0:
+            return True
+        logger.warning("%s succeeded but Node/npm verification failed: %s", label, _exec_output_excerpt(verify_result))
+        return False
+
+    result = _run_install_with_apt_retry(
+        exec_fn,
+        NVM_NODE_INSTALL,
+        timeout=300,
+        env=env,
+        label="NVM/Node install",
+    )
+    if result.exit_code == 0 and verify("NVM/Node install"):
         return True
-    fallback = exec_fn(
-        "apt-get -o Acquire::AllowInsecureRepositories=true update -qq && apt-get -o Acquire::AllowInsecureRepositories=true --allow-unauthenticated install -y -qq nodejs npm >/dev/null 2>&1",
+    if result.exit_code != 0:
+        logger.warning("NVM/Node install failed, falling back to official Node binary: %s", _exec_output_excerpt(result))
+    else:
+        logger.warning("NVM/Node install did not provide Node >=%s and npm, falling back to official Node binary", MIN_NODE_MAJOR_VERSION)
+    binary = _run_install_with_apt_retry(
+        exec_fn,
+        _install_nodejs_binary_shell(),
         timeout=300,
         env=env,
         workdir="/",
+        label="Node binary install",
     )
-    return fallback.exit_code == 0
+    if binary.exit_code == 0 and verify("Node binary install"):
+        return True
+    if binary.exit_code != 0:
+        logger.warning("Node binary install failed, falling back to package manager: %s", _exec_output_excerpt(binary))
+    else:
+        logger.warning("Node binary install did not provide Node >=%s and npm, falling back to package manager", MIN_NODE_MAJOR_VERSION)
+    cleanup = exec_fn(
+        _cleanup_nodejs_binary_shell(),
+        timeout=60,
+        env=dict(env) if env else None,
+        workdir=None,
+    )
+    if cleanup.exit_code != 0:
+        logger.warning("Node binary cleanup failed before package-manager fallback: %s", _exec_output_excerpt(cleanup))
+    fallback = _run_install_with_apt_retry(
+        exec_fn,
+        _install_nodejs_shell(log_version=True),
+        timeout=300,
+        env=env,
+        workdir="/",
+        label="Node fallback install",
+    )
+    if fallback.exit_code != 0:
+        logger.error("Node fallback install failed: %s", _exec_output_excerpt(fallback))
+        return False
+    return verify("Node fallback install")
 
 
 def ensure_uv(container: DockerWorkspaceContainer) -> bool:
-    result = container.exec_run(
-        "python -m pip install -q --disable-pip-version-check uv",
-        timeout=180,
-    )
-    return result.exit_code == 0
+    max_attempts = 2
+    for attempt in range(1, max_attempts + 1):
+        result = container.exec_run(UV_BOOTSTRAP_COMMAND, timeout=180)
+        if result.exit_code == 0:
+            return True
+        logger.error("uv install failed (attempt %s): %s", attempt, result.stderr[:500])
+        if attempt < max_attempts:
+            time.sleep(2)
+    return False
+
+
+def ensure_uv_exec(
+    exec_fn: Callable[..., ExecOutput],
+    *,
+    env: dict[str, str] | None = None,
+    workdir: str | None = None,
+) -> bool:
+    max_attempts = 2
+    for attempt in range(1, max_attempts + 1):
+        result = exec_fn(
+            UV_BOOTSTRAP_COMMAND,
+            timeout=180,
+            env=env,
+            workdir=workdir,
+        )
+        if result.exit_code == 0:
+            return True
+        logger.error("uv install failed (attempt %s): %s", attempt, result.stderr[:500])
+        if attempt < max_attempts:
+            time.sleep(2)
+    return False
 
 
 def ensure_python_packages(container: DockerWorkspaceContainer, packages: list[str]) -> bool:
     if not packages:
         return True
-    quoted = " ".join(shlex.quote(package) for package in packages)
     result = container.exec_run(
-        f"python -m pip install -q --disable-pip-version-check {quoted}",
+        _pip_install_command(packages),
         timeout=300,
     )
-    return result.exit_code == 0
+    if result.exit_code == 0:
+        return True
+    if not _is_retryable_pip_hash_mismatch(result.stdout, result.stderr):
+        return False
+    logger.warning(
+        "Python package install hit pip hash mismatch, retrying without cache: %s",
+        _exec_output_excerpt(result),
+    )
+    retry_result = container.exec_run(
+        _pip_install_command(packages, no_cache_dir=True),
+        timeout=300,
+    )
+    if retry_result.exit_code != 0:
+        logger.error("Python package install failed after cache-busting retry: %s", _exec_output_excerpt(retry_result))
+    return retry_result.exit_code == 0
 
 
 def run_install_script(
@@ -546,29 +970,29 @@ def run_install_script(
     timeout: int = 300,
     workdir: str | None = None,
 ) -> bool:
-    result = container.exec_run(script, timeout=timeout, env=env, workdir=workdir)
+    result = _run_install_with_apt_retry(
+        container.exec_run,
+        script,
+        timeout=timeout,
+        env=env,
+        workdir=workdir,
+        label="Install script",
+    )
     if result.exit_code != 0:
-        logger.error("Install script failed: %s", result.stderr[:500])
+        logger.error("Install script failed: %s", _exec_output_excerpt(result))
         return False
     return True
-
-
-def _load_claude_json_b64() -> str | None:
-    if os.environ.get("CLAUDE_JSON_B64"):
-        return os.environ["CLAUDE_JSON_B64"]
-    path = Path.home() / ".claude.json"
-    if not path.exists():
-        return None
-    return base64.b64encode(path.read_bytes()).decode("ascii")
 
 
 def cc_install_script(*, version: str | None = None) -> str:
     resolved_version = version or "latest"
     return f"""
-[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"
+set -euo pipefail
+{_claude_runtime_shell_setup()}
 npm install -g @anthropic-ai/claude-code@{resolved_version}
-if [ -n "${{CLAUDE_JSON_B64:-}}" ]; then
-  printf '%s' "$CLAUDE_JSON_B64" | base64 -d > "$HOME/.claude.json"
+if ! command -v claude >/dev/null 2>&1; then
+  echo "{CLAUDE_CLI_MISSING_MARKER}" >&2
+  exit 1
 fi
 echo "claude installed: $(claude --version 2>/dev/null || echo unknown)"
 """
@@ -579,18 +1003,25 @@ def cc_env_vars(
     model: str | None = None,
     include_background: bool = True,
 ) -> dict[str, str]:
-    env: dict[str, str] = {}
+    env: dict[str, str] = {
+        "CLAUDE_RUNTIME_ROOT": CLAUDE_RUNTIME_ROOT,
+        "NVM_DIR": CLAUDE_RUNTIME_NVM_DIR,
+        "NPM_CONFIG_PREFIX": CLAUDE_RUNTIME_NPM_PREFIX,
+        "NPM_CONFIG_CACHE": CLAUDE_RUNTIME_NPM_CACHE,
+        "npm_config_cache": CLAUDE_RUNTIME_NPM_CACHE,
+    }
     if include_background:
         env["FORCE_AUTO_BACKGROUND_TASKS"] = "1"
         env["ENABLE_BACKGROUND_TASKS"] = "1"
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if api_key:
-        env["ANTHROPIC_API_KEY"] = api_key
-
-    claude_json_b64 = _load_claude_json_b64()
-    if claude_json_b64:
-        env["CLAUDE_JSON_B64"] = claude_json_b64
+    cc_oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+    if not cc_oauth_token:
+        raise RuntimeError(
+            "CLAUDE_CODE_OAUTH_TOKEN is required for Claude Code benchmark runs. "
+            "Run `claude setup-token` and export/store that token; Claude Code harnesses "
+            "do not accept ANTHROPIC_API_KEY or CLAUDE_JSON_B64."
+        )
+    env["CLAUDE_CODE_OAUTH_TOKEN"] = cc_oauth_token
 
     if model:
         env["ANTHROPIC_MODEL"] = model
@@ -607,55 +1038,41 @@ def cc_run_command(
     allowed_tools: list[str] | None = None,
     setting_sources: str = "",
 ) -> str:
-    parts = ['[ -s "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh"', "&&", "claude"]
-    parts.extend(["--setting-sources", shlex.quote(setting_sources)])
-    parts.extend(["--verbose", "--output-format", "stream-json"])
+    claude_parts = ["claude"]
+    claude_parts.extend(["--setting-sources", shlex.quote(setting_sources)])
+    claude_parts.extend(["--verbose", "--output-format", "stream-json"])
     if budget is not None:
-        parts.extend(["--max-budget-usd", str(budget)])
+        claude_parts.extend(["--max-budget-usd", str(budget)])
     if model:
-        parts.extend(["--model", shlex.quote(model)])
+        claude_parts.extend(["--model", shlex.quote(model)])
     if reasoning_effort:
-        parts.extend(["--effort", shlex.quote(reasoning_effort)])
-    tools = allowed_tools or CC_ALLOWED_TOOLS
-    parts.extend(["--allowedTools", " ".join(tools)])
-    parts.extend(["-p", shlex.quote(prompt)])
-    return " ".join(parts)
+        claude_parts.extend(["--effort", shlex.quote(reasoning_effort)])
+    tools = CC_ALLOWED_TOOLS if allowed_tools is None else allowed_tools
+    claude_parts.extend(["--allowedTools", " ".join(tools)])
+    claude_parts.extend(["-p", shlex.quote(prompt)])
+    return "\n".join(
+        [
+            "set -euo pipefail",
+            _claude_runtime_shell_setup(),
+            f'command -v claude >/dev/null 2>&1 || {{ echo "{CLAUDE_CLI_MISSING_MARKER}" >&2; exit 1; }}',
+            " ".join(claude_parts),
+        ]
+    )
 
 
-def cc_parse_usage(stdout: str) -> UsageBreakdown | None:
+def cc_missing_cli_error(output: ExecOutput) -> bool:
+    text = "\n".join(part for part in (output.stdout, output.stderr) if part)
+    return CLAUDE_CLI_MISSING_MARKER in text
+
+
+def cc_parse_usage(stdout: str, *, model: str | None = None) -> UsageBreakdown | None:
     events = parse_jsonl_events(stdout)
     result_event = None
     for event in reversed(events):
         if event.get("type") == "result":
             result_event = event
             break
-    if not result_event:
-        return None
-
-    usage = result_event.get("usage", {})
-
-    def _int(value: Any) -> int:
-        return int(value) if isinstance(value, (int, float)) else 0
-
-    total_input_tokens = (
-        _int(usage.get("input_tokens", 0))
-        + _int(usage.get("cache_creation_input_tokens", 0))
-        + _int(usage.get("cache_read_input_tokens", 0))
-    )
-    cached = _int(usage.get("cache_read_input_tokens", 0))
-    cache_write = _int(usage.get("cache_creation_input_tokens", 0))
-    output_tokens = _int(usage.get("output_tokens", 0))
-    cost = result_event.get("total_cost_usd")
-    if cost is None:
-        cost = result_event.get("cost_usd")
-    cost_usd = float(cost) if isinstance(cost, (int, float)) else None
-    return UsageBreakdown(
-        uncached_input_tokens=max(total_input_tokens - cached - cache_write, 0),
-        cached_input_tokens=cached,
-        cache_write_input_tokens=cache_write,
-        visible_output_tokens=output_tokens,
-        cost_usd=cost_usd,
-    )
+    return claude_code_usage_from_result(result_event, model=model)
 
 
 def _load_codex_auth_b64() -> str | None:
@@ -686,24 +1103,8 @@ export NVM_DIR="${{NVM_DIR:-{CODEX_RUNTIME_NVM_DIR}}}"
 export NPM_CONFIG_PREFIX="${{NPM_CONFIG_PREFIX:-{CODEX_RUNTIME_NPM_PREFIX}}}"
 export NPM_CONFIG_CACHE="${{NPM_CONFIG_CACHE:-{CODEX_RUNTIME_NPM_CACHE}}}"
 export npm_config_cache="${{npm_config_cache:-$NPM_CONFIG_CACHE}}"
-mkdir -p "$CODEX_HOME" "$NVM_DIR" "$NPM_CONFIG_PREFIX" "$NPM_CONFIG_PREFIX/bin" "$NPM_CONFIG_PREFIX/lib" "$npm_config_cache"
+mkdir -p "$CODEX_HOME" "$NVM_DIR" "$NPM_CONFIG_PREFIX" "$npm_config_cache"
 export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
-""".strip()
-
-
-def _codex_nvm_source_shell() -> str:
-    return """
-NPM_CONFIG_PREFIX_SAVED="${NPM_CONFIG_PREFIX-}"
-if [ "${NPM_CONFIG_PREFIX+x}" = "x" ]; then
-  unset NPM_CONFIG_PREFIX
-  NPM_CONFIG_PREFIX_WAS_SET=1
-else
-  NPM_CONFIG_PREFIX_WAS_SET=0
-fi
-source "$NVM_DIR/nvm.sh"
-if [ "$NPM_CONFIG_PREFIX_WAS_SET" = "1" ]; then
-  export NPM_CONFIG_PREFIX="$NPM_CONFIG_PREFIX_SAVED"
-fi
 """.strip()
 
 
@@ -711,9 +1112,7 @@ def codex_install_script(*, version: str | None = None) -> str:
     resolved_version = version or "latest"
     return f"""
 {_codex_runtime_shell_setup()}
-if [ -s "$NVM_DIR/nvm.sh" ]; then
-{_codex_nvm_source_shell()}
-fi
+{_nvm_source_with_tmp_npm_prefix()}
 npm install -g @openai/codex@{resolved_version}
 if [ -n "${{CODEX_AUTH_JSON_B64:-}}" ]; then
   printf '%s' "$CODEX_AUTH_JSON_B64" | base64 -d > "$CODEX_HOME/auth.json"
@@ -747,12 +1146,7 @@ def codex_run_command(
     web_search: bool = False,
     reasoning_effort: str | None = None,
 ) -> str:
-    parts = [
-        _codex_runtime_shell_setup(),
-        "&&",
-        f'if [ -s "$NVM_DIR/nvm.sh" ]; then\n{_codex_nvm_source_shell()}\nfi',
-        "&&",
-    ]
+    parts = [_codex_runtime_shell_setup(), "&&", _nvm_source_with_tmp_npm_prefix(), "&&"]
     if workdir:
         parts.extend(["cd", shlex.quote(workdir), "&&"])
     parts.append("codex")
@@ -821,12 +1215,16 @@ def _read_codex_rollout_from_container(
 def swe_agent_install_script() -> str:
     return r"""
 set -euo pipefail
-if command -v uv >/dev/null 2>&1; then
+pip_cache_flag=
+if [ "${PIP_NO_CACHE_DIR:-}" = "1" ]; then
+  pip_cache_flag="--no-cache-dir"
+fi
+if command -v uv >/dev/null 2>&1 && [ -z "$pip_cache_flag" ]; then
   uv pip install --system -q mini-swe-agent
 elif command -v python3 >/dev/null 2>&1; then
-  python3 -m pip install -q mini-swe-agent
+  python3 -m pip install -q --disable-pip-version-check $pip_cache_flag mini-swe-agent
 else
-  python -m pip install -q mini-swe-agent
+  python -m pip install -q --disable-pip-version-check $pip_cache_flag mini-swe-agent
 fi
 echo "mini installed: $(mini --help >/dev/null 2>&1 && echo ok || echo missing)"
 """
@@ -993,7 +1391,7 @@ def swe_agent_parse_usage(stdout: str, container: DockerWorkspaceContainer) -> U
 def resolve_spell_model(model_name: str | None) -> str:
     if model_name is None:
         return "anthropic-tc:opus46"
-    if any(model_name.startswith(prefix + ":") for prefix in ("anthropic-tc", "anthropic-pf", "fireworks", "openai-tc", "openai", "codex-msg", "codex-tc")):
+    if any(model_name.startswith(prefix + ":") for prefix in ("anthropic-tc", "anthropic-pf", "fireworks", "openai-tc", "codex-tc")):
         return model_name
     if model_name in LITELLM_TO_SPELL_MODEL:
         return LITELLM_TO_SPELL_MODEL[model_name]
@@ -1088,7 +1486,22 @@ def build_spell_init(prompt: str, trailing: str | None = None) -> str:
     )
 
 
-def spell_build_bundle(spell_root: Path | None = None) -> bytes:
+def _validate_spell_bundle_member(arcname: str) -> None:
+    parts = set(PurePosixPath(arcname).parts)
+    forbidden = sorted(parts & HARBOR_SPELL_BUNDLE_FORBIDDEN_PARTS)
+    if forbidden:
+        raise RuntimeError(
+            f"Refusing to add forbidden path(s) to Spell bundle member {arcname}: "
+            f"{', '.join(forbidden)}"
+        )
+
+
+def spell_build_bundle(
+    spell_root: Path | None = None,
+    *,
+    bundle_paths: tuple[str, ...] = SPELL_BUNDLE_PATHS,
+    harbor_safe: bool = False,
+) -> bytes:
     resolved_root = spell_root or discover_spell_root()
     if resolved_root is None:
         raise RuntimeError(
@@ -1096,7 +1509,7 @@ def spell_build_bundle(spell_root: Path | None = None) -> bytes:
             "(must contain deps.edn, src/spell/benchmark_api.clj, and config/agents)."
         )
 
-    missing = [rel for rel in SPELL_BUNDLE_PATHS if not (resolved_root / rel).exists()]
+    missing = [rel for rel in bundle_paths if not (resolved_root / rel).exists()]
     if missing:
         raise RuntimeError(
             f"Spell source tree at {resolved_root} is missing required paths: {', '.join(missing)}"
@@ -1104,9 +1517,20 @@ def spell_build_bundle(spell_root: Path | None = None) -> bytes:
 
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
-        for rel in SPELL_BUNDLE_PATHS:
-            tar.add(resolved_root / rel, arcname=f"spell/{rel}")
+        for rel in bundle_paths:
+            arcname = f"spell/{rel}"
+            if harbor_safe:
+                _validate_spell_bundle_member(arcname)
+            tar.add(resolved_root / rel, arcname=arcname)
     return buf.getvalue()
+
+
+def spell_build_harbor_bundle(spell_root: Path | None = None) -> bytes:
+    return spell_build_bundle(
+        spell_root,
+        bundle_paths=HARBOR_SPELL_BUNDLE_PATHS,
+        harbor_safe=True,
+    )
 
 
 def spell_pre_install(
@@ -1136,7 +1560,7 @@ def spell_env_vars(
         if value:
             env[key] = value
 
-    if model_name.startswith(("codex-msg:", "codex-tc:")):
+    if model_name.startswith("codex-tc:"):
         auth_b64 = _load_codex_auth_b64()
         if auth_b64:
             env["CODEX_AUTH_JSON_B64"] = auth_b64
@@ -1183,6 +1607,7 @@ def spell_run_command(
     trace: bool = False,
     trace_dir: str | None = None,
     init: str | None = None,
+    usage_log_path: str | None = None,
 ) -> str:
     from .reasoning_effort import anthropic_thinking_budget, is_anthropic_provider
 
@@ -1198,6 +1623,7 @@ def spell_run_command(
         "thinking": thinking,
         "trace": trace,
         "trace_dir": trace_dir,
+        "usage_log_path": usage_log_path,
     }
     if init is not None:
         payload["init"] = init
@@ -1238,6 +1664,12 @@ def spell_parse_benchmark_response(stdout: str) -> dict[str, Any] | None:
         if isinstance(parsed, dict) and ("ok" in parsed or "usage" in parsed):
             return parsed
     return None
+
+
+def _spell_error_type(output: ExecOutput, parsed: dict[str, Any] | None) -> str:
+    if output.timed_out:
+        return (parsed or {}).get("error_type") or "subprocess_timeout"
+    return (parsed or {}).get("error_type") if parsed else "parse_error"
 
 
 def copy_container_tree_to_host(
@@ -1288,15 +1720,31 @@ def copy_spell_traces_to_host(
     return None
 
 
-def spell_parse_usage(stdout: str) -> UsageBreakdown | None:
-    parsed = spell_parse_benchmark_response(stdout)
-    if not parsed:
+def spell_usage_from_summary(summary: dict[str, Any] | None) -> UsageBreakdown | None:
+    if not isinstance(summary, dict):
         return None
-
-    usage = (parsed.get("usage") or {}).get("total", {})
+    usage = summary.get("total")
+    if not isinstance(usage, dict):
+        return None
 
     def _int(value: Any) -> int:
         return int(value) if isinstance(value, (int, float)) else 0
+
+    canonical_token_keys = (
+        "uncached_input_tokens",
+        "cached_input_tokens",
+        "cache_write_input_tokens",
+        "visible_output_tokens",
+        "reasoning_output_tokens",
+    )
+    legacy_token_keys = (
+        "input_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+        "output_tokens",
+    )
+    if not any(isinstance(usage.get(key), (int, float)) for key in canonical_token_keys + legacy_token_keys):
+        return None
 
     uncached_input_tokens = _int(usage.get("uncached_input_tokens", 0))
     cached = _int(usage.get("cached_input_tokens", 0))
@@ -1323,6 +1771,26 @@ def spell_parse_usage(stdout: str) -> UsageBreakdown | None:
     )
 
 
+def spell_parse_usage(stdout: str) -> UsageBreakdown | None:
+    parsed = spell_parse_benchmark_response(stdout)
+    if not parsed:
+        return None
+    return spell_usage_from_summary(parsed.get("usage"))
+
+
+def spell_parse_usage_log(path: Path) -> UsageBreakdown | None:
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    usage = parsed.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    return spell_usage_from_summary(usage)
+
+
 def _install_agent_runtime(
     container: DockerWorkspaceContainer,
     *,
@@ -1331,9 +1799,10 @@ def _install_agent_runtime(
     model_spec: str | None = None,
 ) -> bool:
     if condition == "claude_code":
-        if not install_nvm_node(container):
+        env = cc_env_vars(model=model_spec)
+        if not install_nvm_node(container, env=env):
             return False
-        return run_install_script(container, cc_install_script(version=version), env=cc_env_vars(model=model_spec))
+        return run_install_script(container, cc_install_script(version=version), env=env)
     if condition == "codex":
         env = codex_env_vars()
         if not install_nvm_node(container, env=env):
@@ -1373,6 +1842,7 @@ def run_agent_in_container(
     trace_subdir: str | None = None,
     init: str | None = None,
     version: str | None = None,
+    paper_compliant: bool = False,
 ) -> AgentRunResult:
     if not _install_agent_runtime(container, condition=condition, version=version, model_spec=model_spec):
         return AgentRunResult(
@@ -1386,22 +1856,25 @@ def run_agent_in_container(
         if resolved_model and "/" in resolved_model:
             resolved_model = resolved_model.removeprefix("anthropic/")
         env = cc_env_vars(model=resolved_model)
+        command = cc_run_command(
+            prompt,
+            model=resolved_model,
+            budget=budget,
+            reasoning_effort=reasoning_effort,
+            allowed_tools=CC_PAPER_COMPLIANT_ALLOWED_TOOLS if paper_compliant else None,
+        )
         output = container.exec_run(
-            cc_run_command(
-                prompt,
-                model=resolved_model,
-                budget=budget,
-                reasoning_effort=reasoning_effort,
-            ),
+            command,
             timeout=timeout,
             env=env,
         )
-        usage = cc_parse_usage(output.stdout)
+        usage = cc_parse_usage(output.stdout, model=resolved_model)
+        missing_cli = cc_missing_cli_error(output)
         return AgentRunResult(
             output=output,
             usage=usage,
             error_message=output.stderr[:2000] if output.exit_code != 0 else None,
-            error_type="cli_error" if output.exit_code != 0 else None,
+            error_type=("install_error" if missing_cli else "cli_error") if output.exit_code != 0 else None,
         )
 
     if condition == "codex":
@@ -1532,7 +2005,7 @@ def run_agent_in_container(
         usage=usage,
         response_text=parsed.get("result") if parsed else None,
         error_message=((parsed or {}).get("error") if parsed else output.stderr[:2000]) or None,
-        error_type=(parsed or {}).get("error_type") if parsed else "parse_error",
+        error_type=_spell_error_type(output, parsed),
         raw=parsed,
         trace_dir=persisted_trace_dir,
     )

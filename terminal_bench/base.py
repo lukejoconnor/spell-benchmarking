@@ -23,9 +23,15 @@ try:
         ExecOutput,
         ParsedUsage,
         container_exec,
+        ensure_uv_exec,
         install_nvm_node_exec,
         iter_dicts,
         parse_jsonl_events,
+    )
+    from src.terminalbench_patch_recovery import (
+        DEFAULT_TOUCHED_TEST_FILES_PATH,
+        build_patch_wrapper_install_script,
+        parse_git_status_touched_test_files,
     )
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -33,9 +39,15 @@ except ImportError:
         ExecOutput,
         ParsedUsage,
         container_exec,
+        ensure_uv_exec,
         install_nvm_node_exec,
         iter_dicts,
         parse_jsonl_events,
+    )
+    from src.terminalbench_patch_recovery import (
+        DEFAULT_TOUCHED_TEST_FILES_PATH,
+        build_patch_wrapper_install_script,
+        parse_git_status_touched_test_files,
     )
 
 logger = logging.getLogger(__name__)
@@ -115,6 +127,22 @@ class DockerExecAgent(BaseAgent):
         """Whether this agent requires Node/NVM bootstrap."""
         return True
 
+    def _requires_uv(self) -> bool:
+        """Whether this agent needs uv preinstalled before task work starts."""
+        return True
+
+    def _install_uv(self, container) -> bool:
+        logger.info("Installing uv...")
+        ok = ensure_uv_exec(
+            lambda command, **kwargs: self._container_exec(container, command, **kwargs),
+            env=self._env_vars(),
+        )
+        if not ok:
+            logger.error("uv install failed")
+            return False
+        logger.info("uv runtime ready")
+        return True
+
     def _save_logs(
         self,
         logging_dir: Path,
@@ -122,6 +150,9 @@ class DockerExecAgent(BaseAgent):
         stderr: str,
         usage: ParsedUsage | None,
         latency_s: float,
+        *,
+        touched_test_files: list[str] | None = None,
+        test_patch_collision_recovery_enabled: bool = False,
     ) -> None:
         logging_dir.mkdir(parents=True, exist_ok=True)
         (logging_dir / "stdout.txt").write_text(stdout)
@@ -132,6 +163,7 @@ class DockerExecAgent(BaseAgent):
             "latency_s": round(latency_s, 1),
             "input_tokens": usage.input_tokens if usage else 0,
             "cached_input_tokens": usage.cached_input_tokens if usage else 0,
+            "cache_write_input_tokens": usage.cache_write_input_tokens if usage else 0,
             "visible_output_tokens": usage.visible_output_tokens if usage else 0,
             "reasoning_output_tokens": usage.reasoning_output_tokens if usage else None,
             "total_input_tokens": usage.total_input_tokens if usage else 0,
@@ -139,7 +171,56 @@ class DockerExecAgent(BaseAgent):
             "cost_usd": usage.cost_usd if usage else None,
             "cost_source": usage.cost_source if usage else None,
         }
+        if touched_test_files:
+            result_data["touched_test_files"] = touched_test_files
+        if test_patch_collision_recovery_enabled:
+            result_data["test_patch_collision_recovery_enabled"] = True
         (logging_dir / "result.json").write_text(json.dumps(result_data, indent=2))
+
+    def _touched_test_files(self, container, workdir: str) -> list[str]:
+        result = self._container_exec(
+            container,
+            f"git -C {shlex.quote(workdir)} status --porcelain=v1 --untracked-files=all",
+            timeout=30,
+            env=self._env_vars(),
+            workdir=workdir,
+        )
+        if result.exit_code != 0:
+            return []
+        return parse_git_status_touched_test_files(result.stdout)
+
+    def _install_test_patch_collision_recovery(
+        self,
+        container,
+        workdir: str,
+        touched_test_files: list[str],
+    ) -> bool:
+        if not touched_test_files:
+            return False
+        rendered_paths = " ".join(shlex.quote(path) for path in touched_test_files)
+        script = (
+            "set -eu\n"
+            f"printf '%s\\n' {rendered_paths} > {shlex.quote(DEFAULT_TOUCHED_TEST_FILES_PATH)}\n"
+            f"{build_patch_wrapper_install_script()}"
+        )
+        result = self._container_exec(
+            container,
+            script,
+            timeout=30,
+            env=self._env_vars(),
+            workdir=workdir,
+        )
+        if result.exit_code != 0:
+            logger.warning(
+                "Failed to install Terminal-Bench test-patch recovery wrapper: %s",
+                (result.stderr or result.stdout)[:1000],
+            )
+            return False
+        logger.info(
+            "Installed Terminal-Bench test-patch recovery wrapper for touched test files: %s",
+            ", ".join(touched_test_files),
+        )
+        return True
 
     @staticmethod
     @abstractmethod
@@ -194,6 +275,9 @@ class DockerExecAgent(BaseAgent):
         if self._requires_node() and not self._install_nvm_node(container):
             return AgentResult(failure_mode=FailureMode.AGENT_INSTALLATION_FAILED)
 
+        if self._requires_uv() and not self._install_uv(container):
+            return AgentResult(failure_mode=FailureMode.AGENT_INSTALLATION_FAILED)
+
         # Install agent CLI
         if not self._install_agent_cli(container):
             return AgentResult(failure_mode=FailureMode.AGENT_INSTALLATION_FAILED)
@@ -232,9 +316,24 @@ class DockerExecAgent(BaseAgent):
                 + (f" cost=${usage.cost_usd:.4f}" if usage.cost_usd else "")
             )
 
+        touched_test_files = self._touched_test_files(container, workdir)
+        recovery_enabled = self._install_test_patch_collision_recovery(
+            container,
+            workdir,
+            touched_test_files,
+        )
+
         # Save logs
         if logging_dir:
-            self._save_logs(logging_dir, result.stdout, result.stderr, usage, latency_s)
+            self._save_logs(
+                logging_dir,
+                result.stdout,
+                result.stderr,
+                usage,
+                latency_s,
+                touched_test_files=touched_test_files,
+                test_patch_collision_recovery_enabled=recovery_enabled,
+            )
 
         # Failure mode
         failure = self._determine_failure_mode(result, usage)
