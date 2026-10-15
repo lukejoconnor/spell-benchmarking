@@ -1,8 +1,6 @@
 # Spell Benchmarking
 
-Benchmark infrastructure for evaluating Spell against one-shot LLM calls, Claude Code, Codex CLI, and mini-swe-agent across math, long-context, and coding tasks.
-
-All commands run from the repository root using `uv run`.
+Scripts and benchmarking infrastructure for [this paper](https://arxiv.org/abs/2605.06898). The main Spell repository is located [here](https://github.com/lukejoconnor/spell).
 
 ## Quick Start
 
