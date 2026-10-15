@@ -22,4 +22,4 @@ Record one row per model, game, and replicate with `grade`, `valid_orchestration
 
 The paper used GPT-5.5 to audit the synchronous traces and GPT-5.6 Sol to score the asynchronous traces under these criteria. Fresh audits can be performed by a human or a named judge model; record the judge and provide it the complete task prompt, rubric, report, and execution trace. Judge execution is not automated by the runner.
 
-The paper's asynchronous experiments used a subsequent v0.1.1 runtime. The default setup in the reproduction guide uses the published v0.1.0 runtime. Report that runtime when running the asynchronous prompts with this setup; a v0.1.0 rerun is a replication on that published runtime rather than an exact replay of the v0.1.1 experiment.
+The asynchronous runner uses Spell commit `6ad7d400800eb87a6a34573c9d90dba5dd9c0b13` with explicit non-prefill tool-call framing, matching the source and corrected transport of the reported July trials. The reproduction guide supplies its separate checkout recipe. Synchronous games and the other benchmarks use v0.1.0. Record the runtime revision from each trial's `provenance.json` alongside the score.

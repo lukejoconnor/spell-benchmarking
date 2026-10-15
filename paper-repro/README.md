@@ -1,6 +1,6 @@
 # Reproducing the paper
 
-These commands run the experiments in *Self-Programmed Execution for Language Model Agents*. They use the published **Spell v0.1.0** runtime, commit `a3ce161a9f83bcb713310d96c26a95ac60978399`, and this benchmarking repository's paper release. Record the benchmarking commit with `git rev-parse HEAD` before a run; unified results also record both source revisions.
+These commands run the experiments in *Self-Programmed Execution for Language Model Agents*. The benchmark and synchronous-game commands use the published **Spell v0.1.0** runtime, commit `a3ce161a9f83bcb713310d96c26a95ac60978399`, and this benchmarking repository's paper release. The asynchronous games use a separate source revision specified below. Record the benchmarking commit with `git rev-parse HEAD` before a run; unified results also record both source revisions.
 
 ## Setup
 
@@ -106,6 +106,14 @@ LongBench documents are supplied on disk to both agents. AppWorld uses the Termi
 
 ## Orchestration games
 
+The synchronous games use `$SPELL_ROOT` from Setup. For the asynchronous games, clone the July runtime into a separate checkout, leaving that v0.1.0 checkout available for the other experiments:
+
+```bash
+git clone https://github.com/lukejoconnor/spell.git ../spell-async-runtime
+git -C ../spell-async-runtime checkout --detach 6ad7d400800eb87a6a34573c9d90dba5dd9c0b13
+export SPELL_ASYNC_ROOT="$(cd ../spell-async-runtime && pwd)"
+```
+
 ```bash
 uv run python scripts/run_orchestration_games.py --variant sync \
   --model openai-tc:gpt-5.4 --replicates 8 --run-id sync-gpt54
@@ -115,9 +123,11 @@ uv run python scripts/run_orchestration_games.py --variant async \
   --model openai-tc:gpt-5.6-sol --replicates 8 --run-id async-gpt56sol
 ```
 
-Each command runs all three games, uses medium effort, the `io-tc` profile, prompt-only initialization, depth 80, and a 900-second per-trial timeout. Budget zero means no dollar cap. Request, result, provenance, and traces are saved under `results/games/`. Add `--dry-run` to inspect requests without model calls. These commands run trials serially; scheduling is independent of the within-game orchestration tested.
+Each command runs all three games, uses medium effort, the `io-tc` profile, prompt-only initialization, depth 80, and a 900-second per-trial timeout. Budget zero means no dollar cap. Request, result, provenance, and traces are saved under `results/games/`; provenance is written before the trial starts. Add `--dry-run` to inspect requests without model calls. These commands run trials serially; scheduling is independent of the within-game orchestration tested.
 
-Use the [trace-audit rubric](games/SCORING.md) to score the actual orchestration. The original asynchronous experiment used v0.1.1; these default commands use the published v0.1.0 runtime and should be reported as such. The synchronous appendix specifies its task prompts and trace-audit criteria but does not document a full original cap configuration; the explicit 900-second/depth-80 caps above define a fresh reproduction setup.
+The asynchronous runner requires the exact July source commit above and uses its `config/agent-profiles/io-tc.agent.edn` profile. Its benchmark interface explicitly selects non-prefill tool-call framing, reproducing the transport correction used for the reported trials. This makes the source and transport reproducible without requiring a `v0.1.1` tag. `SPELL_ROOT` continues to select v0.1.0 for the other commands; `SPELL_ASYNC_ROOT` selects the asynchronous runtime. `--spell-root` can supply either checkout explicitly. The saved provenance records the runtime actually selected.
+
+Use the [trace-audit rubric](games/SCORING.md) to score the actual orchestration. The synchronous appendix specifies its task prompts and trace-audit criteria but does not document a full original cap configuration; the explicit 900-second/depth-80 caps above define a fresh reproduction setup. All fresh trials enforce the 900-second cap; the paper discloses its ineffective cap in the first GPT-5.6 Sol batch.
 
 ## Numerical summaries and trace analyses
 

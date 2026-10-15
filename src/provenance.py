@@ -62,12 +62,12 @@ def _git_version_for_repo(path: Path) -> dict[str, Any] | None:
 
 
 @functools.cache
-def benchmark_git_versions() -> dict[str, Any]:
+def benchmark_git_versions(spell_root: Path | None = None) -> dict[str, Any]:
     """Capture git revision info for benchmark-related repos when available."""
     versions: dict[str, Any] = {}
     seen_paths: set[Path] = set()
 
-    for label, path in (("benchmarking", BENCHMARK_ROOT), ("spell", resolve_spell_root())):
+    for label, path in (("benchmarking", BENCHMARK_ROOT), ("spell", spell_root or resolve_spell_root())):
         resolved_path = path.resolve()
         if resolved_path in seen_paths:
             continue

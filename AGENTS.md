@@ -2,7 +2,7 @@
 
 ## Terminology
 
-- Paper runtime: the published Spell v0.1.0 runtime used by the default reproduction commands.
+- Paper runtime: Spell v0.1.0 for benchmarks and synchronous games; the explicitly pinned July source revision for asynchronous games.
 - Feature use: a call form in a newly emitted response suffix, excluding inherited prefix text.
 
 ## Workflow
